@@ -1,184 +1,149 @@
-//use std::net::SocketAddr;
-use std::sync::Arc;
-use std::ops::{Add, Sub, AddAssign, SubAssign, Div};
-use std::fmt::Debug;
-use std::marker::PhantomData;
-use std::fmt::Display;
+//use std::ops::{Add, Sub, AddAssign, SubAssign, Div};
+//use std::fmt::Debug;
+//use std::fmt::Display;
 
-use {PARSE_ERRORS, INGRESS, EGRESS, AGG_ERRORS};
+use {EGRESS, DROPS};
 
-use std::str::FromStr;
-use bytes::{Bytes, BytesMut, BufMut};
-use metric::Metric;
-use parser::metric_parser;
-use smallvec::SmallVec;
+use bytes::{BytesMut, BufMut};
 use tokio_core::reactor::Handle;
 use tokio_core::net::UdpSocket;
 use tokio_io::codec::{Encoder, Decoder};
-use futures::future::Executor;
-use futures::{IntoFuture, Future};
-use futures::future::{lazy, ok, loop_fn, Loop};
+use futures::{IntoFuture, Future, Sink};
+use futures::sync::mpsc;
 
 use std::sync::atomic::Ordering;
-use combine::primitives::FastResult;
-use combine::Parser;
 use failure::Error;
 
-use chashmap::CHashMap;
+use task::Task;
 
 #[derive(Debug)]
-pub struct StatsdServer<E, F>
-where
-    E: Executor<Box<Future<Item = (), Error = ()> + Send + 'static>>,
-
-    F: Copy + PartialEq + Debug,
-{
+//pub struct StatsdServer<E, F>
+//pub struct StatsdServer<E>
+pub struct StatsdServer {
     socket: UdpSocket,
     handle: Handle,
-    executor: E,
-    cache: Arc<CHashMap<String, Metric<F>>>,
+    //executor: E,
+    //cache: Arc<CHashMap<String, Metric<F>>>,
+    //cache: Arc<Mutex<HashMap<String, Metric<f64>>>>,
+    chans: Vec<mpsc::Sender<Task>>,
     buf: BytesMut,
+    buf_queue_size: usize,
+    bufsize: usize,
+    next: usize,
 }
 
-impl<E, F> StatsdServer<E, F>
-where
-E: Executor<Box<Future<Item = (), Error = ()> + Send + 'static>> + 'static,
-F: Copy + PartialEq + Debug,
-{
+//impl<E, F> StatsdServer<E, F>
+impl StatsdServer {
     pub fn new(
         socket: UdpSocket,
         handle: &Handle,
-        executor: E,
-        cache: Arc<CHashMap<String, Metric<F>>>,
+        chans: Vec<mpsc::Sender<Task>>,
         buf: BytesMut,
-        ) -> Self {
+        buf_queue_size: usize,
+        bufsize: usize,
+        next: usize,
+    ) -> Self {
         Self {
             socket,
             handle: handle.clone(),
-            executor,
-            cache,
+            chans,
             buf,
+            buf_queue_size,
+            bufsize,
+            next,
         }
     }
-
 }
 
-impl<E, F> IntoFuture for StatsdServer<E, F>
-where
-    E: Executor<
-        Box<
-            Future<Item = (), Error = ()>
-                + Send
-                + 'static,
-        >,
-    >
-        + 'static,
-    F: FromStr
-        + Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Div<Output = F>
-        + Clone
-        + Copy
-        + PartialOrd
-        + PartialEq
-        + Into<f64>
-        + Sync
-        + Send
-        + Debug
-        + 'static,
-{
+//impl<E, F> IntoFuture for StatsdServer<E, F>
+//impl<E> IntoFuture for StatsdServer<E>
+impl IntoFuture for StatsdServer {
+    /*
+       where
+    //E: Executor<Box<Future<Item = (), Error = ()> + Send + 'static>>
+    //+ Clone
+    //+ 'static,
+    //F: FromStr
+    //+ Add<Output = F>
+    //+ AddAssign
+    //+ Sub<Output = F>
+    //+ SubAssign
+    //+ Div<Output = F>
+    //+ Clone
+    //+ Copy
+    //+ PartialOrd
+    //+ PartialEq
+    //+ Into<f64>
+    //+ Sync
+    //+ Send
+    //+ Debug
+    //    + 'static,
+    */
     type Item = ();
     type Error = ();
     type Future = Box<Future<Item = Self::Item, Error = ()>>;
 
     fn into_future(self) -> Self::Future {
-
         let Self {
             socket,
             handle,
-            executor,
-            cache,
-            buf,
+            chans,
+            mut buf,
+            buf_queue_size,
+            bufsize,
+            next,
         } = self;
 
-        let newbuf = buf.clone();
-        let newcache = cache.clone();
         let newhandle = handle.clone();
+        let newchans = chans.clone();
 
-        use futures::sync::oneshot::channel;
-        let (tx, rx) = channel();
+        if buf.remaining_mut() <= bufsize {
+            buf.reserve(buf_queue_size * bufsize);
+        }
 
+        // leave one more byte for '\n'
+        let mut readbuf = buf.split_to(bufsize + 1);
+        // reading from UDP socket requires buffer to be preallocated
+        unsafe { readbuf.advance_mut(bufsize) }
         let future = socket
-            .recv_dgram(buf)
+            .recv_dgram(readbuf)
             .map_err(|e| println!("error receiving UDP packet {:?}", e))
-            .and_then(move |(socket, data, size, addr)| {
-                let future = lazy(move || {
-                    let mut input: &[u8] = &data[0..size];
-                    let mut size_left = size;
-                    let mut parser = metric_parser::<F>();
-                    loop {
-
-                        let len = match parser.parse_stream_consumed(&mut input) {
-                            FastResult::ConsumedOk(((name, metric), rest)) => {
-                                INGRESS.fetch_add(1, Ordering::Relaxed);
-                                size_left -= rest.len();
-                                if size_left == 0 {
-                                    break;
-                                }
-                                input = rest;
-                                let metric = metric.clone();
-                                cache.alter(name, |old| {
-                                    //
-                                    match old {
-                                        None => Some(metric),
-                                        Some(mut old) => {
-                                            let res = old.aggregate(metric);
-                                            if res.is_err() {
-                                                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                            }
-                                            Some(old)
-                                        }
-                                    }
-                                });
-                            }
-                            FastResult::EmptyOk(_) |
-                            FastResult::EmptyErr(_) => {
-                                break;
-                            }
-                            FastResult::ConsumedErr(e) => {
-                                //println!("PARSE ERR {:?}", e);
-                                PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                break;
-                            }
-                        };
-                    }
-                    tx.send(())?;
-                    Ok(())
-                });
+            .and_then(move |(socket, mut received, size, _addr)| {
+                if size == 0 {
+                    return Ok(());
+                }
+                if received.last().unwrap() != &10u8 {
+                    received.put("\n");
+                }
+                received.truncate(size);
+                let (chan, next) = if next >= chans.len() {
+                    (chans[0].clone(), 1)
+                } else {
+                    (chans[next].clone(), next + 1)
+                };
                 handle.spawn(
-                    rx.map_err(move |_| println!("counting canceled"))
+                    chan.send(Task::Parse(received))
+                        .map_err(|_| { DROPS.fetch_add(1, Ordering::Relaxed); })
                         .and_then(move |_| {
                             StatsdServer::new(
                                 socket,
                                 &newhandle,
-                                newhandle.remote().clone(),
-                                newcache,
-                                newbuf,
+                                newchans,
+                                buf,
+                                buf_queue_size,
+                                bufsize,
+                                next,
                             ).into_future()
                         }),
                 );
-                executor.execute(Box::new(future)).map_err(|e| {
-                    println!("error spawning parser {:?}", e)
-                })
+                Ok(())
             });
         Box::new(future)
     }
 }
 
-pub struct CarCodec;
-impl Decoder for CarCodec {
+pub struct CarbonCodec;
+impl Decoder for CarbonCodec {
     type Item = ();
     type Error = Error;
 
@@ -187,7 +152,7 @@ impl Decoder for CarCodec {
     }
 }
 
-impl Encoder for CarCodec {
+impl Encoder for CarbonCodec {
     type Item = (String, String, String); // Metric name, suffix value and timestamp
     type Error = Error;
 
@@ -199,54 +164,6 @@ impl Encoder for CarCodec {
         buf.put(m.1);
         buf.put(" ");
         buf.put(m.2);
-        buf.put("\n");
-
-        EGRESS.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-}
-// 3rd field is an already converted timestamp - unix time in seconds
-pub type OutMetric<F: Display> = Arc<(String, Metric<F>, String)>;
-
-pub struct CarbonCodec<F> {
-    _p: PhantomData<F>,
-}
-
-impl<F> Default for CarbonCodec<F> {
-    fn default() -> Self {
-        Self { _p: PhantomData }
-    }
-}
-
-impl<F> Decoder for CarbonCodec<F> {
-    type Item = ();
-    type Error = Error;
-
-    fn decode(&mut self, _buf: &mut BytesMut) -> Result<Option<Self::Item>, Error> {
-        unreachable!()
-    }
-}
-
-impl<F> Encoder for CarbonCodec<F>
-where
-    F: Display + Copy + PartialEq + Debug,
-{
-    type Item = OutMetric<F>; // Metric name, suffix value and timestamp
-    type Error = Error;
-
-    fn encode(&mut self, m: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        let &(ref prefix, ref value, _) = &*m;
-
-        let formatted = format!("{}", value.value);
-
-        let len = (&*m.0).len() + prefix.len() + 1 + formatted.len() + 1 + &m.2.len() + 1;
-        buf.reserve(len);
-        buf.put(&*m.0);
-        buf.put(prefix);
-        buf.put(" ");
-
-        buf.put(formatted + " ");
-        buf.put(&m.2);
         buf.put("\n");
 
         EGRESS.fetch_add(1, Ordering::Relaxed);

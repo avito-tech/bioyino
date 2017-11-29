@@ -1,11 +1,8 @@
 //use errors::*;
 use std::ops::{Add, Sub, AddAssign, SubAssign, Div};
 use std::fmt::{Display, Debug};
-use smallvec::SmallVec;
 use failure::Error;
 use quantiles::ckms::CKMS;
-
-pub type TimerVec<F> = SmallVec<[F; 32]>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetricType<F>
@@ -13,7 +10,7 @@ where
     F: Copy + PartialEq + Debug,
 {
     Counter,
-    //ExtCounter,
+    DiffCounter(F),
     Timer(CKMS<F>),
     //    Histogram,
     Gauge(Option<i8>),
@@ -129,6 +126,7 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let res = match &self.m.mtype {
             &MetricType::Counter if self.count == 0 => Some(("", self.m.value.to_string())),
+            &MetricType::DiffCounter(_) if self.count == 0 => Some(("", self.m.value.to_string())),
             &MetricType::Gauge(_) if self.count == 0 => Some(("", self.m.value.to_string())),
             &MetricType::Timer(ref ckms) => {
                 // it is safe to unwrap query here because it only fails when len = 0
@@ -243,6 +241,18 @@ where
             (&mut Counter, Counter) => {
                 self.value += new.value;
             }
+            (&mut DiffCounter(ref mut previous), DiffCounter(_)) => {
+                // FIXME: this is most probably incorrect when joining with another
+                // non-fresh metric count2 != 1
+                let prev = *previous;
+                let diff = if new.value > prev {
+                    new.value - prev
+                } else {
+                    new.value
+                };
+                *previous = new.value;
+                self.value += diff;
+            }
             (&mut Gauge(_), Gauge(Some(1))) => {
                 self.value += new.value;
             }
@@ -252,15 +262,17 @@ where
             (&mut Gauge(_), Gauge(None)) => {
                 self.value = new.value;
             }
-            (&mut Gauge(_), Gauge(Some(_))) => unreachable!(),
-            (&mut Timer(ref mut ckms), Timer(_)) => {
+            (&mut Gauge(_), Gauge(Some(_))) => {
+                return Err(MetricError::Aggregating.into());
+            }
+            (&mut Timer(ref mut ckms), Timer(ref ckms2)) => {
                 self.value = new.value;
-                ckms.insert(new.value)
+                ckms.add_assign(ckms2.clone());
             }
             //(&mut Set(ref mut set), Set(_)) => {
             //    set.insert(new.value);
             //}
-            (m1, m2) => {
+            (_m1, _m2) => {
                 return Err(MetricError::Aggregating.into());
             }
         };
@@ -268,6 +280,7 @@ where
     }
 }
 
+/*
 pub struct Percentile<F>(F);
 
 impl Percentile<f64> {
@@ -295,3 +308,4 @@ impl Percentile<f64> {
         res
     }
 }
+*/

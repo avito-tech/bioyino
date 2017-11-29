@@ -1,5 +1,22 @@
 
 /*
+                               cache.alter(name, |old| {
+                            //
+                            match old {
+                            None => Some(metric),
+                            Some(mut old) => {
+                            let res = old.aggregate(metric);
+                            if res.is_err() {
+                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Some(old)
+                            }
+                            }
+                            });
+                            */
+
+
+/*
    ToString:
 // let formatted = match (value.numer().to_f64(), value.denom().to_f64()) {
 //(Some(numer), Some(denom)) => (numer / denom).to_string(),

@@ -4,22 +4,20 @@ version = "0.1.0"
 authors = ["Sergey Noskov <snoskov@avito.ru>"]
 
 [dependencies]
-derive-error-chain = { version = "^0.11", features=[], default-features=false }
-error-chain= { version = "^0.11", features=[], default-features=false }
 clap="^2.24"
 structopt="^0.0"
 structopt-derive="^0.0"
+itertools="^0.7"
 futures="^0.1"
 tokio-core="^0.1"
 tokio-io="^0.1"
 bytes="^0.4"
 num_cpus="^1.4"
 resolve="^0.1"
-chashmap="^2.2"
 net2="^0.2"
 num="^0.1"
 combine="^2.5"
-smallvec="^0.5"
 failure="^0.1"
 failure_derive="^0.1"
 quantiles="^0.6"
+futures-cpupool="^0.1"

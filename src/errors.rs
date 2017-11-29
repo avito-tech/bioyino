@@ -13,4 +13,7 @@ pub enum GeneralError {
     ),
     #[fail(display = "graphite connection error")]
     GraphiteConn,
+
+    #[fail(display = "future send error")]
+    FutureSend,
 }

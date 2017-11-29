@@ -3,7 +3,6 @@ use std::ops::{Add, Sub, AddAssign, SubAssign, Div};
 use std::fmt::Debug;
 use std::str::from_utf8;
 use std::str::FromStr;
-use smallvec::SmallVec;
 use combine::{Parser, optional};
 use combine::byte::{byte, bytes, newline};
 use combine::range::{take_while1, take_while};
@@ -23,9 +22,6 @@ enum ParseError {
 
     #[fail(display = "parsing float")]
     Float(String),
-
-    #[fail(display = "parsing error: {}", _0)]
-    Combine(String),
 }
 
 pub type MetricParser<'a, F> = Box<Parser<Output = (String, Metric<F>), Input = &'a [u8]>>;
@@ -40,54 +36,53 @@ where
         + PartialOrd
         + Into<f64>
         + Debug
+        + Default
         + Clone
         + Copy
         + PartialEq
         + Sync,
 {
     // This will parse metic name and separator
-    let name = take_while1(|c: u8| c != b':').skip(byte(b':')).and_then(
-        |name| {
-            from_utf8(name).map(|name| name.to_string())
-        },
-    );
+    let name = take_while1(|c: u8| c != b':' && c != b'\n')
+        .skip(byte(b':'))
+        .and_then(|name| from_utf8(name).map(|name| name.to_string()));
 
     let sign = byte(b'+').map(|_| 1i8).or(byte(b'-').map(|_| -1i8));
 
     // This should parse metric value and separator
-    let value = take_while1(|c: u8| c != b'|').skip(byte(b'|')).and_then(
-        |value| {
+    let value = take_while1(|c: u8| c != b'|' && c != b'\n')
+        .skip(byte(b'|'))
+        .and_then(|value| {
             from_utf8(value)
                 .map_err(|e| ParseError::Utf8(e))
                 .compat()?
                 .parse::<F>()
-                .map_err(|e| {
+                .map_err(|_| {
                     ParseError::Float(
                         format!("parsing {:?} as float metric value", value).to_string(),
                     )
                 })
                 .compat()
-        },
-    );
+        });
 
     // This parses metric type
     let mtype = bytes(b"ms")
         .map(|_| MetricType::Timer(CKMS::<F>::new(EPSILON)))
         .or(byte(b'g').map(|_| MetricType::Gauge(None)))
-        //.or(byte(b'C').map(|_| MetricType::ExtCounter))
+        .or(byte(b'C').map(|_| MetricType::DiffCounter(F::default())))
         .or(byte(b'c').map(|_| MetricType::Counter))
         //        .or(byte(b's').map(|_| MetricType::Set(HashSet::new())))
         // we can add more types  here
         //        .or(byte(b'h').map(|_| MetricType::Histrogram))
         ;
 
-    let sampling = (byte(b'@'), take_while(|c: u8| c != b'\n'))
+    let sampling = (bytes(b"|@"), take_while(|c: u8| c != b'\n'))
         .and_then::<_, f32, Compat<ParseError>>(|(_, value)| {
             from_utf8(value)
                 .map_err(|e| ParseError::Utf8(e))
                 .compat()?
                 .parse::<f32>()
-                .map_err(|e| {
+                .map_err(|_| {
                     ParseError::Float(
                         format!("parsing {:?} as float sampling value", value).to_string(),
                     )
@@ -118,7 +113,8 @@ where
 
 #[cfg(test)]
 mod tests {
-
+    // WARNING: these tests most probably don't work as of now
+    // FIXME: tests
     use super::*;
     use num::rational::Ratio;
 
