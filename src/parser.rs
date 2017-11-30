@@ -98,13 +98,13 @@ where
             optional(sampling),
             skip_many(newline()).or(eof()),
         ).and_then(|(sign, value, mtype, sampling, _)| {
-                let real_mtype = if let MetricType::Gauge(_) = mtype {
+                let mtype = if let MetricType::Gauge(_) = mtype {
                     MetricType::Gauge(sign)
                 } else {
                     mtype
                 };
 
-                Metric::<F>::new(value, real_mtype, sampling).compat()
+                Metric::<F>::new(value, mtype, sampling).compat()
             }),
     );
 

@@ -134,22 +134,22 @@ where
                 match self.count {
                     0 => Some(("", self.m.value.to_string())),
                     1 => Some((".count", ckms.count().to_string())),
-                    2 => Some((".min", ckms.query(0f64).unwrap().0.to_string())),
-                    3 => Some((".max", ckms.query(1f64).unwrap().0.to_string())),
+                    2 => Some((".min", ckms.query(0f64).unwrap().1.to_string())),
+                    3 => Some((".max", ckms.query(1f64).unwrap().1.to_string())),
                     4 => Some((".sum", ckms.sum().unwrap().to_string())),
-                    5 => Some((".mean", ckms.query(0.5).unwrap().0.to_string())),
+                    5 => Some((".mean", ckms.query(0.5).unwrap().1.to_string())),
                     6 => Some((
                         ".median",
                         (ckms.sum().unwrap().into() / ckms.count() as f64)
                             .to_string(),
                     )),
-                    7 => Some((".percentile.75", ckms.query(0.75).unwrap().0.to_string())),
-                    8 => Some((".percentile.95", ckms.query(0.95).unwrap().0.to_string())),
-                    9 => Some((".percentile.98", ckms.query(0.98).unwrap().0.to_string())),
-                    10 => Some((".percentile.99", ckms.query(0.99).unwrap().0.to_string())),
+                    7 => Some((".percentile.75", ckms.query(0.75).unwrap().1.to_string())),
+                    8 => Some((".percentile.95", ckms.query(0.95).unwrap().1.to_string())),
+                    9 => Some((".percentile.98", ckms.query(0.98).unwrap().1.to_string())),
+                    10 => Some((".percentile.99", ckms.query(0.99).unwrap().1.to_string())),
                     11 => Some((
                         ".percentile.999",
-                        ckms.query(0.999).unwrap().0.to_string(),
+                        ckms.query(0.999).unwrap().1.to_string(),
                     )),
                     _ => None,
                 }
@@ -226,7 +226,7 @@ where
         };
 
         if let MetricType::Timer(ref mut ckms) = metric.mtype {
-            ckms.insert(metric.value.clone());
+            ckms.insert(metric.value);
         };
         // if let MetricType::Set(ref mut set) = metric.mtype {
         //set.insert(metric.value.clone());
