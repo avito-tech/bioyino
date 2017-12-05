@@ -170,3 +170,43 @@ impl Encoder for CarbonCodec {
         Ok(())
     }
 }
+
+/*
+pub struct PeerCodec {
+    inbuf: BytesMut,
+}
+
+impl Decoder for PeerCodec {
+    type Item = ();
+    type Error = Error;
+
+    fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Error> {
+        use bytes::{IntoBuf, Buf};
+        let buf = buf.clone();
+        let deserialized: ::serde_json::Value = ::serde_json::from_reader(buf.into_buf().reader())
+            .unwrap();
+        println!("{:?}", deserialized);
+        return Ok(None);
+    }
+}
+
+impl Encoder for PeerCodec {
+    type Item = (String, Metric<f64>);
+    type Error = Error;
+
+    fn encode(
+        &mut self,
+        (name, metric): Self::Item,
+        buf: &mut BytesMut,
+    ) -> Result<(), Self::Error> {
+        let mut jmap = ::serde_json::Map::new();
+        jmap.insert(name, ::serde_json::to_value(metric).unwrap());
+        let serialized = ::serde_json::to_string(&jmap).expect("deserializing metric");
+        buf.reserve(serialized.len());
+        buf.put(serialized);
+
+        //EGRESS.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+*/

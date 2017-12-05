@@ -11,6 +11,7 @@ use {CACHE, Cache, INGRESS, PARSE_ERRORS, AGG_ERRORS};
 #[derive(Debug)]
 pub enum Task {
     Parse(BytesMut),
+    Snapshot(oneshot::Sender<Cache>),
     Rotate(oneshot::Sender<Cache>),
     //Join(String, Vec<Metric<f64>>, oneshot::Sender<(String, Metric<f64>)>),
     Join(Metric<f64>, Metric<f64>, oneshot::Sender<Metric<f64>>),
@@ -66,6 +67,14 @@ impl Task {
                         }
                     }
                 }
+            }
+            Task::Snapshot(channel) => {
+                CACHE.with(|c| {
+                    let rotated = c.borrow().clone();
+                    channel.send(rotated).unwrap_or_else(|_| {
+                        println!("shapshot not sent");
+                    });
+                });
             }
             Task::Rotate(channel) => {
                 CACHE.with(|c| {

@@ -4,7 +4,7 @@ use std::fmt::{Display, Debug};
 use failure::Error;
 use quantiles::ckms::CKMS;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MetricType<F>
 where
     F: Copy + PartialEq + Debug,
@@ -17,7 +17,7 @@ where
     //    Set(HashSet<MetricValue>),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metric<F>
 where
     F: Copy + PartialEq + Debug,
