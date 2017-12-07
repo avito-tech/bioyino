@@ -2,19 +2,19 @@ use futures::sync::oneshot;
 use metric::Metric;
 
 use parser::metric_parser;
-use bytes::BytesMut;
+use bytes::Bytes;
 use std::collections::hash_map::Entry;
 use combine::primitives::FastResult;
 use std::sync::atomic::Ordering;
-use {CACHE, Cache, INGRESS, PARSE_ERRORS, AGG_ERRORS};
+use {CACHE, Cache, INGRESS_METRICS, PARSE_ERRORS, AGG_ERRORS, DROPS, Float};
 
 #[derive(Debug)]
 pub enum Task {
-    Parse(BytesMut),
+    Parse(Bytes),
     Snapshot(oneshot::Sender<Cache>),
     Rotate(oneshot::Sender<Cache>),
     //Join(String, Vec<Metric<f64>>, oneshot::Sender<(String, Metric<f64>)>),
-    Join(Metric<f64>, Metric<f64>, oneshot::Sender<Metric<f64>>),
+    Join(Metric<Float>, Metric<Float>, oneshot::Sender<Metric<Float>>),
 }
 
 impl Task {
@@ -23,11 +23,11 @@ impl Task {
             Task::Parse(buf) => {
                 let mut input: &[u8] = &buf;
                 let mut size_left = buf.len();
-                let mut parser = metric_parser::<f64>();
+                let mut parser = metric_parser::<Float>();
                 loop {
                     match parser.parse_stream_consumed(&mut input) {
                         FastResult::ConsumedOk(((name, metric), rest)) => {
-                            INGRESS.fetch_add(1, Ordering::Relaxed);
+                            INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
                             size_left -= rest.len();
                             if size_left == 0 {
                                 break;
@@ -51,6 +51,11 @@ impl Task {
                             break;
                         }
                         FastResult::ConsumedErr(_e) => {
+                            //println!(
+                            //"error parsing {:?}: {:?}",
+                            //String::from_utf8(input.to_vec()),
+                            //_e
+                            //);
                             PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
                             // try to skip bad metric taking all bytes before \n
                             match input.iter().position(|&c| c == 10u8) {
@@ -81,7 +86,8 @@ impl Task {
                     let rotated = c.borrow().clone();
                     c.borrow_mut().clear();
                     channel.send(rotated).unwrap_or_else(|_| {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        println!("rotated data not sent");
+                        DROPS.fetch_add(1, Ordering::Relaxed);
                     });
                 });
             }
@@ -90,7 +96,7 @@ impl Task {
                     AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
                 });
                 channel.send(metric1).unwrap_or_else(|_| {
-                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    DROPS.fetch_add(1, Ordering::Relaxed);
                 });
             }
         }
