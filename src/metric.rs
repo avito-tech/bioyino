@@ -1,8 +1,8 @@
 //use errors::*;
-use std::ops::{Add, Sub, AddAssign, SubAssign, Div};
+use std::ops::{Add, Sub, AddAssign, SubAssign, Div, Mul};
 use std::fmt::{Display, Debug};
 use failure::Error;
-use quantiles::ckms::CKMS;
+//use quantiles::ckms::CKMS;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MetricType<F>
@@ -11,7 +11,8 @@ where
 {
     Counter,
     DiffCounter(F),
-    Timer(CKMS<F>),
+    //Timer(CKMS<F>),
+    Timer(Vec<F>),
     //    Histogram,
     Gauge(Option<i8>),
     //    Set(HashSet<MetricValue>),
@@ -47,6 +48,7 @@ where
         + Sub<Output = F>
         + SubAssign
         + Div<Output = F>
+        + Mul<Output = F>
         + Clone
         + Copy
         + PartialOrd
@@ -70,6 +72,7 @@ where
         + Sub<Output = F>
         + SubAssign
         + Div<Output = F>
+        + Mul<Output = F>
         + Clone
         + Copy
         + PartialOrd
@@ -80,6 +83,8 @@ where
 {
     m: Metric<F>,
     count: usize,
+    // cached sum to avoid recounting
+    timer_sum: Option<F>,
 }
 
 impl<F> MetricIter<F>
@@ -90,6 +95,7 @@ where
         + Sub<Output = F>
         + SubAssign
         + Div<Output = F>
+        + Mul<Output = F>
         + Clone
         + Copy
         + PartialOrd
@@ -98,10 +104,18 @@ where
         + Display
         + ToString,
 {
-    fn new(metric: Metric<F>) -> Self {
+    fn new(mut metric: Metric<F>) -> Self {
+        let sum = if let MetricType::Timer(ref mut agg) = metric.mtype {
+            agg.sort_unstable_by(|ref v1, ref v2| v1.partial_cmp(v2).unwrap());
+            let first = agg.first().unwrap();
+            Some(agg.iter().skip(1).fold(*first, |acc, &v| acc + v))
+        } else {
+            None
+        };
         MetricIter {
             m: metric,
             count: 0,
+            timer_sum: sum,
         }
     }
 }
@@ -113,6 +127,7 @@ where
         + Sub<Output = F>
         + SubAssign
         + Div<Output = F>
+        + Mul<Output = F>
         + Clone
         + Copy
         + PartialOrd
@@ -128,29 +143,35 @@ where
             &MetricType::Counter if self.count == 0 => Some(("", self.m.value.to_string())),
             &MetricType::DiffCounter(_) if self.count == 0 => Some(("", self.m.value.to_string())),
             &MetricType::Gauge(_) if self.count == 0 => Some(("", self.m.value.to_string())),
-            &MetricType::Timer(ref ckms) => {
+            &MetricType::Timer(ref agg) => {
                 // it is safe to unwrap query here because it only fails when len = 0
                 // for us zero length is impossible, because metric wouldn't exist in this case
                 match self.count {
                     0 => Some(("", self.m.value.to_string())),
-                    1 => Some((".count", ckms.count().to_string())),
-                    2 => Some((".min", ckms.query(0f64).unwrap().1.to_string())),
-                    3 => Some((".max", ckms.query(1f64).unwrap().1.to_string())),
-                    4 => Some((".sum", ckms.sum().unwrap().to_string())),
-                    5 => Some((".mean", ckms.query(0.5).unwrap().1.to_string())),
+                    //1 => Some((".count", ckms.count().to_string())),
+                    1 => Some((".count", agg.len().to_string())),
+                    //2 => Some((".min", ckms.query(0f64).unwrap().1.to_string())),
+                    2 => Some((".min", agg[0].to_string())),
+                    //3 => Some((".max", ckms.query(1f64).unwrap().1.to_string())),
+                    3 => Some((".max", agg[agg.len() - 1].to_string())),
+                    //4 => Some((".sum", ckms.sum().unwrap().to_string())),
+                    4 => Some((".sum", self.timer_sum.unwrap().to_string())),
+                    //5 => Some((".median", ckms.query(0.5f64).unwrap().1.to_string())),
+                    5 => Some((".median", percentile(agg, 0.5).to_string())),
                     6 => Some((
-                        ".median",
-                        (ckms.sum().unwrap().into() / ckms.count() as f64)
+                        ".mean",
+                        (self.timer_sum.unwrap().into() / agg.len() as f64)
                             .to_string(),
                     )),
-                    7 => Some((".percentile.75", ckms.query(0.75).unwrap().1.to_string())),
-                    8 => Some((".percentile.95", ckms.query(0.95).unwrap().1.to_string())),
-                    9 => Some((".percentile.98", ckms.query(0.98).unwrap().1.to_string())),
-                    10 => Some((".percentile.99", ckms.query(0.99).unwrap().1.to_string())),
-                    11 => Some((
-                        ".percentile.999",
-                        ckms.query(0.999).unwrap().1.to_string(),
-                    )),
+                    //7 => Some((
+                    //".percentile.75",
+                    //ckms.query(0.75f64).unwrap().1.to_string(),
+                    //        )),
+                    7 => Some((".percentile.75", percentile(agg, 0.75).to_string())),
+                    8 => Some((".percentile.95", percentile(agg, 0.95).to_string())),
+                    9 => Some((".percentile.98", percentile(agg, 0.98).to_string())),
+                    10 => Some((".percentile.99", percentile(agg, 0.99).to_string())),
+                    11 => Some((".percentile.999", percentile(agg, 0.999).to_string())),
                     _ => None,
                 }
             }
@@ -160,48 +181,6 @@ where
         res
     }
 }
-//impl<F> Metric<F> {
-//pub fn flush(&mut self) -> SmallVec<[(&'static str, f64); 32]> {
-//use self::MetricType::*;
-//let mut res = SmallVec::new();
-//match &mut self.mtype {
-//&mut Counter => res.push(("", self.value.clone())),
-//&mut Gauge(_) => res.push(("", self.value.clone())),
-//&mut Timer(ref mut vec) => {
-//let len = vec.len();
-//if len < 2 {
-//res.push(("", self.value.clone()));
-//} else {
-////vec.sort_unstable();
-//res.push((".count", len as f64));
-////res.push((".min", *vec.iter().min().unwrap()));
-//// TODO res.push((".max", *vec.iter().max().unwrap()));
-
-//let sum = vec.iter().fold(0f64, |acc, x| acc + x);
-
-//res.push((".sum", sum));
-//res.push((".mean", sum / len as f64));
-
-//let median = if len % 2 == 1 {
-//vec[len / 2 as usize].clone()
-//} else {
-//(vec[len / 2 as usize - 1].clone() + vec[len / 2 as usize].clone()) / 2f64
-//};
-
-//res.push((".median", median));
-//res.push((".percentile.75", Percentile::<f64>::count(&vec, 0.75)));
-//// res.push((".percentile.95", Percentile(&vec, 0.95)));
-////res.push((".percentile.98", percentile(&vec, 0.98)));
-////res.push((".percentile.99", percentile(&vec, 0.99)));
-//// res.push((".percentile.999", percentile(&vec, 0.999)));
-//}
-//}
-////&mut Set(ref mut vec) => {
-////}
-//};
-//res
-//}
-//}
 
 impl<F> Metric<F>
 where
@@ -211,6 +190,7 @@ where
         + SubAssign
         + Clone
         + Div<Output = F>
+        + Mul<Output = F>
         + PartialOrd
         + PartialEq
         + Into<f64>
@@ -225,8 +205,9 @@ where
             sampling: sampling,
         };
 
-        if let MetricType::Timer(ref mut ckms) = metric.mtype {
-            ckms.insert(metric.value);
+        if let MetricType::Timer(ref mut agg) = metric.mtype {
+            // ckms.insert(metric.value);
+            agg.push(metric.value)
         };
         // if let MetricType::Set(ref mut set) = metric.mtype {
         //set.insert(metric.value.clone());
@@ -265,10 +246,14 @@ where
             (&mut Gauge(_), Gauge(Some(_))) => {
                 return Err(MetricError::Aggregating.into());
             }
-            (&mut Timer(ref mut ckms), Timer(ref ckms2)) => {
+            (&mut Timer(ref mut agg), Timer(ref mut agg2)) => {
                 self.value = new.value;
-                ckms.add_assign(ckms2.clone());
+                agg.append(agg2);
             }
+            //            (&mut Timer(ref mut ckms), Timer(ref ckms2)) => {
+            //self.value = new.value;
+            //ckms.add_assign(ckms2.clone());
+            //}
             //(&mut Set(ref mut set), Set(_)) => {
             //    set.insert(new.value);
             //}
@@ -280,32 +265,37 @@ where
     }
 }
 
-/*
-pub struct Percentile<F>(F);
-
-impl Percentile<f64> {
-    // Percentile counter. Not safe. Requires at least two elements in vector
-    // vector must be sorted
-    pub fn count(vec: &TimerVec<f64>, nth: f32) -> f64 {
-        let len = vec.len() as f32;
-        if vec.len() == 1 {
-            return vec[0];
-        }
-
-        let k: f32 = nth * (len - 1f32);
-        let f = k.floor();
-        let c = k.ceil();
-
-        if c == f {
-            return vec[k as usize];
-        }
-
-        let m0 = c - k;
-        let m1 = k - f;
-        let d0 = vec[f as usize] * m0 as f64;
-        let d1 = vec[c as usize] * m1 as f64;
-        let res = d0 + d1;
-        res
+// Percentile counter. Not safe. Requires at least two elements in vector
+// vector must be sorted
+pub fn percentile<F>(vec: &Vec<F>, nth: f64) -> f64
+where
+    F: Into<f64> + Clone,
+{
+    let last = (vec.len() - 1) as f64;
+    if last == 0f64 {
+        return vec[0].clone().into();
     }
+
+    let k: f64 = nth * last;
+    let f = k.floor();
+    let c = k.ceil();
+
+    if c == f {
+        // exact nth percentile have been found
+        return vec[k as usize].clone().into();
+    }
+
+    let m0 = c - k;
+    let m1 = k - f;
+    let d0 = vec[f as usize].clone().into() * m0;
+    let d1 = vec[c as usize].clone().into() * m1;
+    let res = d0 + d1;
+    res
 }
-*/
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use EPSILON;
+
+}

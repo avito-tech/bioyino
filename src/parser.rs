@@ -1,5 +1,5 @@
 use metric::{Metric, MetricType};
-use std::ops::{Add, Sub, AddAssign, SubAssign, Div};
+use std::ops::{Add, Sub, AddAssign, SubAssign, Div, Mul};
 use std::fmt::Debug;
 use std::str::from_utf8;
 use std::str::FromStr;
@@ -7,8 +7,8 @@ use combine::{Parser, optional};
 use combine::byte::{byte, bytes, newline};
 use combine::range::{take_while1, take_while};
 use combine::combinator::{eof, skip_many};
-use quantiles::ckms::CKMS;
-use EPSILON;
+//use quantiles::ckms::CKMS;
+//use quantiles::greenwald_khanna::Stream as GK;
 
 use failure::{Compat, ResultExt};
 
@@ -33,6 +33,7 @@ where
         + Sub<Output = F>
         + SubAssign
         + Div<Output = F>
+        + Mul<Output = F>
         + PartialOrd
         + Into<f64>
         + Debug
@@ -67,7 +68,8 @@ where
 
     // This parses metric type
     let mtype = bytes(b"ms")
-        .map(|_| MetricType::Timer(CKMS::<F>::new(EPSILON)))
+        //.map(|_| MetricType::Timer(CKMS::<F>::new(EPSILON)))
+        .map(|_| MetricType::Timer(Vec::<F>::new()))
         .or(byte(b'g').map(|_| MetricType::Gauge(None)))
         .or(byte(b'C').map(|_| MetricType::DiffCounter(F::default())))
         .or(byte(b'c').map(|_| MetricType::Counter))

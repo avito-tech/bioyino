@@ -37,42 +37,42 @@ pub mod codec;
 pub mod bigint;
 pub mod task;
 
-use serde_json::{Value, from_slice};
+use std::collections::HashMap;
 use std::time::{self, Duration, SystemTime};
 use std::thread;
 use std::net::{SocketAddr, IpAddr};
+use std::cell::RefCell;
+use std::sync::{Arc,Mutex};
+use std::sync::atomic::{ATOMIC_USIZE_INIT, AtomicUsize, Ordering};
 
+use failure::Fail;
 use structopt::StructOpt;
 
+use bytes::BytesMut;
 use futures::{Stream, Future, Sink, empty, IntoFuture};
-use futures::future::join_all;
+use futures::future::{join_all, Loop, loop_fn, ok, lazy, Executor};
+use futures::sync::oneshot;
 use tokio_core::reactor::{Core, Interval};
 use tokio_core::net::{UdpSocket, TcpStream};
 use tokio_io::AsyncRead;
-
 use tokio_io::codec::length_delimited;
+
 use resolve::resolver;
 use net2::UdpBuilder;
 use net2::unix::UnixUdpBuilderExt;
 
+use hyper::header::{ContentType, ContentLength};
+use serde_json::{Value, from_slice};
+
 use errors::GeneralError;
 use metric::Metric;
 use codec::{StatsdServer, CarbonCodec};
-use failure::Fail;
-use std::collections::HashMap;
-use futures::sync::oneshot;
-use bytes::BytesMut;
-use futures::future::Executor;
-
 use task::Task;
-use std::cell::RefCell;
-use std::sync::{Arc,Mutex};
 
 pub type Float = f64;
 pub type Cache = HashMap<String, Metric<Float>>;
 thread_local!(static CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 
-use std::sync::atomic::{ATOMIC_USIZE_INIT, AtomicUsize, Ordering};
 pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static INGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -80,7 +80,7 @@ pub static INGRESS_METRICS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
 
-pub const EPSILON: f64 = 0.1;
+pub const EPSILON: f64 = 0.01;
 pub const KEY: &'static str = "service/bioyino/lock";
 
 pub fn try_resolve(s: &str) -> SocketAddr {
@@ -228,8 +228,6 @@ fn main() {
             .name(format!("bioyino_cnt{}", i).into())
             .spawn(move || {
                 let mut core = Core::new().unwrap();
-
-                use futures::future::{ok,lazy};
                 let future = rx.for_each(move |task: Task|{
                     lazy(|| ok(
                             task.run()
@@ -318,7 +316,6 @@ fn main() {
     handle.spawn(snapshot_server.then(|e|{println!("shot server gone: {:?}", e); Ok(())}));
     if nodes.len() > 0 {
         // create HTTP client for consul agent leader
-        use hyper::header::ContentType;
         let consul = ::hyper::Client::new(&handle);
         let mut session_req = ::hyper::Request::new(
             ::hyper::Method::Put,
@@ -327,7 +324,8 @@ fn main() {
 
         let b = "{\"TTL\": \"11s\", \"LockDelay\": \"11s\"}";
         session_req.set_body(b);
-        session_req.headers_mut().set(::hyper::header::ContentLength(b.len() as u64));
+        // Override sending request as multipart
+        session_req.headers_mut().set(ContentLength(b.len() as u64));
         session_req.headers_mut().set(ContentType::form_url_encoded());
         let shandle = handle.clone();
 
@@ -361,7 +359,7 @@ fn main() {
                         );
                     let b = "{\"TTL\": \"11s\"";
                     renew_req.set_body(b);
-                    renew_req.headers_mut().set(::hyper::header::ContentLength(b.len() as u64));
+                    renew_req.headers_mut().set(ContentLength(b.len() as u64));
                     renew_req.headers_mut().set(ContentType::form_url_encoded());
 
                     let renew_client = ::hyper::Client::new(&shandle);
@@ -482,7 +480,6 @@ fn main() {
                                 .filter(|&(_, ref m)| m.len() > 0)
                                 .enumerate()
                                 .map(move |(start, (name, mut metricvec))| {
-                                    use futures::future::{Loop, loop_fn, ok};
                                     let first = metricvec.pop().unwrap(); // zero sized vectors were filtered out before
                                     let chans = tchans.clone();
                                     // future-based fold-like
@@ -614,6 +611,7 @@ fn main() {
             }).expect("creating UDP reader thread");
     }
 
+    // TODO: this is too dirty
     drop(sockets);
 
     use std::os::unix::io::AsRawFd;
@@ -630,7 +628,7 @@ fn main() {
             .name(format!("bioyino_mudp{}", i).into())
             .spawn(move || {
                 let messages = msize;
-                { // this limits `use::libc::*` scope
+                { // <--- this limits `use::libc::*` scope
                     use std::ptr::{null_mut};
                     use libc::*;
 
