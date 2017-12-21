@@ -261,7 +261,7 @@ impl IntoFuture for PeerServer {
                         }
                     })
                 .forward(writer)
-                    .map(|_| ())
+                    .then(|_| Ok(())) // don't let send errors fail the server
             });
         Box::new(future)
     }
