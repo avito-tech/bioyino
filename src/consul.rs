@@ -13,33 +13,33 @@ use {IS_LEADER, CAN_LEADER, FORCE_LEADER};
 
 #[derive(Fail, Debug)]
 pub enum ConsulError {
-    #[fail(display = "session create error")]
+    #[fail(display = "session create error: {}", _0)]
     Session(String),
 
-    #[fail(display = "server responded with bad status code")]
+    #[fail(display = "server responded with bad status code '{}': {}", _0, _1)]
     HttpStatus(hyper::StatusCode, String),
 
     #[fail(display = "agent connection timed out")]
     ConnectionTimeout,
 
-    #[fail(display = "Http error")]
+    #[fail(display = "Http error: {}", _0)]
     Http(
         #[cause]
         hyper::Error
     ),
 
-    #[fail(display = "Parsing response")]
+    #[fail(display = "Parsing response: {}", _0)]
     Parsing(
         #[cause]
         serde_json::Error
     ),
-    #[fail(display = "I/O error")]
+    #[fail(display = "I/O error {}", _0)]
     Io(
         #[cause]
         ::std::io::Error
     ),
 
-    #[fail(display = "session renew")]
+    #[fail(display = "{}", _0)]
     Renew(String),
 }
 
