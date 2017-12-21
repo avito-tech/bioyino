@@ -5,8 +5,8 @@ authors = ["Sergey Noskov <snoskov@avito.ru>"]
 
 [dependencies]
 clap="^2.24"
-structopt="^0.0"
-structopt-derive="^0.0"
+structopt="^0.1"
+structopt-derive="^0.1"
 itertools="^0.7"
 futures="^0.1"
 tokio-core="^0.1"
@@ -19,10 +19,10 @@ num="^0.1"
 combine="^2.5"
 failure="^0.1"
 failure_derive="^0.1"
-quantiles={version = "^0.6", features=["serde_support"]}
 futures-cpupool="^0.1"
 libc="^0.2"
 hyper="^0.11"
 serde_json="^1.0"
+bincode="^0.9"
 serde_derive="^1.0"
 serde="^1.0"

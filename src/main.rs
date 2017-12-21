@@ -10,6 +10,7 @@ extern crate structopt_derive;
 extern crate structopt;
 
 // Network
+#[macro_use]
 extern crate futures;
 extern crate tokio_core;
 extern crate tokio_io;
@@ -24,11 +25,11 @@ extern crate hyper;
 extern crate itertools;
 extern crate combine;
 extern crate num;
-extern crate quantiles;
 extern crate serde_json;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
+extern crate bincode;
 
 pub mod parser;
 pub mod errors;
@@ -36,14 +37,15 @@ pub mod metric;
 pub mod codec;
 pub mod bigint;
 pub mod task;
+pub mod consul;
+pub mod peer;
 
 use std::collections::HashMap;
 use std::time::{self, Duration, SystemTime};
 use std::thread;
-use std::net::{SocketAddr, IpAddr};
+use std::net::{SocketAddr};
 use std::cell::RefCell;
-use std::sync::{Arc,Mutex};
-use std::sync::atomic::{ATOMIC_USIZE_INIT, AtomicUsize, Ordering};
+use std::sync::atomic::{ATOMIC_USIZE_INIT, ATOMIC_BOOL_INIT, AtomicUsize, AtomicBool, Ordering};
 
 use failure::Fail;
 use structopt::StructOpt;
@@ -55,23 +57,23 @@ use futures::sync::oneshot;
 use tokio_core::reactor::{Core, Interval};
 use tokio_core::net::{UdpSocket, TcpStream};
 use tokio_io::AsyncRead;
-use tokio_io::codec::length_delimited;
 
 use resolve::resolver;
 use net2::UdpBuilder;
 use net2::unix::UnixUdpBuilderExt;
 
-use hyper::header::{ContentType, ContentLength};
-use serde_json::{Value, from_slice};
-
 use errors::GeneralError;
 use metric::Metric;
 use codec::{StatsdServer, CarbonCodec};
+use consul::{ConsulConsensus};
+use peer::{PeerServer, PeerSnapshotClient, PeerCommand, PeerCommandClient};
+
 use task::Task;
 
 pub type Float = f64;
 pub type Cache = HashMap<String, Metric<Float>>;
-thread_local!(static CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
+thread_local!(static LONG_CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
+thread_local!(static SHORT_CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 
 pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -81,7 +83,9 @@ pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
 
 pub const EPSILON: f64 = 0.01;
-pub const KEY: &'static str = "service/bioyino/lock";
+pub static CAN_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
+pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
+pub static FORCE_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
 
 pub fn try_resolve(s: &str) -> SocketAddr {
     s.parse().unwrap_or_else(|_| {
@@ -99,16 +103,18 @@ pub fn try_resolve(s: &str) -> SocketAddr {
     })
 }
 
-#[derive(StructOpt, Debug)]
+#[derive(StructOpt, Debug, Serialize, Deserialize)]
 #[structopt(about = "StatsD-compatible async metric aggregator")]
 struct Options {
-    #[structopt(short = "l", long = "listen", help = "Address and port to listen to")]
+    #[structopt(short = "l", long = "listen", default_value="127.0.0.1:8125")]
+    /// Address and UDP port to listen for statsd metrics on
     listen: SocketAddr,
 
-    #[structopt(short = "P", long = "peer-listen", help = "Address and port to listen for snapshot requests", default_value="127.0.0.1:8136")]
+    #[structopt(short = "L", long = "peer-listen", default_value="127.0.0.1:8136")]
+    /// Address and port for replication server to listen on
     peer_listen: SocketAddr,
 
-    #[structopt( short = "b", long = "backend", help = "IP and port of a backend to send aggregated data to.", value_name = "IP:PORT")]
+    #[structopt( short = "b", long = "backend", help = "IP and port of a backend to send aggregated data to.", value_name = "IP:PORT", default_value="127.0.0.1:2003")]
     backend: String,
 
     //#[structopt(short = "n", long = "nthreads", help = "Number of network worker threads, use 0 to use all CPU cores, use any negative to use none", default_value = "4")]
@@ -121,13 +127,16 @@ struct Options {
     #[structopt(short = "M", long = "msize", help = "multimessage packets at once", default_value = "1000")]
     msize: usize,
 
-    #[structopt(short = "c", long = "cthreads", help = "Number of counting threads, use 0 to use all CPU cores", default_value = "4")]
+    #[structopt(short = "c", long = "cthreads", default_value = "4")]
+    /// Number of aggregating threads, set to 0 to use all CPU cores
     cthreads: usize,
 
-    #[structopt(short = "p", long = "pool", help = "Socket pool size", default_value = "4")]
+    #[structopt(short = "p", long = "pool", default_value = "4")]
+    /// Socket pool size
     snum: usize,
 
-    #[structopt(short = "g", long = "greens", help = "Number of green threads per worker hread", default_value = "4")]
+    #[structopt(short = "g", long = "greens", default_value = "4")]
+    /// Number of green threads per worker thread
     greens: usize,
 
     #[structopt(short = "i", long = "s-interval", help = "How often send metrics to Graphite", default_value = "30000")]
@@ -136,18 +145,35 @@ struct Options {
     #[structopt(short = "s", long = "interval", help = "How often to gather own stats", default_value = "5000")]
     s_interval: Option<u64>,
 
-    // default = standard ethernet MTU + a little
-    #[structopt(short = "B", long = "bufsize", help = "buffer size for single packet", default_value = "1500")]
+    #[structopt(short = "B", long = "bufsize", default_value = "1500")]
+    /// UDP buffer size for single packet. Needs to be around MTU.
     bufsize: usize,
 
-    #[structopt(short = "q", long = "task-queue-size", help = "queue size for tasks on single counting thread", default_value = "2048")]
+    #[structopt(short = "q", long = "task-queue-size", default_value = "2048")]
+    /// task queue size for single counting thread
     task_queue_size: usize,
 
-    #[structopt(short = "A", long = "agent", help = "Consul agent address", default_value = "127.0.0.1:8500")]
+    #[structopt(short = "A", long = "agent", default_value = "127.0.0.1:8500")]
+    /// Consul agent address
     agent: SocketAddr,
 
-    #[structopt(long = "nodes", help = "List of foreign nodes")]
+    #[structopt(long = "consul-session-ttl", default_value = "11000")]
+    /// TTL of consul session, ms (min 10s)
+    consul_session_ttl: usize,
+
+    #[structopt(long = "consul-renew-time", default_value = "1000")]
+    /// How often to renew consul session, ms (min 10s)
+    consul_renew_time: usize,
+
+    #[structopt(long = "nodes")]
+    /// List of nodes to replicate metrics to
     nodes: Vec<SocketAddr>,
+
+    #[structopt(short = "t", long = "snapshot-interval", help = "Snapshot sending interval, ms", default_value = "1000")]
+    snapshot_interval: usize,
+
+    #[structopt(short = "Q", long = "query", help = "Connect to server wiht a query")]
+    query: Option<PeerCommand>,
 
     //#[structopt(short = "P", long = "stats-prefix", help = "Prefix to add to own metrics", default_value=".brubers")]
     //stats_prefix: String,
@@ -169,7 +195,11 @@ fn main() {
         bufsize,
         task_queue_size,
         agent,
-        nodes
+        consul_session_ttl,
+        consul_renew_time,
+        nodes,
+        snapshot_interval,
+        query,
     } = Options::from_args();
 
     let nthreads = if nthreads == 0 {
@@ -196,6 +226,12 @@ fn main() {
     let backend_addr = try_resolve(&backend);
 
     let s_interval = s_interval.unwrap() as f64 / 1000f64;
+
+    if let Some(command) = query {
+        let command = PeerCommandClient::new(peer_listen, &handle, command);
+        core.run(command.into_future()).unwrap();
+        return
+    }
 
     std::thread::spawn(move ||{
         let mut core = Core::new().unwrap();
@@ -237,183 +273,35 @@ fn main() {
             }).expect("starting counting worker thread");
     }
 
-    let is_leader = Arc::new(Mutex::new(false));
-
     for node in nodes.iter().cloned() {
         let tchans = chans.clone();
         let shandle = handle.clone();
-        // Create periodic metric sender
-        // TODO probably change this to send everything on signel timer
-        let snapshot_timer = Interval::new(Duration::from_millis(5000), &handle).unwrap();
-
-        let snapshot = snapshot_timer
-            .map_err(|e| GeneralError::Io(e))
-            .for_each(move |()| {
-                let handle = shandle.clone();
-                let tchans = tchans.clone();
-                let metrics = tchans.clone().into_iter().map(|chan| {
-                    let (tx, rx) = oneshot::channel();
-                    shandle.spawn(chan.send(Task::Snapshot(tx)).then(|_|Ok(())));
-                    rx
-                        .map_err(|_|GeneralError::FutureSend)
-                })
-                .collect::<Vec<_>>();
-                let future = join_all(metrics).and_then(move |mut metrics|{
-                    metrics.retain(|m|m.len() > 0);
-                    Ok(metrics)
-                });
-
-                TcpStream::connect(&node, &handle)
-                    .map_err(|e|GeneralError::Io(e))
-                    // waitt for both: all results from all channels and tcp connection to be ready
-                    .join(future
-                          .map_err(|_|GeneralError::FutureSend.into()))
-                    // waitt for both: all results from all channels and tcp connection to be ready
-                    .and_then(move |(conn, metrics)| {
-                        let serialized = ::serde_json::to_string(&metrics).expect("deserializing metric");
-                        let writer = length_delimited::Builder::new()
-                            .length_field_length(4)
-                            .new_write(conn);
-
-                        writer.send(serialized)
-                            .map_err(|e|GeneralError::Io(e))
-                    })
-                .then(|e|{ if e.is_err() {println!("shot send error: {:?}", e)}; Ok(())})
+        let snapshot = PeerSnapshotClient::new(node.clone(), Duration::from_millis(snapshot_interval as u64), &shandle, &tchans)
+            .into_future()
+            .map_err(|e| {
+                //println!("error sending snapshot to {:?}: {:?}", node, e);
+                println!("error sending snapshot: {:?}", e);
             });
-
-        handle.spawn(snapshot.then(|_|Ok(())));
+        handle.spawn(snapshot);
     }
 
-    let snapshots = Arc::new(Mutex::new(HashMap::<IpAddr, Vec<Cache>>::with_capacity(nodes.len())));
-
-    let shots = snapshots.clone();
-    let snapshot_server = ::tokio_core::net::TcpListener::bind(&peer_listen,&handle)
-        .expect("listening peer port")
-        .incoming()
-        .map_err(|_|())
-        .for_each(move |(conn, inaddr)| {
-            let reader = length_delimited::Builder::new()
-                .length_field_length(4)
-                .new_read(conn)
-                .map_err(|e|GeneralError::Io(e));
-
-            let ip = inaddr.ip();
-            let shots = shots.clone();
-            reader.for_each(move |m|{
-                // TODO we don't really need serialization here until we decide to send metrics
-                match ::serde_json::from_slice(&m) {
-                    Ok(shot) => {
-                        let mut shots = shots.lock().unwrap();
-                        shots.insert(ip.clone(), shot);  // TODO: ignore err;  replacing previous shapshot is ok
-                    }
-                    Err(e) => println!("error parsing snapshot: {:?}", e),
-                };
-                Ok(())
-            })
-            .then(|e|{if e.is_err() {println!("shot server recv error: {:?}", e)};Ok(())})
-        });
-
-    handle.spawn(snapshot_server.then(|e|{println!("shot server gone: {:?}", e); Ok(())}));
+    let peer_server = PeerServer::new(peer_listen, &handle, &chans, &nodes);
+    // TODO restart server after error
+    handle.spawn(peer_server
+                 .into_future()
+                 .then(|e|{println!("shot server gone with error: {:?}", e); Ok(())}));
+    // TODO (maybe) change to option, not-depending on number of nodes
     if nodes.len() > 0 {
-        // create HTTP client for consul agent leader
-        let consul = ::hyper::Client::new(&handle);
-        let mut session_req = ::hyper::Request::new(
-            ::hyper::Method::Put,
-            format!("http://{}/v1/session/create", agent).parse().expect("bad session create url")
-            );
-
-        let b = "{\"TTL\": \"11s\", \"LockDelay\": \"11s\"}";
-        session_req.set_body(b);
-        // Override sending request as multipart
-        session_req.headers_mut().set(ContentLength(b.len() as u64));
-        session_req.headers_mut().set(ContentType::form_url_encoded());
-        let shandle = handle.clone();
-
-        let ses_is_leader = is_leader.clone();
-        let c_session = consul
-            .request(session_req)
-            .and_then(move |resp|{
-                resp.body().concat2().and_then(move |body|{
-                    let resp: Value = from_slice(&body).expect("parsing consul request");
-                    println!("Session: {:?}", resp.as_object().unwrap().get("ID").unwrap().as_str().unwrap());
-                    Ok(resp.as_object().unwrap().get("ID").unwrap().as_str().unwrap().to_string())
-                })
-            })
-        .map_err(|e|{
-            println!("session creation error: {:?}", e);
-            e
-        })
-        .and_then(move |sid|{
-            let is_leader = ses_is_leader.clone();
-            let handle = shandle.clone();
-            // Create session renew future to refresh session every 4 sec
-            let s_renew_timer = Interval::new(Duration::from_millis(4000), &handle).unwrap();
-            let shandle = handle.clone();
-            let sid1 = sid.clone();
-            let session_renew = s_renew_timer
-                .map_err(|_|())
-                .for_each(move |_| {
-                    let mut renew_req = ::hyper::Request::new(
-                        ::hyper::Method::Put,
-                        format!("http://{}/v1/session/renew/{}", agent, sid1).parse().expect("bad session renew url")
-                        );
-                    let b = "{\"TTL\": \"11s\"";
-                    renew_req.set_body(b);
-                    renew_req.headers_mut().set(ContentLength(b.len() as u64));
-                    renew_req.headers_mut().set(ContentType::form_url_encoded());
-
-                    let renew_client = ::hyper::Client::new(&shandle);
-                    renew_client.request(renew_req)
-                        .and_then(move |resp|{
-                            if resp.status() != hyper::StatusCode::Ok {
-                                let status = resp.status().clone();
-                                let body = resp.body().concat2().wait().expect("decode body");
-                                println!("renew error: {:?} {:?}", status, String::from_utf8(body.to_vec()));
-                            };
-                            Ok(())
-                        }).map_err(|e|{println!("session renew error: {:?}", e);()})
-                });
-
-            handle.spawn(session_renew.then(|res|{if res.is_err() {println!("renew error: {:?}", res)}; Ok(())}));
-            // create key acquire future
-            let shandle = handle.clone();
-            let acquire_timer = Interval::new(Duration::from_millis(5000), &handle).unwrap();
-            let acquire = acquire_timer
-                .map_err(|_|())
-                .for_each(move |_| {
-
-                    let is_leader = is_leader.clone();
-                    let req = ::hyper::Request::new(
-                        ::hyper::Method::Put,
-                        format!("http://{}/v1/kv/{}/?acquire={}", agent, KEY, sid).parse().expect("bad key acquire url")
-                        );
-
-                    let acquire_client = ::hyper::Client::new(&shandle);
-                    acquire_client.request(req).and_then(move |resp|{
-                        resp.body().concat2().and_then(move |body|{
-                            let resp: Value = from_slice(&body).expect("parsing consul request");
-                            let acquired = resp.as_bool().unwrap();
-                            {
-                                let mut is_leader = is_leader.lock().unwrap();
-                                if *is_leader != acquired {
-                                    println!("Leader state change: {} -> {}", *is_leader,  acquired);
-                                }
-                                *is_leader = acquired;
-                            }
-                            Ok(())
-                        })
-                    })
-                    .map_err(|e|{println!("consul acquire error: {:?}", e);()})
-                });
-
-            handle.spawn(acquire.map_err(|e|{println!("consul acquire error: {:?}", e);()}));
-            Ok(())
-        });
-
-        handle.spawn(c_session.map_err(|e|{println!("consul session error: {:?}", e);()}));
+        CAN_LEADER.store(true, Ordering::SeqCst);
+        let mut consensus = ConsulConsensus::new(
+            agent,
+            &handle);
+        consensus.set_session_ttl(Duration::from_millis(consul_session_ttl as u64));
+        consensus.set_renew_time(Duration::from_millis(consul_renew_time as u64));
+        handle.spawn(consensus.into_future().then(|_|Ok(())));
     } else {
-        let mut is_leader = is_leader.lock().unwrap();
-        *is_leader = true;
+        IS_LEADER.store(true, Ordering::SeqCst);
+        CAN_LEADER.store(false, Ordering::SeqCst);
     }
 
     let tchans = chans.clone();
@@ -426,10 +314,6 @@ fn main() {
 
             let addr = backend_addr.clone();
             let tchans = tchans.clone();
-
-            let shots = snapshots.clone();
-
-            let is_leader = is_leader.clone();
             thread::Builder::new()
                 .name("bioyino_carbon".into())
                 .spawn(move ||{
@@ -443,12 +327,12 @@ fn main() {
                             .map_err(|_|GeneralError::FutureSend)
                     })
                     .collect::<Vec<_>>();
-                    let is_leader = is_leader.lock().unwrap();
-                    if *is_leader {
+                    let is_leader = IS_LEADER.load(Ordering::SeqCst);
+                    if is_leader {
                         println!("Leader sending metrics");
                         let future = join_all(metrics).and_then(move |metrics|{
                             // Join all metrics into hashmap by only pushing everything to vector
-                            let mut metrics = metrics
+                            let metrics = metrics
                                 .into_iter()
                                 .filter(|m|m.len() > 0)
                                 .fold(HashMap::new(), |mut acc, m|{
@@ -460,20 +344,6 @@ fn main() {
                                     acc
                                 });
 
-                            let mut shots = shots.lock().unwrap();
-                            shots.drain()
-                                .map(|(_, mut shot_maps)|{ // each shot contains vector of hashmaps
-                                    let len = shot_maps.len();
-                                    shot_maps
-                                        .drain(0..len) // drain the vector getting hashmaps
-                                        .map(|map|{
-                                            map.into_iter()
-                                                .map(|(name, metric)|{
-                                                    let entry = metrics.entry(name).or_insert(Vec::new());
-                                                    entry.push(metric.clone());
-                                                }).last()
-                                        }).last()
-                                }).last();
                             // now a difficult part: send every metric to
                             // be aggregated on a separate worker
                             let future = metrics.into_iter()
@@ -523,14 +393,7 @@ fn main() {
                                     .map(move |conn| (conn, metrics))
                             })
                         .map_err(|e|e.compat().into())
-                            // waitt for both: all results from all channels and tcp connection to be ready
-
-                            /*
-                               TcpStream::connect(&addr, &handle)
-                               .map_err(|e|e.compat().into())
-                            // waitt for both: all results from all channels and tcp connection to be ready
-                            .join(future.map_err(|e|e.compat().into()))
-                            */
+                            // wait for both: all results from all channels and tcp connection to be ready
                             .and_then(move |(conn, metrics)| {
                                 let writer = conn.framed(CarbonCodec);
                                 let aggregated = metrics.into_iter().flat_map(move |(name, value)|{
