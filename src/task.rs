@@ -6,12 +6,13 @@ use bytes::Bytes;
 use std::collections::hash_map::Entry;
 use combine::primitives::FastResult;
 use std::sync::atomic::Ordering;
-use {CACHE, Cache, INGRESS_METRICS, PARSE_ERRORS, AGG_ERRORS, DROPS, Float};
+use {SHORT_CACHE, LONG_CACHE, Cache, INGRESS_METRICS, PARSE_ERRORS, AGG_ERRORS, DROPS, Float};
 
 #[derive(Debug)]
 pub enum Task {
     Parse(Bytes),
-    Snapshot(oneshot::Sender<Cache>),
+    JoinSnapshot(Vec<Cache>),
+    TakeSnapshot(oneshot::Sender<Cache>),
     Rotate(oneshot::Sender<Cache>),
     //Join(String, Vec<Metric<f64>>, oneshot::Sender<(String, Metric<f64>)>),
     Join(Metric<Float>, Metric<Float>, oneshot::Sender<Metric<Float>>),
@@ -33,7 +34,7 @@ impl Task {
                                 break;
                             }
                             input = rest;
-                            CACHE.with(|c| {
+                            SHORT_CACHE.with(|c| {
                                 match c.borrow_mut().entry(name) {
                                     Entry::Occupied(ref mut entry) => {
                                         entry.get_mut().aggregate(metric).unwrap_or_else(|_| {
@@ -73,16 +74,58 @@ impl Task {
                     }
                 }
             }
-            Task::Snapshot(channel) => {
-                CACHE.with(|c| {
-                    let rotated = c.borrow().clone();
-                    channel.send(rotated).unwrap_or_else(|_| {
-                        println!("shapshot not sent");
-                    });
+            Task::JoinSnapshot(mut shot) => {
+                LONG_CACHE.with(move |c| {
+                    let mut long = c.borrow_mut();
+                    shot.drain(..)
+                        .flat_map(|hmap| hmap.into_iter())
+                        .map(|(name, metric)| {
+                            match long.entry(name) {
+                                Entry::Occupied(ref mut entry) => {
+                                    entry.get_mut().aggregate(metric).unwrap_or_else(|_| {
+                                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                    });
+                                }
+                                Entry::Vacant(entry) => {
+                                    entry.insert(metric);
+                                }
+                            };
+                        })
+                        .last();
+                });
+            }
+            Task::TakeSnapshot(channel) => {
+                let short = SHORT_CACHE.with(|c| {
+                    let short = c.borrow().clone();
+                    c.borrow_mut().clear();
+                    short
+                });
+                // Aggregate short cache into long
+                LONG_CACHE.with(|c| {
+                    let mut long = c.borrow_mut();
+                    let mut short = short.clone();
+                    short
+                        .drain()
+                        .map(|(name, metric)| {
+                            match long.entry(name) {
+                                Entry::Occupied(ref mut entry) => {
+                                    entry.get_mut().aggregate(metric).unwrap_or_else(|_| {
+                                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                    });
+                                }
+                                Entry::Vacant(entry) => {
+                                    entry.insert(metric);
+                                }
+                            };
+                        })
+                        .last();
+                });
+                channel.send(short).unwrap_or_else(|_| {
+                    println!("shapshot not sent");
                 });
             }
             Task::Rotate(channel) => {
-                CACHE.with(|c| {
+                LONG_CACHE.with(|c| {
                     let rotated = c.borrow().clone();
                     c.borrow_mut().clear();
                     channel.send(rotated).unwrap_or_else(|_| {
