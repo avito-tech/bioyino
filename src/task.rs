@@ -6,7 +6,8 @@ use bytes::Bytes;
 use std::collections::hash_map::Entry;
 use combine::primitives::FastResult;
 use std::sync::atomic::Ordering;
-use {SHORT_CACHE, LONG_CACHE, Cache, INGRESS_METRICS, PARSE_ERRORS, AGG_ERRORS, DROPS, Float};
+use {SHORT_CACHE, LONG_CACHE, Cache, INGRESS_METRICS, PARSE_ERRORS, AGG_ERRORS, PEER_ERRORS,
+     DROPS, Float};
 
 #[derive(Debug)]
 pub enum Task {
@@ -121,7 +122,9 @@ impl Task {
                         .last();
                 });
                 channel.send(short).unwrap_or_else(|_| {
-                    println!("shapshot not sent");
+                    PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    // TODO debug log
+                    //    println!("shapshot not sent");
                 });
             }
             Task::Rotate(channel) => {

@@ -8,6 +8,7 @@ use tokio_core::reactor::{Handle, Timeout, Interval};
 use futures::Stream;
 use futures::future::{Future, IntoFuture, Loop, loop_fn, ok, err};
 use serde_json::{self, from_slice};
+use slog::Logger;
 use {IS_LEADER, CAN_LEADER, FORCE_LEADER};
 
 #[derive(Fail, Debug)]
@@ -49,6 +50,7 @@ struct ConsulSessionResponse {
 }
 
 pub struct ConsulConsensus {
+    log: Logger,
     agent: SocketAddr,
     handle: Handle,
     key: String,
@@ -58,8 +60,9 @@ pub struct ConsulConsensus {
 }
 
 impl ConsulConsensus {
-    pub fn new(agent: SocketAddr, handle: &Handle) -> Self {
+    pub fn new(log: &Logger, agent: SocketAddr, handle: &Handle) -> Self {
         Self {
+            log: log.new(o!("source"=>"consensus")),
             agent,
             handle: handle.clone(),
             key: "service/bioyino/lock".to_string(),
@@ -94,6 +97,7 @@ impl IntoFuture for ConsulConsensus {
     fn into_future(self) -> Self::Future {
 
         let Self {
+            log,
             agent,
             handle,
             key,
@@ -103,29 +107,28 @@ impl IntoFuture for ConsulConsensus {
         } = self;
 
         let renew_loop = loop_fn((), move |()| {
-
             let key = key.clone();
             let handle = handle.clone();
+            let log = log.clone();
             let session = ConsulSession {
+                log: log.new(o!("source"=>"consul-session")),
                 agent: agent.clone(),
                 handle: handle.clone(),
                 ttl: session_ttl.clone(),
             };
 
-
+            let renewlog = log.clone();
             // this tries to reconnect to consul infinitely
             let loop_session = loop_fn(session, move |session| {
+                let log = log.clone();
                 let new_session = session.clone();
                 session.into_future().then(move |res| match res {
                     Err(e) => {
-                        println!("error getting consul session: {:?}", e);
-                        // TODO: Consul returns strange error sometimes,
-                        // add timeout here to avoid reconnecting too fast
+                        warn!(log, "error getting consul session"; "error" => format!("{}", e));
                         ok(Loop::Continue(new_session))
                     }
                     Ok(None) => {
-                        println!("timed out getting consul session");
-                        // TODO: and here too
+                        warn!(log, "timed out getting consul session");
                         ok(Loop::Continue(new_session))
                     }
                     Ok(Some(s)) => ok(Loop::Break(s)),
@@ -141,6 +144,7 @@ impl IntoFuture for ConsulConsensus {
                     let timer = Interval::new(renew_time, &handle).unwrap();
 
                     timer.map_err(|e| ConsulError::Io(e)).for_each(move |_| {
+                        let log = renewlog.clone();
                         let can_leader = CAN_LEADER.load(Ordering::SeqCst);
                         // do work only if taking leadership is enabled
                         if can_leader {
@@ -150,27 +154,27 @@ impl IntoFuture for ConsulConsensus {
                                 sid: sid.clone(),
                                 ttl: session_ttl,
                             }.into_future()
-                            .map_err(|e| {
-                                println!("renew error: {:?}", e);
+                            .map_err(move |e| {
+                                warn!(log, "session renew error"; "error"=> format!("{}",e));
                                 e
                             });
 
-
+                            let log = renewlog.clone();
                             let acquire = ConsulAcquire {
+                                log: log.new(o!("source"=>"consul-acquire")),
                                 agent,
                                 handle: handle.clone(),
                                 sid: sid.clone(),
                                 key: key.clone(),
                             }.into_future()
-                            .map_err(|e| {
-                                println!("acquire error: {:?}", e);
+                            .map_err(move |e| {
+                                warn!(log, "session acquire error"; "error"=>format!("{:?}", e));
                                 e
                             });
 
                             Box::new(renew.join(acquire).map(|_|()))
                         } else {
                             IS_LEADER.store(FORCE_LEADER.load(Ordering::SeqCst), Ordering::SeqCst);
-                            //Box::new(renew) as Box<Future<Item=(), Error=ConsulError>>
                             Box::new(ok(())) as Box<Future<Item=(), Error=ConsulError>>
                         }
                     })
@@ -193,6 +197,7 @@ impl IntoFuture for ConsulConsensus {
 
 #[derive(Clone)]
 pub struct ConsulSession {
+    log: Logger,
     agent: SocketAddr,
     handle: Handle,
     ttl: Duration,
@@ -204,7 +209,12 @@ impl IntoFuture for ConsulSession {
     type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { agent, handle, ttl } = self;
+        let Self {
+            log,
+            agent,
+            handle,
+            ttl,
+        } = self;
         // create HTTP client for consul agent leader
         let client = hyper::Client::new(&handle);
         let mut session_req = hyper::Request::new(
@@ -241,7 +251,7 @@ impl IntoFuture for ConsulSession {
                         .and_then(move |body| {
                             let resp: ConsulSessionResponse =
                                 try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
-                            println!("Session: {:?}", resp.id);
+                            debug!(log, "new session"; "id"=>format!("{}", resp.id));
                             Ok(Some(resp.id))
                         });
                     Box::new(body) as Box<Future<Item = Option<String>, Error = ConsulError>>
@@ -334,6 +344,7 @@ impl IntoFuture for ConsulRenew {
 }
 
 pub struct ConsulAcquire {
+    log: Logger,
     agent: SocketAddr,
     handle: Handle,
     sid: String,
@@ -347,6 +358,7 @@ impl IntoFuture for ConsulAcquire {
 
     fn into_future(self) -> Self::Future {
         let Self {
+            log,
             agent,
             handle,
             sid,
@@ -379,14 +391,10 @@ impl IntoFuture for ConsulAcquire {
                         }
                         IS_LEADER.store(acquired, Ordering::SeqCst);
                         if is_leader != acquired {
-                            println!("Leader state change: {} -> {}", is_leader, acquired);
+                            warn!(log, "leader state change: {} -> {}", is_leader, acquired);
                         }
                         Ok(())
                     })
-            })
-            .map_err(|e| {
-                println!("consul acquire error: {:?}", e);
-                e
             });
         Box::new(acquire)
     }

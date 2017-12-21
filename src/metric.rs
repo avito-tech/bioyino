@@ -11,7 +11,6 @@ where
 {
     Counter,
     DiffCounter(F),
-    //Timer(CKMS<F>),
     Timer(Vec<F>),
     //    Histogram,
     Gauge(Option<i8>),

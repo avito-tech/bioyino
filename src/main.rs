@@ -2,6 +2,11 @@
 extern crate failure;
 #[macro_use]
 extern crate failure_derive;
+#[macro_use]
+extern crate slog;
+extern crate slog_async;
+extern crate slog_term;
+extern crate slog_scope;
 
 // Options
 extern crate clap;
@@ -22,7 +27,6 @@ extern crate libc;
 extern crate hyper;
 
 // Other
-extern crate itertools;
 extern crate combine;
 extern crate num;
 extern crate serde_json;
@@ -49,6 +53,7 @@ use std::sync::atomic::{ATOMIC_USIZE_INIT, ATOMIC_BOOL_INIT, AtomicUsize, Atomic
 
 use failure::Fail;
 use structopt::StructOpt;
+use slog::Drain;
 
 use bytes::BytesMut;
 use futures::{Stream, Future, Sink, empty, IntoFuture};
@@ -63,7 +68,7 @@ use net2::UdpBuilder;
 use net2::unix::UnixUdpBuilderExt;
 
 use errors::GeneralError;
-use metric::Metric;
+use metric::{Metric, MetricType};
 use codec::{StatsdServer, CarbonCodec};
 use consul::{ConsulConsensus};
 use peer::{PeerServer, PeerSnapshotClient, PeerCommand, PeerCommandClient};
@@ -75,8 +80,10 @@ pub type Cache = HashMap<String, Metric<Float>>;
 thread_local!(static LONG_CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 thread_local!(static SHORT_CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 
+//pub type Log = Box<Drain<Ok=(),Err=::slog::Error>>;
 pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
+pub static PEER_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static INGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static INGRESS_METRICS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -114,17 +121,24 @@ struct Options {
     /// Address and port for replication server to listen on
     peer_listen: SocketAddr,
 
-    #[structopt( short = "b", long = "backend", help = "IP and port of a backend to send aggregated data to.", value_name = "IP:PORT", default_value="127.0.0.1:2003")]
+    #[structopt( short = "b", long = "backend", value_name = "IP:PORT", default_value="127.0.0.1:2003")]
+    /// IP and port of the carbon-protocol backend to send aggregated data to
     backend: String,
+    #[structopt(short = "i", long = "s-interval", default_value = "30000")]
+    /// How often send metrics to carbon backend
+    interval: Option<u64>, // u64 has a special meaning in structopt
 
-    //#[structopt(short = "n", long = "nthreads", help = "Number of network worker threads, use 0 to use all CPU cores, use any negative to use none", default_value = "4")]
-    #[structopt(short = "n", long = "nthreads", help = "Number of network worker threads, use 0 to use all CPU cores, use any negative to use none", default_value = "4")]
+    #[structopt(short = "n", long = "nthreads", default_value = "4")]
+    /// Number of async UDP network worker threads, use 0 to use all CPU cores, use any negative to disable
+    /// async UDP threads
     nthreads: isize,
 
-    #[structopt(short = "m", long = "mthreads", help = "Number of multimessage(revcmmsg) worker threads, use 0 to use no threads of this type", default_value = "0")]
+    #[structopt(short = "m", long = "mthreads", default_value = "0")]
+    /// Number of multimessage(revcmmsg) worker threads, use 0 to use no threads of this type
     mthreads: usize,
 
-    #[structopt(short = "M", long = "msize", help = "multimessage packets at once", default_value = "1000")]
+    #[structopt(short = "M", long = "msize", default_value = "1000")]
+    /// Number of multimessage packets to receive at once
     msize: usize,
 
     #[structopt(short = "c", long = "cthreads", default_value = "4")]
@@ -138,9 +152,6 @@ struct Options {
     #[structopt(short = "g", long = "greens", default_value = "4")]
     /// Number of green threads per worker thread
     greens: usize,
-
-    #[structopt(short = "i", long = "s-interval", help = "How often send metrics to Graphite", default_value = "30000")]
-    interval: Option<u64>, // u64 has a special meaning in structopt
 
     #[structopt(short = "s", long = "interval", help = "How often to gather own stats", default_value = "5000")]
     s_interval: Option<u64>,
@@ -165,18 +176,25 @@ struct Options {
     /// How often to renew consul session, ms (min 10s)
     consul_renew_time: usize,
 
+    #[structopt(long = "consul-disable", default_value = "false")]
+    /// Start in disabled leader finding mode
+    consul_disable: bool,
+
     #[structopt(long = "nodes")]
     /// List of nodes to replicate metrics to
     nodes: Vec<SocketAddr>,
 
-    #[structopt(short = "t", long = "snapshot-interval", help = "Snapshot sending interval, ms", default_value = "1000")]
+    #[structopt(short = "t", long = "snapshot-interval", default_value = "1000")]
+    /// Interval to send snapshots to nodes, ms
     snapshot_interval: usize,
 
-    #[structopt(short = "Q", long = "query", help = "Connect to server wiht a query")]
+    #[structopt(short = "Q", long = "query")]
+    /// Connect to server wiht a query
     query: Option<PeerCommand>,
 
-    //#[structopt(short = "P", long = "stats-prefix", help = "Prefix to add to own metrics", default_value=".brubers")]
-    //stats_prefix: String,
+    #[structopt(short = "S", long = "stats-prefix", default_value="resources.monitoring.bioyino")]
+    /// Prefix to send own metrics with
+    stats_prefix: String,
 }
 
 fn main() {
@@ -197,11 +215,15 @@ fn main() {
         agent,
         consul_session_ttl,
         consul_renew_time,
+        consul_disable,
         nodes,
         snapshot_interval,
         query,
+        stats_prefix,
     } = Options::from_args();
 
+
+    // Check options
     let nthreads = if nthreads == 0 {
         num_cpus::get()
     } else if nthreads < 0 {
@@ -227,35 +249,28 @@ fn main() {
 
     let s_interval = s_interval.unwrap() as f64 / 1000f64;
 
+    // Set logging
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let drain = slog_async::Async::new(drain).build().fuse();
+    let rlog = slog::Logger::root(drain, o!("program"=>"bioyino"));
+    // this lets root logger live as long as it needs
+    let _guard = slog_scope::set_global_logger(rlog.clone());
+
     if let Some(command) = query {
-        let command = PeerCommandClient::new(peer_listen, &handle, command);
-        core.run(command.into_future()).unwrap();
+        let command = PeerCommandClient::new(&rlog, peer_listen, &handle, command);
+        core.run(command.into_future())
+            .unwrap_or_else(
+                |e| warn!(rlog,
+                          "error sending command";
+                          "dest"=>format!("{}",  &peer_listen),
+                          "error"=> format!("{}", e),
+                          )
+                );
         return
     }
 
-    std::thread::spawn(move ||{
-        let mut core = Core::new().unwrap();
-        let handle = core.handle();
-
-        let stimer = Interval::new(Duration::from_millis((s_interval * 1000f64) as u64), &handle).unwrap();
-        let stats = stimer
-            .map_err(|e| GeneralError::Io(e))
-            .for_each( move |()| {
-                let egress = EGRESS.swap(0, Ordering::Relaxed) as f64 / s_interval;
-                let ingress = INGRESS.swap(0, Ordering::Relaxed) as f64 / s_interval;
-                let ingress_m = INGRESS_METRICS.swap(0, Ordering::Relaxed) as f64 / s_interval;
-                let agr_errors = AGG_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
-                let parse_errors = PARSE_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
-                let drops = DROPS.swap(0, Ordering::Relaxed) as f64 / s_interval;
-
-                println!("egress/ingress/ingress-m/a-errors/p-errors/drops:\n{:.2}/{:.2}/{:.2}/{:.2}/{:.2}/{:.2}", egress, ingress, ingress_m, agr_errors, parse_errors, drops);
-                Ok(())
-            }).then(|_|Ok(()));
-
-        handle.spawn(stats);
-        core.run(empty::<(), ()>()).unwrap();
-    });
-
+    // Start counting threads
     let mut chans = Vec::with_capacity(cthreads);
     for i in 0..cthreads {
         let (tx, rx) = ::futures::sync::mpsc::channel(task_queue_size);
@@ -273,27 +288,90 @@ fn main() {
             }).expect("starting counting worker thread");
     }
 
+    let ichans = chans.clone();
+    let stats_prefix = stats_prefix.trim_right_matches(".").to_string();
+
+    let log = rlog.new(o!("source"=>"stats_thread"));
+    std::thread::spawn(move ||{
+        let mut core = Core::new().unwrap();
+        let handle = core.handle();
+
+        let stimer = Interval::new(Duration::from_millis((s_interval * 1000f64) as u64), &handle).unwrap();
+
+        let shandle = handle.clone();
+        let stats = stimer
+            .map_err(|e| GeneralError::Io(e))
+            .for_each( move |()| {
+                let mut metrics = HashMap::new();
+                {
+                    let mut add_metric = |value: Float, suffix| {
+                        metrics.insert(stats_prefix.clone() + "."+suffix, Metric::new(value, MetricType::Gauge(None), None).unwrap())
+                    };
+                    let egress = EGRESS.swap(0, Ordering::Relaxed) as Float / s_interval;
+                    add_metric(egress, "egress");
+                    let ingress = INGRESS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    add_metric(ingress, "ingress");
+                    let ingress_m = INGRESS_METRICS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    add_metric(ingress_m, "ingress-metric");
+                    let agr_errors = AGG_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    add_metric(agr_errors, "agg-error");
+                    let parse_errors = PARSE_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    add_metric(parse_errors, "parse-error");
+                    let peer_errors = PEER_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    add_metric(peer_errors, "peer-error");
+                    let drops = DROPS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    add_metric(drops, "drop");
+
+                    info!(log, "stats";
+                          "egress" => format!("{:2}", egress),
+                          "ingress" => format!("{:2}", ingress),
+                          "ingress-m" => format!("{:2}", ingress_m),
+                          "a-err" => format!("{:2}", agr_errors),
+                          "p-err" => format!("{:2}", parse_errors),
+                          "pe-err" => format!("{:2}", peer_errors),
+                          "drops" => format!("{:2}", drops),
+                          );
+                }
+                let next_chan = ichans[0].clone();
+                shandle.clone().spawn(next_chan.send(Task::JoinSnapshot(vec![metrics])).then(|_|Ok(())));
+                Ok(())
+            }).then(|_|Ok(()));
+
+        handle.spawn(stats);
+        core.run(empty::<(), ()>()).unwrap();
+    });
+
     for node in nodes.iter().cloned() {
         let tchans = chans.clone();
         let shandle = handle.clone();
-        let snapshot = PeerSnapshotClient::new(node.clone(), Duration::from_millis(snapshot_interval as u64), &shandle, &tchans)
+        let elog = rlog.clone();
+        let snapshot = PeerSnapshotClient::new(&rlog, node.clone(), Duration::from_millis(snapshot_interval as u64), &shandle, &tchans)
             .into_future()
-            .map_err(|e| {
+            .map_err(move |e| {
                 //println!("error sending snapshot to {:?}: {:?}", node, e);
-                println!("error sending snapshot: {:?}", e);
+                PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                debug!(elog, "error sending snapshot: {:?}", e);
             });
         handle.spawn(snapshot);
     }
 
-    let peer_server = PeerServer::new(peer_listen, &handle, &chans, &nodes);
+    let peer_server = PeerServer::new(&rlog, peer_listen, &handle, &chans, &nodes);
+
+    let elog = rlog.clone();
     // TODO restart server after error
     handle.spawn(peer_server
                  .into_future()
-                 .then(|e|{println!("shot server gone with error: {:?}", e); Ok(())}));
+                 .then(move |e|{warn!(elog, "shot server gone with error: {:?}", e); Ok(())}));
     // TODO (maybe) change to option, not-depending on number of nodes
     if nodes.len() > 0 {
-        CAN_LEADER.store(true, Ordering::SeqCst);
+        if consul_disable {
+            CAN_LEADER.store(false, Ordering::SeqCst);
+            IS_LEADER.store(false, Ordering::SeqCst);
+        } else {
+            CAN_LEADER.store(true, Ordering::SeqCst);
+        }
         let mut consensus = ConsulConsensus::new(
+            &rlog,
             agent,
             &handle);
         consensus.set_session_ttl(Duration::from_millis(consul_session_ttl as u64));
@@ -305,6 +383,7 @@ fn main() {
     }
 
     let tchans = chans.clone();
+    let tlog = rlog.clone();
     let timer = timer
         .map_err(|e| GeneralError::Io(e))
         .for_each(move |()| {
@@ -314,6 +393,7 @@ fn main() {
 
             let addr = backend_addr.clone();
             let tchans = tchans.clone();
+            let tlog = tlog.clone();
             thread::Builder::new()
                 .name("bioyino_carbon".into())
                 .spawn(move ||{
@@ -329,7 +409,7 @@ fn main() {
                     .collect::<Vec<_>>();
                     let is_leader = IS_LEADER.load(Ordering::SeqCst);
                     if is_leader {
-                        println!("Leader sending metrics");
+                        debug!(tlog, "leader sending metrics");
                         let future = join_all(metrics).and_then(move |metrics|{
                             // Join all metrics into hashmap by only pushing everything to vector
                             let metrics = metrics
@@ -385,6 +465,7 @@ fn main() {
                             join_all(future)
                         });
 
+                        let elog = tlog.clone();
                         let pusher = future
                             .and_then(|metrics|{
                                 TcpStream::connect(&addr, &handle)
@@ -409,12 +490,12 @@ fn main() {
                                     .map_err(|e| GeneralError::Io(e));
 
                                 writer.send_all(s)
-                                    .map_err(|e|{println!("send error: {:?}", e); e})
+                                    .map_err(move |e|{warn!(elog, "carbon send failed";"error"=>format!("{}", e)); e})
                             });
 
-                        core.run(pusher.then(|_|Ok::<(), ()>(()))).unwrap_or_else(|e|println!("Failed to send to graphite: {:?}", e));
+                        core.run(pusher.then(|_|Ok::<(), ()>(()))).unwrap_or_else(|e|warn!(tlog, "Failed to send to graphite"; "error"=>e));
                     } else {
-                        core.run(join_all(metrics).then(|_|Ok::<(), ()>(()))).unwrap_or_else(|e|println!("Failed to join aggregated metrics: {:?}", e));
+                        core.run(join_all(metrics).then(|_|Ok::<(), ()>(()))).unwrap_or_else(|e|warn!(tlog, "Failed to join aggregated metrics"; "error"=>e));
                     }
                 }).expect("starting thread for sending to graphite");
             Ok(())
@@ -487,6 +568,7 @@ fn main() {
     for i in 0..mthreads {
         let chans = chans.clone();
         let remote = core.remote();
+        let log = rlog.new(o!("source"=>"mudp_thread"));
         thread::Builder::new()
             .name(format!("bioyino_mudp{}", i).into())
             .spawn(move || {
@@ -564,14 +646,17 @@ fn main() {
                                     remote.execute(chan.send(Task::Parse(b.freeze())).map_err(|_|{
                                         DROPS.fetch_add(1, Ordering::Relaxed);
                                     }).then(|_|Ok(()))).unwrap_or_else(|e|{
-                                        println!("exec error: {:?}", e);
+                                        warn!(log, "exec error: {:?}", e);
                                     });
                                     b = BytesMut::with_capacity(bufsize*messages);
                                 }
                                 b.put(&message_vec[i][0..len]);
                             };
                         } else {
-                            println!("receive error: {:?} {:?}", res, ::std::io::Error::last_os_error())
+                            warn!(log, "UDP receive error";
+                                  "code"=> format!("{}",res),
+                                  "error"=>format!("{}", ::std::io::Error::last_os_error())
+                                 )
                         }
                     }
                 }
