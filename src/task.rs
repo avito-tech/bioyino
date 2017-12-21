@@ -12,10 +12,10 @@ use {SHORT_CACHE, LONG_CACHE, Cache, INGRESS_METRICS, PARSE_ERRORS, AGG_ERRORS, 
 #[derive(Debug)]
 pub enum Task {
     Parse(Bytes),
+    AddMetrics(Cache),
     JoinSnapshot(Vec<Cache>),
     TakeSnapshot(oneshot::Sender<Cache>),
     Rotate(oneshot::Sender<Cache>),
-    //Join(String, Vec<Metric<f64>>, oneshot::Sender<(String, Metric<f64>)>),
     Join(Metric<Float>, Metric<Float>, oneshot::Sender<Metric<Float>>),
 }
 
@@ -74,6 +74,26 @@ impl Task {
                         }
                     }
                 }
+            }
+            Task::AddMetrics(mut cache) => {
+                SHORT_CACHE.with(move |c| {
+                    let mut short = c.borrow_mut();
+                    cache
+                        .drain()
+                        .map(|(name, metric)| {
+                            match short.entry(name) {
+                                Entry::Occupied(ref mut entry) => {
+                                    entry.get_mut().aggregate(metric).unwrap_or_else(|_| {
+                                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                    });
+                                }
+                                Entry::Vacant(entry) => {
+                                    entry.insert(metric);
+                                }
+                            };
+                        })
+                        .last();
+                });
             }
             Task::JoinSnapshot(mut shot) => {
                 LONG_CACHE.with(move |c| {

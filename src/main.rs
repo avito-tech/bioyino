@@ -178,7 +178,7 @@ struct Options {
 
     #[structopt(long = "consul-disable", default_value = "false")]
     /// Start in disabled leader finding mode
-    consul_disable: bool,
+    consul_disable: Option<bool>,
 
     #[structopt(long = "nodes")]
     /// List of nodes to replicate metrics to
@@ -333,7 +333,7 @@ fn main() {
                           );
                 }
                 let next_chan = ichans[0].clone();
-                shandle.clone().spawn(next_chan.send(Task::JoinSnapshot(vec![metrics])).then(|_|Ok(())));
+                shandle.clone().spawn(next_chan.send(Task::AddMetrics(metrics)).then(|_|Ok(())));
                 Ok(())
             }).then(|_|Ok(()));
 
@@ -348,9 +348,8 @@ fn main() {
         let snapshot = PeerSnapshotClient::new(&rlog, node.clone(), Duration::from_millis(snapshot_interval as u64), &shandle, &tchans)
             .into_future()
             .map_err(move |e| {
-                //println!("error sending snapshot to {:?}: {:?}", node, e);
                 PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                debug!(elog, "error sending snapshot: {:?}", e);
+                debug!(elog, "error sending snapshot";"error"=>format!("{}", e), "destination"=>format!("{}", node));
             });
         handle.spawn(snapshot);
     }
@@ -364,7 +363,7 @@ fn main() {
                  .then(move |e|{warn!(elog, "shot server gone with error: {:?}", e); Ok(())}));
     // TODO (maybe) change to option, not-depending on number of nodes
     if nodes.len() > 0 {
-        if consul_disable {
+        if let Some(true) = consul_disable {
             CAN_LEADER.store(false, Ordering::SeqCst);
             IS_LEADER.store(false, Ordering::SeqCst);
         } else {
