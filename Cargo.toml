@@ -1,23 +1,30 @@
 [package]
 name = "bioyino"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Sergey Noskov <snoskov@avito.ru>"]
 
 [dependencies]
-derive-error-chain = { version = "^0.10", features=[], default-features=false }
-error-chain= { version = "^0.10", features=[], default-features=false }
 clap="^2.24"
-structopt="^0.0"
-structopt-derive="^0.0"
+structopt="^0.1"
+structopt-derive="^0.1"
+failure="^0.1"
+failure_derive="^0.1"
+libc="^0.2"
+num_cpus="^1.4"
 futures="^0.1"
 tokio-core="^0.1"
 tokio-io="^0.1"
 bytes="^0.4"
-num_cpus="^1.4"
 resolve="^0.1"
-chashmap="^2.2"
 net2="^0.2"
 num="^0.1"
-combine="^2.3"
-smallvec="^0.3"
-
+combine="^2.5"
+hyper="^0.11"
+serde="^1.0"
+serde_derive="^1.0"
+serde_json="^1.0"
+bincode="^0.9"
+slog="^2.1"
+slog-term="^2.1"
+slog-async="^2.1"
+slog-scope="^4.0"
