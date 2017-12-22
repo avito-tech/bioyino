@@ -305,31 +305,31 @@ fn main() {
                 let mut metrics = HashMap::new();
                 {
                     let mut add_metric = |value: Float, suffix| {
-                        metrics.insert(stats_prefix.clone() + "."+suffix, Metric::new(value, MetricType::Gauge(None), None).unwrap())
+                        metrics.insert(stats_prefix.clone() + "."+suffix, Metric::new(value, MetricType::Counter, None).unwrap())
                     };
-                    let egress = EGRESS.swap(0, Ordering::Relaxed) as Float / s_interval;
+                    let egress = EGRESS.swap(0, Ordering::Relaxed) as Float;
                     add_metric(egress, "egress");
-                    let ingress = INGRESS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    let ingress = INGRESS.swap(0, Ordering::Relaxed) as Float;
                     add_metric(ingress, "ingress");
-                    let ingress_m = INGRESS_METRICS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    let ingress_m = INGRESS_METRICS.swap(0, Ordering::Relaxed) as Float;
                     add_metric(ingress_m, "ingress-metric");
-                    let agr_errors = AGG_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    let agr_errors = AGG_ERRORS.swap(0, Ordering::Relaxed) as Float;
                     add_metric(agr_errors, "agg-error");
-                    let parse_errors = PARSE_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    let parse_errors = PARSE_ERRORS.swap(0, Ordering::Relaxed) as Float;
                     add_metric(parse_errors, "parse-error");
-                    let peer_errors = PEER_ERRORS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    let peer_errors = PEER_ERRORS.swap(0, Ordering::Relaxed) as Float;
                     add_metric(peer_errors, "peer-error");
-                    let drops = DROPS.swap(0, Ordering::Relaxed) as f64 / s_interval;
+                    let drops = DROPS.swap(0, Ordering::Relaxed) as Float;
                     add_metric(drops, "drop");
 
                     info!(log, "stats";
-                          "egress" => format!("{:2}", egress),
-                          "ingress" => format!("{:2}", ingress),
-                          "ingress-m" => format!("{:2}", ingress_m),
-                          "a-err" => format!("{:2}", agr_errors),
-                          "p-err" => format!("{:2}", parse_errors),
-                          "pe-err" => format!("{:2}", peer_errors),
-                          "drops" => format!("{:2}", drops),
+                          "egress" => format!("{:2}", egress / s_interval),
+                          "ingress" => format!("{:2}", ingress / s_interval),
+                          "ingress-m" => format!("{:2}", ingress_m / s_interval),
+                          "a-err" => format!("{:2}", agr_errors / s_interval),
+                          "p-err" => format!("{:2}", parse_errors / s_interval),
+                          "pe-err" => format!("{:2}", peer_errors / s_interval),
+                          "drops" => format!("{:2}", drops / s_interval),
                           );
                 }
                 let next_chan = ichans[0].clone();
