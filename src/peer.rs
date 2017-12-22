@@ -21,19 +21,19 @@ use task::Task;
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
-    #[fail(display = "I/O error")]
+    #[fail(display = "I/O error: {}", _0)]
     Io(
         #[cause]
         ::std::io::Error
       ),
 
-      #[fail(display = "bincode decoding error")]
+      #[fail(display = "bincode decoding error {}", _0)]
     Decode(
         #[cause]
         Box<bincode::ErrorKind>
         ),
 
-        #[fail(display = "bincode decoding error")]
+        #[fail(display = "bincode encoding error: {}", _0)]
     Encode(
         #[cause]
         Box<bincode::ErrorKind>
