@@ -3,7 +3,7 @@ The StatsD server written in Rust
 
 # Description #
 A fully statsd-protocol compliant server with carbon backend
-This server was written as a drop-in replacement for now unsupported (github's brubeck)[https://github.com/github/brubeck/issues]
+This server was written as a drop-in replacement for now unsupported [github's brubeck](https://github.com/github/brubeck/issues).
 
 # Features #
 
