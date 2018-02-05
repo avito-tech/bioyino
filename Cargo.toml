@@ -1,12 +1,11 @@
 [package]
 name = "bioyino"
-version = "0.2.0"
-authors = ["Sergey Noskov <snoskov@avito.ru>"]
+version = "0.3.0"
+authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
+description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 
 [dependencies]
-clap="^2.24"
-structopt="^0.1"
-structopt-derive="^0.1"
+clap="^2.29"
 failure="^0.1"
 failure_derive="^0.1"
 libc="^0.2"
@@ -28,3 +27,4 @@ slog="^2.1"
 slog-term="^2.1"
 slog-async="^2.1"
 slog-scope="^4.0"
+toml="^0.4"

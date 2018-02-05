@@ -3,50 +3,34 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use hyper;
-use hyper::header::{ContentType, ContentLength};
-use tokio_core::reactor::{Handle, Timeout, Interval};
+use hyper::header::{ContentLength, ContentType};
+use tokio_core::reactor::{Handle, Interval, Timeout};
 use futures::Stream;
-use futures::future::{Future, IntoFuture, Loop, loop_fn, ok, err};
+use futures::future::{err, loop_fn, ok, Future, IntoFuture, Loop};
 use serde_json::{self, from_slice};
 use slog::Logger;
-use {IS_LEADER, CAN_LEADER, FORCE_LEADER};
+use {CAN_LEADER, FORCE_LEADER, IS_LEADER};
 
 #[derive(Fail, Debug)]
 pub enum ConsulError {
-    #[fail(display = "session create error: {}", _0)]
-    Session(String),
+    #[fail(display = "session create error: {}", _0)] Session(String),
 
     #[fail(display = "server responded with bad status code '{}': {}", _0, _1)]
     HttpStatus(hyper::StatusCode, String),
 
-    #[fail(display = "agent connection timed out")]
-    ConnectionTimeout,
+    #[fail(display = "agent connection timed out")] ConnectionTimeout,
 
-    #[fail(display = "Http error: {}", _0)]
-    Http(
-        #[cause]
-        hyper::Error
-    ),
+    #[fail(display = "Http error: {}", _0)] Http(#[cause] hyper::Error),
 
-    #[fail(display = "Parsing response: {}", _0)]
-    Parsing(
-        #[cause]
-        serde_json::Error
-    ),
-    #[fail(display = "I/O error {}", _0)]
-    Io(
-        #[cause]
-        ::std::io::Error
-    ),
+    #[fail(display = "Parsing response: {}", _0)] Parsing(#[cause] serde_json::Error),
+    #[fail(display = "I/O error {}", _0)] Io(#[cause] ::std::io::Error),
 
-    #[fail(display = "{}", _0)]
-    Renew(String),
+    #[fail(display = "{}", _0)] Renew(String),
 }
 
 #[derive(Deserialize)]
 struct ConsulSessionResponse {
-    #[serde(rename = "ID")]
-    id: String,
+    #[serde(rename = "ID")] id: String,
 }
 
 pub struct ConsulConsensus {
@@ -95,7 +79,6 @@ impl IntoFuture for ConsulConsensus {
     type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-
         let Self {
             log,
             agent,
@@ -182,14 +165,11 @@ impl IntoFuture for ConsulConsensus {
 
             // restart the whole loop as soon as ANY future exits with any result
             // (is is supposed to exit only with error)
-            renew
-                .then(move |_| {
-                    Timeout::new(error_pause, &handle)
-                        .unwrap()
-                        .then(move |_| {
-                            Ok(Loop::Continue(()))
-                        })
-                })
+            renew.then(move |_| {
+                Timeout::new(error_pause, &handle)
+                    .unwrap()
+                    .then(move |_| Ok(Loop::Continue(())))
+            })
         });
         Box::new(renew_loop)
     }
@@ -234,9 +214,9 @@ impl IntoFuture for ConsulSession {
         session_req.set_body(b);
         // Override sending request as multipart
         session_req.headers_mut().set(ContentLength(bodylen));
-        session_req.headers_mut().set(
-            ContentType::form_url_encoded(),
-        );
+        session_req
+            .headers_mut()
+            .set(ContentType::form_url_encoded());
 
         let thandle = handle.clone();
         let c_session = client
@@ -319,25 +299,23 @@ impl IntoFuture for ConsulRenew {
         let renew_client = hyper::Client::new(&handle);
         let future = renew_client.request(renew_req).then(move |res| match res {
             Err(e) => Box::new(err(ConsulError::Http(e))),
-            Ok(resp) => {
-                if resp.status() != hyper::StatusCode::Ok {
-                    let status = resp.status().clone();
-                    let body = resp.body()
-                        .concat2()
-                        .map_err(|e| ConsulError::Http(e))
-                        .and_then(move |body| {
-                            let msg = format!(
-                                "renew error: {:?} {:?}",
-                                status,
-                                String::from_utf8(body.to_vec())
-                            );
-                            Err(ConsulError::Renew(msg))
-                        });
-                    Box::new(body) as Box<Future<Item = (), Error = ConsulError>>
-                } else {
-                    Box::new(ok(()))
-                }
-            }
+            Ok(resp) => if resp.status() != hyper::StatusCode::Ok {
+                let status = resp.status().clone();
+                let body = resp.body()
+                    .concat2()
+                    .map_err(|e| ConsulError::Http(e))
+                    .and_then(move |body| {
+                        let msg = format!(
+                            "renew error: {:?} {:?}",
+                            status,
+                            String::from_utf8(body.to_vec())
+                        );
+                        Err(ConsulError::Renew(msg))
+                    });
+                Box::new(body) as Box<Future<Item = (), Error = ConsulError>>
+            } else {
+                Box::new(ok(()))
+            },
         });
         Box::new(future)
     }

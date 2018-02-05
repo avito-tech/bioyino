@@ -1,0 +1,55 @@
+# This is an example config showing all the options, filled with default values
+
+verbosity = "warn"
+
+# Number of async UDP network worker threads, use 0 to use all CPU cores, use any negative to disable
+# async UDP threads 
+nthreads =4
+
+[network]
+# Address:port to listen for metrics at
+listen = "127.0.0.1:8125"
+
+# Address and port for replication/command server to listen on
+peer-listen = "127.0.0.1:8136"
+
+# IP and port of the carbon-protocol backend to send aggregated data to
+backend = "127.0.0.1:2003"
+
+# How often to send metrics to carbon backend, ms
+backend-interval = 30000
+
+# UDP buffer size for single packet. Needs to be around MTU. Packet's bytes after that value
+# may be lost
+bufsize = 1500
+
+# Enable multimessage(recvmmsg) mode
+multimessage = false
+
+# Number of multimessage packets to receive at once if in multimessage mode
+mm-packets = 100
+
+# Nmber of green threads for single-message mode
+greens = 4
+
+# Socket pool size for single-message mode
+snum = 4
+
+# List of nodes to replicate metrics to
+nodes = []
+
+# Interval to send snapshots to nodes, ms
+snapshot_interval = 1000
+
+[consul]
+# Start in disabled leader finding mode
+start-disabled = false
+
+# Consul agent address
+agent = "127.0.0.1:8500"
+
+# TTL of consul session, ms (consul cannot set it to less than 10s)
+session_ttl = 11000
+
+# How often to renew consul session, ms
+renew_time = 1000

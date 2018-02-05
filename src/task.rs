@@ -6,8 +6,8 @@ use bytes::Bytes;
 use std::collections::hash_map::Entry;
 use combine::primitives::FastResult;
 use std::sync::atomic::Ordering;
-use {SHORT_CACHE, LONG_CACHE, Cache, INGRESS_METRICS, PARSE_ERRORS, AGG_ERRORS, PEER_ERRORS,
-     DROPS, Float};
+use {Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS,
+     SHORT_CACHE};
 
 #[derive(Debug)]
 pub enum Task {
@@ -48,8 +48,7 @@ impl Task {
                                 };
                             });
                         }
-                        FastResult::EmptyOk(_) |
-                        FastResult::EmptyErr(_) => {
+                        FastResult::EmptyOk(_) | FastResult::EmptyErr(_) => {
                             break;
                         }
                         FastResult::ConsumedErr(_e) => {

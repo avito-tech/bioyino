@@ -2,13 +2,13 @@
 //use std::fmt::Debug;
 //use std::fmt::Display;
 
-use {INGRESS, EGRESS, DROPS};
+use {DROPS, EGRESS, INGRESS};
 
-use bytes::{BytesMut, BufMut};
+use bytes::{BufMut, BytesMut};
 use tokio_core::reactor::Handle;
 use tokio_core::net::UdpSocket;
-use tokio_io::codec::{Encoder, Decoder};
-use futures::{IntoFuture, Future, Sink};
+use tokio_io::codec::{Decoder, Encoder};
+use futures::{Future, IntoFuture, Sink};
 use futures::sync::mpsc;
 
 use std::sync::atomic::Ordering;
@@ -119,7 +119,9 @@ impl IntoFuture for StatsdServer {
                     let newbuf = BytesMut::with_capacity(buf_queue_size * bufsize);
                     handle.spawn(
                         chan.send(Task::Parse(buf.freeze()))
-                            .map_err(|_| { DROPS.fetch_add(1, Ordering::Relaxed); })
+                            .map_err(|_| {
+                                DROPS.fetch_add(1, Ordering::Relaxed);
+                            })
                             .and_then(move |_| {
                                 StatsdServer::new(
                                     socket,

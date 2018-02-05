@@ -1,6 +1,6 @@
 //use errors::*;
-use std::ops::{Add, Sub, AddAssign, SubAssign, Div, Mul};
-use std::fmt::{Display, Debug};
+use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
+use std::fmt::{Debug, Display};
 use failure::Error;
 //use quantiles::ckms::CKMS;
 
@@ -29,14 +29,11 @@ where
 
 #[derive(Fail, Debug)]
 pub enum MetricError {
-    #[fail(display = "float conversion")]
-    FloatToRatio,
+    #[fail(display = "float conversion")] FloatToRatio,
 
-    #[fail(display = "bad sampling range")]
-    Sampling,
+    #[fail(display = "bad sampling range")] Sampling,
 
-    #[fail(display = "aggregating metrics of dirrerent types")]
-    Aggregating,
+    #[fail(display = "aggregating metrics of dirrerent types")] Aggregating,
 }
 
 impl<F> IntoIterator for Metric<F>
@@ -159,8 +156,7 @@ where
                     5 => Some((".median", percentile(agg, 0.5).to_string())),
                     6 => Some((
                         ".mean",
-                        (self.timer_sum.unwrap().into() / agg.len() as f64)
-                            .to_string(),
+                        (self.timer_sum.unwrap().into() / agg.len() as f64).to_string(),
                     )),
                     //7 => Some((
                     //".percentile.75",
@@ -295,6 +291,4 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use EPSILON;
-
 }
