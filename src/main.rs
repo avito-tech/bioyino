@@ -51,6 +51,7 @@ use std::net::SocketAddr;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
 use std::str::FromStr;
+use std::borrow::Cow;
 
 use failure::Fail;
 use slog::{Drain, Level};
@@ -72,7 +73,7 @@ use metric::{Metric, MetricType};
 use codec::{CarbonCodec, StatsdServer};
 use consul::ConsulConsensus;
 use peer::{PeerCommandClient, PeerServer, PeerSnapshotClient};
-use config::{Command, Consul, Network, System};
+use config::{Command, Consul, Network, System, Metrics};
 
 use task::Task;
 
@@ -114,27 +115,32 @@ fn main() {
 
     let System {
         verbosity,
-        network:
-            Network {
-                listen,
-                peer_listen,
-                backend,
-                backend_interval: interval,
-                bufsize,
-                multimessage,
-                mm_packets,
-                greens,
-                snum,
-                nodes,
-                snapshot_interval,
-            },
-        consul:
-            Consul {
-                start_disabled: consul_disable,
-                agent,
-                session_ttl: consul_session_ttl,
-                renew_time: consul_renew_time,
-            },
+        network: Network {
+            listen,
+            peer_listen,
+            backend,
+            backend_interval: interval,
+            bufsize,
+            multimessage,
+            mm_packets,
+            greens,
+            snum,
+            nodes,
+            snapshot_interval
+        },
+        consul: Consul {
+            start_disabled: consul_disable,
+            agent,
+            session_ttl: consul_session_ttl,
+            renew_time: consul_renew_time
+        },
+        metrics: Metrics {
+            //           max_metrics,
+            mut count_updates,
+            update_counter_prefix,
+            update_counter_suffix,
+            update_counter_threshold
+        },
         n_threads,
         w_threads,
         stats_interval: s_interval,
@@ -169,14 +175,18 @@ fn main() {
         let command = PeerCommandClient::new(&rlog, dest, &handle, command);
         core.run(command.into_future()).unwrap_or_else(|e| {
             warn!(rlog,
-                          "error sending command";
-                          "dest"=>format!("{}",  &dest),
-                          "error"=> format!("{}", e),
-                          )
+                  "error sending command";
+                  "dest"=>format!("{}",  &dest),
+                  "error"=> format!("{}", e),
+                  )
         });
         return;
     }
 
+    if count_updates && update_counter_prefix.len() == 0 && update_counter_suffix.len() == 0 {
+        warn!(rlog, "update counting suffix and prefix are empty, update counting disabled to avoid metric rewriting");
+        count_updates = false;
+    }
     // Start counting threads
     let mut chans = Vec::with_capacity(w_threads);
     for i in 0..w_threads {
@@ -189,7 +199,7 @@ fn main() {
                 let future = rx.for_each(move |task: Task| lazy(|| ok(task.run())));
                 core.run(future).unwrap();
             })
-            .expect("starting counting worker thread");
+        .expect("starting counting worker thread");
     }
 
     let ichans = chans.clone();
@@ -209,9 +219,9 @@ fn main() {
                         5000
                     }
                 } * 1000f64 as u64,
-            ),
-            &handle,
-        ).unwrap();
+                ),
+                &handle,
+                ).unwrap();
 
         let shandle = handle.clone();
         let stats = stimer
@@ -224,7 +234,7 @@ fn main() {
                             metrics.insert(
                                 stats_prefix.clone() + "." + suffix,
                                 Metric::new(value, MetricType::Counter, None).unwrap(),
-                            );
+                                );
                         }
                     };
                     let egress = EGRESS.swap(0, Ordering::Relaxed) as Float;
@@ -244,14 +254,14 @@ fn main() {
 
                     if s_interval > 0 {
                         info!(log, "stats";
-                          "egress" => format!("{:2}", egress / s_interval as f64),
-                          "ingress" => format!("{:2}", ingress / s_interval as f64),
-                          "ingress-m" => format!("{:2}", ingress_m / s_interval as f64),
-                          "a-err" => format!("{:2}", agr_errors / s_interval as f64),
-                          "p-err" => format!("{:2}", parse_errors / s_interval as f64),
-                          "pe-err" => format!("{:2}", peer_errors / s_interval as f64),
-                          "drops" => format!("{:2}", drops / s_interval as f64),
-                          );
+                              "egress" => format!("{:2}", egress / s_interval as f64),
+                              "ingress" => format!("{:2}", ingress / s_interval as f64),
+                              "ingress-m" => format!("{:2}", ingress_m / s_interval as f64),
+                              "a-err" => format!("{:2}", agr_errors / s_interval as f64),
+                              "p-err" => format!("{:2}", parse_errors / s_interval as f64),
+                              "pe-err" => format!("{:2}", peer_errors / s_interval as f64),
+                              "drops" => format!("{:2}", drops / s_interval as f64),
+                              );
                     }
                 }
                 let next_chan = ichans[0].clone();
@@ -260,7 +270,7 @@ fn main() {
                     .spawn(next_chan.send(Task::AddMetrics(metrics)).then(|_| Ok(())));
                 Ok(())
             })
-            .then(|_| Ok(()));
+        .then(|_| Ok(()));
 
         handle.spawn(stats);
         core.run(empty::<(), ()>()).unwrap();
@@ -276,7 +286,7 @@ fn main() {
             Duration::from_millis(snapshot_interval as u64),
             &shandle,
             &tchans,
-        ).into_future()
+            ).into_future()
             .map_err(move |e| {
                 PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
                 debug!(elog, "error sending snapshot";"error"=>format!("{}", e), "destination"=>format!("{}", node));
@@ -316,11 +326,14 @@ fn main() {
         let ts = SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .map_err(|e| GeneralError::Time(e))?;
-        let ts = ts.as_secs().to_string();
+        let ts: Cow<str> = ts.as_secs().to_string().into();
 
         let addr = backend_addr.clone();
         let tchans = tchans.clone();
         let tlog = tlog.clone();
+
+        let update_counter_prefix = update_counter_prefix.clone();
+        let update_counter_suffix = update_counter_prefix.clone();
         thread::Builder::new()
             .name("bioyino_carbon".into())
             .spawn(move || {
@@ -335,7 +348,7 @@ fn main() {
                         handle.spawn(chan.send(Task::Rotate(tx)).then(|_| Ok(())));
                         rx.map_err(|_| GeneralError::FutureSend)
                     })
-                    .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
                 let is_leader = IS_LEADER.load(Ordering::SeqCst);
                 if is_leader {
                     debug!(tlog, "leader sending metrics");
@@ -349,11 +362,11 @@ fn main() {
                                         let entry = acc.entry(name).or_insert(Vec::new());
                                         entry.push(metric);
                                     })
-                                    .last()
+                                .last()
                                     .unwrap();
                                 acc
                             },
-                        );
+                            );
 
                         // now a difficult part: send every metric to
                         // be aggregated on a separate worker
@@ -393,7 +406,7 @@ fn main() {
                                             None => Box::new(ok(acc).map(|v| Loop::Break(v))), // the result of the future is a name and aggregated metric
                                         }
                                     },
-                                );
+                                    );
                                 looped.map(|m| (name, m))
                             });
 
@@ -402,31 +415,49 @@ fn main() {
 
                     let elog = tlog.clone();
                     let pusher = future
-                            .and_then(|metrics|{
-                                TcpStream::connect(&addr, &handle)
-                                    .map_err(|e| GeneralError::Io(e))
-                                    //.map_err(|e|e.compat().into())
-                                    .map(move |conn| (conn, metrics))
-                            })
-                        .map_err(|e|e.compat().into())
-                            // wait for both: all results from all channels and tcp connection to be ready
-                            .and_then(move |(conn, metrics)| {
-                                let writer = conn.framed(CarbonCodec);
-                                let aggregated = metrics.into_iter().flat_map(move |(name, value)|{
-                                    let ts = ts.clone();
-                                    value.into_iter().map(move |(suffix, value)|{
-                                        (name.clone() + suffix, value, ts.clone())
-                                    })
-                                })
-                                .inspect(|_|{
-                                    EGRESS.fetch_add(1, Ordering::Relaxed);
-                                });
-                                let s = ::futures::stream::iter_ok(aggregated)
-                                    .map_err(|e| GeneralError::Io(e));
+                        .and_then(|metrics|{
+                            TcpStream::connect(&addr, &handle)
+                                .map_err(|e| GeneralError::Io(e))
+                                //.map_err(|e|e.compat().into())
+                                .map(move |conn| (conn, metrics))
+                        })
+                    .map_err(|e|e.compat().into())
+                        // wait for both: all results from all channels and tcp connection to be ready
+                        .and_then(move |(conn, metrics)| {
+                            let writer = conn.framed(CarbonCodec::new());
+                            let aggregated = metrics.into_iter().flat_map(move |(name, value)|{
+                                let ts = ts.clone();
+                                let upd = if count_updates && value.update_counter > update_counter_threshold {
+                                    // + 2 is for dots
+                                    let mut counter = String::with_capacity(
+                                        update_counter_prefix.len() + name.len() + update_counter_suffix.len() + 2);
+                                    if update_counter_prefix.len() > 0 {
+                                        counter.push_str(&update_counter_prefix);
+                                        counter.push_str(".");
+                                    }
+                                    counter.push_str(&name);
+                                    if update_counter_suffix.len() > 0 {
+                                        counter.push_str(".");
+                                        counter.push_str(&update_counter_suffix);
+                                    }
+                                    Some((counter, value.update_counter.to_string(), ts.clone()))
+                                } else {
+                                    None
+                                };
+                                value.into_iter().map(move |(suffix, value)|{
+                                    (name.clone() + suffix, value, ts.clone())
+                                }).chain(upd)
 
-                                writer.send_all(s)
-                                    .map_err(move |e|{warn!(elog, "carbon send failed";"error"=>format!("{}", e)); e})
+                            })
+                            .inspect(|_|{
+                                EGRESS.fetch_add(1, Ordering::Relaxed);
                             });
+                            let s = ::futures::stream::iter_ok(aggregated)
+                                .map_err(|e| GeneralError::Io(e));
+
+                            writer.send_all(s)
+                                .map_err(move |e|{warn!(elog, "carbon send failed";"error"=>format!("{}", e)); e})
+                        });
 
                     core.run(pusher.then(|_| Ok::<(), ()>(())))
                         .unwrap_or_else(|e| warn!(tlog, "Failed to send to graphite"; "error"=>e));
@@ -434,10 +465,10 @@ fn main() {
                     core.run(join_all(metrics).then(|_| Ok::<(), ()>(())))
                         .unwrap_or_else(
                             |e| warn!(tlog, "Failed to join aggregated metrics"; "error"=>e),
-                        );
+                            );
                 }
             })
-            .expect("starting thread for sending to graphite");
+        .expect("starting thread for sending to graphite");
         Ok(())
     });
 
@@ -489,7 +520,7 @@ fn main() {
                                     iov_base: buf.as_mut_ptr() as *mut c_void,
                                     iov_len: bufsize as size_t,
                                 },
-                            );
+                                );
                             let mut control: Vec<u8> = Vec::with_capacity(128);
                             control.resize(128, 0u8);
                             let m = mmsghdr {
@@ -528,11 +559,11 @@ fn main() {
                                         remote
                                             .execute(
                                                 chan.send(Task::Parse(b.freeze()))
-                                                    .map_err(|_| {
-                                                        DROPS.fetch_add(1, Ordering::Relaxed);
-                                                    })
-                                                    .then(|_| Ok(())),
-                                            )
+                                                .map_err(|_| {
+                                                    DROPS.fetch_add(1, Ordering::Relaxed);
+                                                })
+                                                .then(|_| Ok(())),
+                                                )
                                             .unwrap_or_else(|e| {
                                                 warn!(log, "exec error: {:?}", e);
                                             });
@@ -542,14 +573,14 @@ fn main() {
                                 }
                             } else {
                                 warn!(log, "UDP receive error";
-                                  "code"=> format!("{}",res),
-                                  "error"=>format!("{}", ::std::io::Error::last_os_error())
-                                 )
+                                      "code"=> format!("{}",res),
+                                      "error"=>format!("{}", ::std::io::Error::last_os_error())
+                                     )
                             }
                         }
                     }
                 })
-                .expect("starting multimsg thread");
+            .expect("starting multimsg thread");
         }
     } else {
         // Create a pool of listener sockets
@@ -599,7 +630,7 @@ fn main() {
                                 bufsize,
                                 i,
                                 readbuf,
-                            );
+                                );
 
                             handle.spawn(server.into_future());
                         }
@@ -607,7 +638,7 @@ fn main() {
 
                     core.run(::futures::future::empty::<(), ()>()).unwrap();
                 })
-                .expect("creating UDP reader thread");
+            .expect("creating UDP reader thread");
         }
     }
 

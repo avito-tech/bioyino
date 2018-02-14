@@ -6,6 +6,20 @@ verbosity = "warn"
 # async UDP threads 
 nthreads =4
 
+# Metric settings
+[metrics]
+# Should we provide metrics with top update numbers
+count_updates = true
+# Prefix for metric update statistics (no trailing dot!)
+update_counter_prefix = "resources.monitoring.bioyino.updates"
+
+# Suffix for metric update statistics (no leading dot!)
+update_counter_suffix = ""
+
+# Minimal update counter to be reported
+update_counter_threshold = 200
+
+# Network settings
 [network]
 # Address:port to listen for metrics at
 listen = "127.0.0.1:8125"

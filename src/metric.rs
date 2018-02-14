@@ -24,6 +24,7 @@ where
 {
     pub value: F,
     pub mtype: MetricType<F>,
+    pub update_counter: u64,
     sampling: Option<f32>,
 }
 
@@ -33,7 +34,7 @@ pub enum MetricError {
 
     #[fail(display = "bad sampling range")] Sampling,
 
-    #[fail(display = "aggregating metrics of dirrerent types")] Aggregating,
+    #[fail(display = "aggregating metrics of different types")] Aggregating,
 }
 
 impl<F> IntoIterator for Metric<F>
@@ -198,6 +199,7 @@ where
             value: value,
             mtype: mtype,
             sampling: sampling,
+            update_counter: 1
         };
 
         if let MetricType::Timer(ref mut agg) = metric.mtype {
@@ -213,6 +215,7 @@ where
 
     pub fn aggregate(&mut self, new: Metric<F>) -> Result<(), Error> {
         use self::MetricType::*;
+        self.update_counter += new.update_counter;
         match (&mut self.mtype, new.mtype) {
             (&mut Counter, Counter) => {
                 self.value += new.value;
