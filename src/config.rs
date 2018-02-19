@@ -6,7 +6,7 @@ use toml;
 use clap::{Arg, SubCommand};
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct System {
     /// Logging level
     pub verbosity: String,
@@ -55,7 +55,7 @@ impl Default for System {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Metrics {
     // TODO: Maximum metric array size, 0 for unlimited
     //  max_metrics: usize,
@@ -86,7 +86,7 @@ impl Default for Metrics {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Network {
     /// Address and UDP port to listen for statsd metrics on
     pub listen: SocketAddr,
@@ -142,7 +142,7 @@ impl Default for Network {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Consul {
     /// Start in disabled leader finding mode
     pub start_disabled: bool,
@@ -155,6 +155,9 @@ pub(crate) struct Consul {
 
     /// How often to renew consul session, ms
     pub renew_time: usize,
+
+    /// Name of ke to be locked in consul
+    pub key_name: String,
 }
 
 impl Default for Consul {
@@ -164,6 +167,7 @@ impl Default for Consul {
             agent: "127.0.0.1:8500".parse().unwrap(),
             session_ttl: 11000,
             renew_time: 1000,
+            key_name: "service/bioyino/lock".to_string(),
         }
     }
 }
@@ -192,7 +196,6 @@ impl System {
                 .short("v")
                 .help("logging level")
                 .takes_value(true)
-                .default_value("warn"),
                 )
             .subcommand(
                 SubCommand::with_name("query")
@@ -207,7 +210,12 @@ impl System {
         let mut config_str = String::new();
         file.read_to_string(&mut config_str)
             .expect("reading config file");
-        let system: System = toml::de::from_str(&config_str).expect("parsing config");
+        let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
+
+        if let  Some(v) = app.value_of("verbosity"){
+            system.verbosity = v.into()
+        }
+
         if let Some(matches) = app.subcommand_matches("query") {
             let cmd =
                 value_t!(matches.value_of("peer_command"), PeerCommand).expect("bad peer command");
