@@ -38,7 +38,7 @@ where
         + PartialEq
         + Sync,
 {
-    // This will parse metic name and separator
+    // This will parse metric name and separator
     let name = take_while1(|c: u8| c != b':' && c != b'\n')
         .skip(byte(b':'))
         .and_then(|name| from_utf8(name).map(|name| name.to_string()));
