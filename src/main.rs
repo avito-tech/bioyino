@@ -337,7 +337,7 @@ fn main() {
         let tlog = tlog.clone();
 
         let update_counter_prefix = update_counter_prefix.clone();
-        let update_counter_suffix = update_counter_prefix.clone();
+        let update_counter_suffix = update_counter_suffix.clone();
         thread::Builder::new()
             .name("bioyino_carbon".into())
             .spawn(move || {
