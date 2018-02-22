@@ -15,7 +15,7 @@ use futures::sync::mpsc::Sender;
 use bincode::{self, Infinite};
 use slog::Logger;
 
-use {Cache, CAN_LEADER, FORCE_LEADER, IS_LEADER};
+use {Cache, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
 use task::Task;
 
 
@@ -344,8 +344,11 @@ impl IntoFuture for PeerSnapshotClient {
                                 let codec = PeerCodec::new(conn);
                                 codec.send(Some(PeerMessage::Snapshot(metrics))).map(|_| ())
                             })
-                        .map_err(move |e| debug!(log, "error sending snapshot: {}", e))
-                            .then(|_| Ok(())) // we don't want to faill the whole timer cycle because of one send error
+                        .map_err(move |e| {
+                            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            debug!(log, "error sending snapshot: {}", e)
+                        })
+                        .then(|_| Ok(())) // we don't want to faill the whole timer cycle because of one send error
                     }).collect::<Vec<_>>();
                 join_all(clients).map(|_|())
             })
