@@ -6,7 +6,7 @@ use toml;
 use clap::{Arg, SubCommand};
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct System {
     /// Logging level
     pub verbosity: String,
@@ -16,6 +16,9 @@ pub(crate) struct System {
 
     /// Consul settings
     pub consul: Consul,
+
+    /// Metric settings
+    pub metrics: Metrics,
 
     /// Number of networking threads, use 0 for number of CPUs
     pub n_threads: usize,
@@ -34,12 +37,14 @@ pub(crate) struct System {
     pub stats_prefix: String,
 }
 
+
 impl Default for System {
     fn default() -> Self {
         Self {
             verbosity: "warn".to_string(),
             network: Network::default(),
             consul: Consul::default(),
+            metrics: Metrics::default(),
             n_threads: 4,
             w_threads: 4,
             stats_interval: 10000,
@@ -50,7 +55,38 @@ impl Default for System {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub(crate) struct Metrics {
+    // TODO: Maximum metric array size, 0 for unlimited
+    //  max_metrics: usize,
+
+    /// Should we provide metrics with top update numbers
+    pub count_updates: bool,
+
+    /// Prefix for metric update statistics
+    pub update_counter_prefix: String,
+
+    /// Suffix for metric update statistics
+    pub update_counter_suffix: String,
+
+    /// Minimal update count to be reported
+    pub update_counter_threshold: u64,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            //           max_metrics: 0,
+            count_updates: true,
+            update_counter_prefix: "resources.monitoring.bioyino.updates".to_string(),
+            update_counter_suffix: String::new(),
+            update_counter_threshold: 200,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Network {
     /// Address and UDP port to listen for statsd metrics on
     pub listen: SocketAddr,
@@ -106,7 +142,7 @@ impl Default for Network {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Consul {
     /// Start in disabled leader finding mode
     pub start_disabled: bool,
@@ -119,6 +155,9 @@ pub(crate) struct Consul {
 
     /// How often to renew consul session, ms
     pub renew_time: usize,
+
+    /// Name of ke to be locked in consul
+    pub key_name: String,
 }
 
 impl Default for Consul {
@@ -128,6 +167,7 @@ impl Default for Consul {
             agent: "127.0.0.1:8500".parse().unwrap(),
             session_ttl: 11000,
             renew_time: 1000,
+            key_name: "service/bioyino/lock".to_string(),
         }
     }
 }
@@ -144,26 +184,25 @@ impl System {
         let app = app_from_crate!()
             .arg(
                 Arg::with_name("config")
-                    .help("configuration file path")
-                    .long("config")
-                    .short("c")
-                    .required(true)
-                    .takes_value(true)
-                    .default_value("/etc/bioyino/bioyino.toml"),
-            )
+                .help("configuration file path")
+                .long("config")
+                .short("c")
+                .required(true)
+                .takes_value(true)
+                .default_value("/etc/bioyino/bioyino.toml"),
+                )
             .arg(
                 Arg::with_name("verbosity")
-                    .short("v")
-                    .help("logging level")
-                    .takes_value(true)
-                    .default_value("warn"),
-            )
+                .short("v")
+                .help("logging level")
+                .takes_value(true)
+                )
             .subcommand(
                 SubCommand::with_name("query")
-                    .about("send a request to running peer server")
-                    .arg(Arg::with_name("peer_command").index(1))
-                    .arg(Arg::with_name("server").default_value("127.0.0.1:8136")),
-            )
+                .about("send a request to running peer server")
+                .arg(Arg::with_name("peer_command").index(1))
+                .arg(Arg::with_name("server").default_value("127.0.0.1:8136")),
+                )
             .get_matches();
 
         let config = value_t!(app.value_of("config"), String).expect("config file must be string");
@@ -171,7 +210,12 @@ impl System {
         let mut config_str = String::new();
         file.read_to_string(&mut config_str)
             .expect("reading config file");
-        let system: System = toml::de::from_str(&config_str).expect("parsing config");
+        let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
+
+        if let  Some(v) = app.value_of("verbosity"){
+            system.verbosity = v.into()
+        }
+
         if let Some(matches) = app.subcommand_matches("query") {
             let cmd =
                 value_t!(matches.value_of("peer_command"), PeerCommand).expect("bad peer command");

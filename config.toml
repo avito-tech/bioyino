@@ -2,10 +2,32 @@
 
 verbosity = "warn"
 
-# Number of async UDP network worker threads, use 0 to use all CPU cores, use any negative to disable
-# async UDP threads 
-nthreads =4
+# Number of async UDP network worker threads, use 0 to use all CPU core
+n-threads = 2
 
+# Prefix for sending own stats
+stats-prefix = "resources.monitoring.bioyino"
+
+# How often to gather own stats, in ms. Use 0 to disable (stats are still gathered, but not included in
+# metric dump
+stats-interval = 10000
+
+# Queue size for single counting thread before packet is dropped
+task-queue-size = 1024
+
+[metrics]
+# Should we provide metrics with top update numbers
+count-updates = true
+# Prefix for metric update statistics (no trailing dot!)
+update-counter-prefix = "resources.monitoring.bioyino.updates"
+
+# Suffix for metric update statistics (no leading dot!)
+update-counter-suffix = ""
+
+# Minimal update counter to be reported
+update-counter-threshold = 200
+
+# Network settings
 [network]
 # Address:port to listen for metrics at
 listen = "127.0.0.1:8125"
@@ -39,7 +61,7 @@ snum = 4
 nodes = []
 
 # Interval to send snapshots to nodes, ms
-snapshot_interval = 1000
+snapshot-interval = 1000
 
 [consul]
 # Start in disabled leader finding mode
@@ -48,8 +70,11 @@ start-disabled = false
 # Consul agent address
 agent = "127.0.0.1:8500"
 
-# TTL of consul session, ms (consul cannot set it to less than 10s)
-session_ttl = 11000
+# TTL of consul session, ms (Consul cannot set it to less than 10s)
+session-ttl = 11000
 
-# How often to renew consul session, ms
-renew_time = 1000
+# How often to renew Consul session, ms
+renew-time = 1000
+
+# Key name to lock in Consul
+key-name = "service/bioyino/lock"

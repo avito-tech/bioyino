@@ -1,6 +1,9 @@
 //use std::ops::{Add, Sub, AddAssign, SubAssign, Div};
 //use std::fmt::Debug;
 //use std::fmt::Display;
+use std::sync::atomic::Ordering;
+use std::borrow::Borrow;
+use std::marker::PhantomData;
 
 use {DROPS, EGRESS, INGRESS};
 
@@ -11,7 +14,6 @@ use tokio_io::codec::{Decoder, Encoder};
 use futures::{Future, IntoFuture, Sink};
 use futures::sync::mpsc;
 
-use std::sync::atomic::Ordering;
 use failure::Error;
 
 use task::Task;
@@ -31,6 +33,7 @@ pub struct StatsdServer {
     bufsize: usize,
     next: usize,
     readbuf: BytesMut,
+    chunks: usize,
 }
 
 //impl<E, F> StatsdServer<E, F>
@@ -44,6 +47,7 @@ impl StatsdServer {
         bufsize: usize,
         next: usize,
         readbuf: BytesMut,
+        chunks: usize,
     ) -> Self {
         Self {
             socket,
@@ -54,6 +58,7 @@ impl StatsdServer {
             bufsize,
             next,
             readbuf,
+            chunks,
         }
     }
 }
@@ -96,6 +101,7 @@ impl IntoFuture for StatsdServer {
             bufsize,
             next,
             readbuf,
+            chunks,
         } = self;
 
         let newhandle = handle.clone();
@@ -110,18 +116,17 @@ impl IntoFuture for StatsdServer {
 
                 buf.put(&received[0..size]);
 
-                if buf.remaining_mut() < bufsize {
+                if buf.remaining_mut() < bufsize || chunks == 0 {
                     let (chan, next) = if next >= chans.len() {
                         (chans[0].clone(), 1)
                     } else {
                         (chans[next].clone(), next + 1)
                     };
                     let newbuf = BytesMut::with_capacity(buf_queue_size * bufsize);
+
                     handle.spawn(
                         chan.send(Task::Parse(buf.freeze()))
-                            .map_err(|_| {
-                                DROPS.fetch_add(1, Ordering::Relaxed);
-                            })
+                            .map_err(|_| { DROPS.fetch_add(1, Ordering::Relaxed); })
                             .and_then(move |_| {
                                 StatsdServer::new(
                                     socket,
@@ -132,6 +137,7 @@ impl IntoFuture for StatsdServer {
                                     bufsize,
                                     next,
                                     received,
+                                    buf_queue_size * bufsize,
                                 ).into_future()
                             }),
                     );
@@ -146,6 +152,7 @@ impl IntoFuture for StatsdServer {
                             bufsize,
                             next,
                             received,
+                            chunks - 1,
                         ).into_future(),
                     );
                 }
@@ -155,8 +162,18 @@ impl IntoFuture for StatsdServer {
     }
 }
 
-pub struct CarbonCodec;
-impl Decoder for CarbonCodec {
+pub struct CarbonCodec<B>(PhantomData<B>);
+
+impl<B> CarbonCodec<B> {
+    pub fn new() -> Self {
+        CarbonCodec(PhantomData)
+    }
+}
+
+impl<B> Decoder for CarbonCodec<B>
+where
+    B: Borrow<str>,
+{
     type Item = ();
     type Error = Error;
 
@@ -165,18 +182,22 @@ impl Decoder for CarbonCodec {
     }
 }
 
-impl Encoder for CarbonCodec {
-    type Item = (String, String, String); // Metric name, suffix value and timestamp
+impl<B> Encoder for CarbonCodec<B>
+where
+    B: Borrow<str>,
+{
+    type Item = (String, String, B); // Metric name, suffix value and timestamp
     type Error = Error;
 
     fn encode(&mut self, m: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        let len = m.0.len() + 1 + m.1.len() + 1 + m.2.len() + 1;
+        let m2 = m.2.borrow();
+        let len = m.0.len() + 1 + m.1.len() + 1 + m2.len() + 1;
         buf.reserve(len);
         buf.put(m.0);
         buf.put(" ");
         buf.put(m.1);
         buf.put(" ");
-        buf.put(m.2);
+        buf.put(m2);
         buf.put("\n");
 
         EGRESS.fetch_add(1, Ordering::Relaxed);
