@@ -14,9 +14,14 @@ use failure::{Compat, ResultExt};
 
 #[derive(Fail, Debug)]
 enum ParseError {
-    #[fail(display = "parsing UTF-8 data")] Utf8(#[cause] ::std::str::Utf8Error),
+    #[fail(display = "parsing UTF-8 data")]
+    Utf8(
+        #[cause]
+        ::std::str::Utf8Error
+    ),
 
-    #[fail(display = "parsing float")] Float(String),
+    #[fail(display = "parsing float")]
+    Float(String),
 }
 
 pub type MetricParser<'a, F> = Box<Parser<Output = (String, Metric<F>), Input = &'a [u8]>>;
@@ -95,14 +100,14 @@ where
             optional(sampling),
             skip_many(newline()).or(eof()),
         ).and_then(|(sign, value, mtype, sampling, _)| {
-            let mtype = if let MetricType::Gauge(_) = mtype {
-                MetricType::Gauge(sign)
-            } else {
-                mtype
-            };
+                let mtype = if let MetricType::Gauge(_) = mtype {
+                    MetricType::Gauge(sign)
+                } else {
+                    mtype
+                };
 
-            Metric::<F>::new(value, mtype, sampling).compat()
-        }),
+                Metric::<F>::new(value, mtype, sampling).compat()
+            }),
     );
 
     Box::new(metric)

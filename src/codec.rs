@@ -33,6 +33,7 @@ pub struct StatsdServer {
     bufsize: usize,
     next: usize,
     readbuf: BytesMut,
+    chunks: usize,
 }
 
 //impl<E, F> StatsdServer<E, F>
@@ -46,6 +47,7 @@ impl StatsdServer {
         bufsize: usize,
         next: usize,
         readbuf: BytesMut,
+        chunks: usize,
     ) -> Self {
         Self {
             socket,
@@ -56,6 +58,7 @@ impl StatsdServer {
             bufsize,
             next,
             readbuf,
+            chunks,
         }
     }
 }
@@ -98,6 +101,7 @@ impl IntoFuture for StatsdServer {
             bufsize,
             next,
             readbuf,
+            chunks,
         } = self;
 
         let newhandle = handle.clone();
@@ -112,13 +116,14 @@ impl IntoFuture for StatsdServer {
 
                 buf.put(&received[0..size]);
 
-                if buf.remaining_mut() < bufsize {
+                if buf.remaining_mut() < bufsize || chunks == 0 {
                     let (chan, next) = if next >= chans.len() {
                         (chans[0].clone(), 1)
                     } else {
                         (chans[next].clone(), next + 1)
                     };
                     let newbuf = BytesMut::with_capacity(buf_queue_size * bufsize);
+
                     handle.spawn(
                         chan.send(Task::Parse(buf.freeze()))
                             .map_err(|_| { DROPS.fetch_add(1, Ordering::Relaxed); })
@@ -132,6 +137,7 @@ impl IntoFuture for StatsdServer {
                                     bufsize,
                                     next,
                                     received,
+                                    buf_queue_size * bufsize,
                                 ).into_future()
                             }),
                     );
@@ -146,6 +152,7 @@ impl IntoFuture for StatsdServer {
                             bufsize,
                             next,
                             received,
+                            chunks - 1,
                         ).into_future(),
                     );
                 }

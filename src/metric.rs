@@ -30,11 +30,14 @@ where
 
 #[derive(Fail, Debug)]
 pub enum MetricError {
-    #[fail(display = "float conversion")] FloatToRatio,
+    #[fail(display = "float conversion")]
+    FloatToRatio,
 
-    #[fail(display = "bad sampling range")] Sampling,
+    #[fail(display = "bad sampling range")]
+    Sampling,
 
-    #[fail(display = "aggregating metrics of different types")] Aggregating,
+    #[fail(display = "aggregating metrics of different types")]
+    Aggregating,
 }
 
 impl<F> IntoIterator for Metric<F>
@@ -141,28 +144,22 @@ where
             &MetricType::DiffCounter(_) if self.count == 0 => Some(("", self.m.value.to_string())),
             &MetricType::Gauge(_) if self.count == 0 => Some(("", self.m.value.to_string())),
             &MetricType::Timer(ref agg) => {
-                // it is safe to unwrap query here because it only fails when len = 0
-                // for us zero length is impossible, because metric wouldn't exist in this case
                 match self.count {
-                    0 => Some(("", self.m.value.to_string())),
-                    //1 => Some((".count", ckms.count().to_string())),
-                    1 => Some((".count", agg.len().to_string())),
-                    //2 => Some((".min", ckms.query(0f64).unwrap().1.to_string())),
+                    0 => Some((".count", agg.len().to_string())),
+                    // agg.len() = 0 is impossible here because of metric creation logic.
+                    // For additional panic safety and to ensure unwrapping is safe here
+                    // this will return None interrupting the iteration and making other
+                    // aggregations unreachable since they are useless in that case
+                    1 => agg.last().map(|last| (".last", last.to_string())),
                     2 => Some((".min", agg[0].to_string())),
-                    //3 => Some((".max", ckms.query(1f64).unwrap().1.to_string())),
                     3 => Some((".max", agg[agg.len() - 1].to_string())),
-                    //4 => Some((".sum", ckms.sum().unwrap().to_string())),
                     4 => Some((".sum", self.timer_sum.unwrap().to_string())),
-                    //5 => Some((".median", ckms.query(0.5f64).unwrap().1.to_string())),
                     5 => Some((".median", percentile(agg, 0.5).to_string())),
                     6 => Some((
                         ".mean",
-                        (self.timer_sum.unwrap().into() / agg.len() as f64).to_string(),
+                        (self.timer_sum.unwrap().into() / agg.len() as f64)
+                            .to_string(),
                     )),
-                    //7 => Some((
-                    //".percentile.75",
-                    //ckms.query(0.75f64).unwrap().1.to_string(),
-                    //        )),
                     7 => Some((".percentile.75", percentile(agg, 0.75).to_string())),
                     8 => Some((".percentile.95", percentile(agg, 0.95).to_string())),
                     9 => Some((".percentile.98", percentile(agg, 0.98).to_string())),
@@ -199,7 +196,7 @@ where
             value: value,
             mtype: mtype,
             sampling: sampling,
-            update_counter: 1
+            update_counter: 1,
         };
 
         if let MetricType::Timer(ref mut agg) = metric.mtype {

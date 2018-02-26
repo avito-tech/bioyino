@@ -48,11 +48,12 @@ impl Task {
                                 };
                             });
                         }
-                        FastResult::EmptyOk(_) | FastResult::EmptyErr(_) => {
+                        FastResult::EmptyOk(_) |
+                        FastResult::EmptyErr(_) => {
                             break;
                         }
                         FastResult::ConsumedErr(_e) => {
-                            //println!(
+                            // println!(
                             //"error parsing {:?}: {:?}",
                             //String::from_utf8(input.to_vec()),
                             //_e
