@@ -28,7 +28,7 @@ $ cargo build --release && strip target/release/bioyno
 ```
 
 # Configuring #
-As of current version no config file is read, everything is configured via commandline flags
+To configure, please, see config.toml, all the options are listed there and all of them are commented.
 
 # Contributing #
 
