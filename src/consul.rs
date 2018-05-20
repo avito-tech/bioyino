@@ -1,14 +1,14 @@
-use std::sync::atomic::Ordering;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use hyper;
-use hyper::header::{ContentLength, ContentType};
-use tokio_core::reactor::{Handle, Interval, Timeout};
 use futures::Stream;
 use futures::future::{err, loop_fn, ok, Future, IntoFuture, Loop};
+use hyper;
+use hyper::header::{ContentLength, ContentType};
 use serde_json::{self, from_slice};
 use slog::Logger;
+use tokio_core::reactor::{Handle, Interval, Timeout};
 use {CAN_LEADER, FORCE_LEADER, IS_LEADER};
 
 #[derive(Fail, Debug)]
@@ -23,21 +23,12 @@ pub enum ConsulError {
     ConnectionTimeout,
 
     #[fail(display = "Http error: {}", _0)]
-    Http(
-        #[cause]
-        hyper::Error
-    ),
+    Http(#[cause] hyper::Error),
 
     #[fail(display = "Parsing response: {}", _0)]
-    Parsing(
-        #[cause]
-        serde_json::Error
-    ),
+    Parsing(#[cause] serde_json::Error),
     #[fail(display = "I/O error {}", _0)]
-    Io(
-        #[cause]
-        ::std::io::Error
-    ),
+    Io(#[cause] ::std::io::Error),
 
     #[fail(display = "{}", _0)]
     Renew(String),
@@ -223,16 +214,15 @@ impl IntoFuture for ConsulSession {
         let ttl_ns = ttl.as_secs() * 1000000000u64 + ttl.subsec_nanos() as u64;
         let b = format!(
             "{{\"TTL\": \"{}ns\", \"LockDelay\": \"{}ns\"}}",
-            ttl_ns,
-            ttl_ns
+            ttl_ns, ttl_ns
         );
         let bodylen = b.len() as u64;
         session_req.set_body(b);
         // Override sending request as multipart
         session_req.headers_mut().set(ContentLength(bodylen));
-        session_req.headers_mut().set(
-            ContentType::form_url_encoded(),
-        );
+        session_req
+            .headers_mut()
+            .set(ContentType::form_url_encoded());
 
         let thandle = handle.clone();
         let c_session = client

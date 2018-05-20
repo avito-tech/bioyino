@@ -1,13 +1,27 @@
-use futures::sync::oneshot;
-use metric::Metric;
-
-use parser::metric_parser;
-use bytes::Bytes;
 use std::collections::hash_map::Entry;
-use combine::primitives::FastResult;
 use std::sync::atomic::Ordering;
+
+use bytes::{BufMut, Bytes, BytesMut};
+use combine::primitives::FastResult;
+use futures::Sink;
+use futures::sync::mpsc::UnboundedSender;
+use futures::sync::oneshot;
+
+use metric::Metric;
+use parser::metric_parser;
+use util::AggregateOptions;
+
 use {Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS,
      SHORT_CACHE};
+
+#[derive(Debug)]
+pub struct AggregateData {
+    buf: BytesMut,
+    name: Bytes,
+    metric: Metric<Float>,
+    options: AggregateOptions,
+    response: UnboundedSender<(Bytes, Float)>,
+}
 
 #[derive(Debug)]
 pub enum Task {
@@ -16,7 +30,7 @@ pub enum Task {
     JoinSnapshot(Vec<Cache>),
     TakeSnapshot(oneshot::Sender<Cache>),
     Rotate(oneshot::Sender<Cache>),
-    Join(Metric<Float>, Metric<Float>, oneshot::Sender<Metric<Float>>),
+    Aggregate(AggregateData),
 }
 
 impl Task {
@@ -48,8 +62,7 @@ impl Task {
                                 };
                             });
                         }
-                        FastResult::EmptyOk(_) |
-                        FastResult::EmptyErr(_) => {
+                        FastResult::EmptyOk(_) | FastResult::EmptyErr(_) => {
                             break;
                         }
                         FastResult::ConsumedErr(_e) => {
@@ -157,12 +170,55 @@ impl Task {
                     });
                 });
             }
-            Task::Join(mut metric1, metric2, channel) => {
-                metric1.aggregate(metric2).unwrap_or_else(|_| {
+            Task::Aggregate(AggregateData {
+                buf,
+                name,
+                metric,
+                options,
+                response,
+            }) => {
+                let upd = if let Some(options) = options.update_counter {
+                    if metric.update_counter > options.threshold {
+                        // + 2 is for dots
+                        let cut_len = options.prefix.len() + name.len() + options.suffix.len() + 2;
+                        buf.reserve(cut_len);
+                        if options.prefix.len() > 0 {
+                            buf.put_slice(&options.prefix);
+                            buf.put_slice(b".");
+                        }
+
+                        buf.put_slice(&name);
+                        if options.suffix.len() > 0 {
+                            buf.put_slice(b".");
+                            buf.put_slice(&options.suffix);
+                        }
+
+                        let counter = buf.take().freeze();
+                        Some((counter, metric.update_counter.into()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let aggregated = metric
+                    .into_iter()
+                    .map(move |(suffix, value)| {
+                        buf.extend_from_slice(&name);
+                        buf.extend_from_slice(suffix.as_bytes());
+                        let name = buf.take().freeze();
+                        (name, value)
+                    })
+                    .chain(upd)
+                    .map(|data| {
+                        response.start_send(data).map_err(|_| {
+                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        });
+                    })
+                    .last();
+                response.poll_complete().map_err(|_| {
                     AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                });
-                channel.send(metric1).unwrap_or_else(|_| {
-                    DROPS.fetch_add(1, Ordering::Relaxed);
                 });
             }
         }

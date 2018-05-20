@@ -1,39 +1,45 @@
 use std::net::SocketAddr;
-use std::time::Duration;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-use tokio_core::reactor::{Handle, Interval};
-use tokio_core::net::TcpStream;
-use tokio_io::{AsyncRead, AsyncWrite};
-use tokio_io::codec::length_delimited;
-use tokio_io::codec::length_delimited::Framed;
-use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
-use futures::sync::oneshot;
+use bincode;
 use futures::future::{join_all, ok, Future, IntoFuture};
 use futures::sync::mpsc::Sender;
-use bincode::{self, Infinite};
+use futures::sync::oneshot;
+use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use slog::Logger;
+use tokio_core::net::TcpStream;
+use tokio_core::reactor::{Handle, Interval};
+use tokio_io::codec::length_delimited;
+use tokio_io::codec::length_delimited::Framed;
+use tokio_io::{AsyncRead, AsyncWrite};
 
-use {Cache, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
 use task::Task;
-
+use {Cache, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
-    #[fail(display = "I/O error: {}", _0)] Io(#[cause] ::std::io::Error),
+    #[fail(display = "I/O error: {}", _0)]
+    Io(#[cause] ::std::io::Error),
 
-    #[fail(display = "bincode decoding error {}", _0)] Decode(#[cause] Box<bincode::ErrorKind>),
+    #[fail(display = "bincode decoding error {}", _0)]
+    Decode(#[cause] Box<bincode::ErrorKind>),
 
-    #[fail(display = "bincode encoding error: {}", _0)] Encode(#[cause] Box<bincode::ErrorKind>),
+    #[fail(display = "bincode encoding error: {}", _0)]
+    Encode(#[cause] Box<bincode::ErrorKind>),
 
-    #[fail(display = "error sending task to worker thread")] TaskSend,
+    #[fail(display = "error sending task to worker thread")]
+    TaskSend,
 
-    #[fail(display = "server received incorrect message")] BadMessage,
+    #[fail(display = "server received incorrect message")]
+    BadMessage,
 
-    #[fail(display = "bad command")] BadCommand,
+    #[fail(display = "bad command")]
+    BadCommand,
 
-    #[fail(display = "response not sent")] Response,
+    #[fail(display = "response not sent")]
+    Response,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,7 +84,7 @@ pub struct PeerCodec<T> {
 
 impl<T> PeerCodec<T>
 where
-T: AsyncRead + AsyncWrite,
+    T: AsyncRead + AsyncWrite,
 {
     pub fn new(conn: T) -> Self {
         Self {
@@ -93,15 +99,14 @@ T: AsyncRead + AsyncWrite,
 // Wrapper to decode  message from length-encoded frame
 impl<T> Stream for PeerCodec<T>
 where
-T: AsyncRead + AsyncWrite,
+    T: AsyncRead + AsyncWrite,
 {
     type Item = PeerMessage;
     type Error = PeerError;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         let message = match try_ready!(self.inner.poll().map_err(|e| PeerError::Io(e))) {
-            Some(buf) => Some(bincode::deserialize(&buf)
-                              .map_err(|e| PeerError::Decode(e))?),
+            Some(buf) => Some(bincode::deserialize(&buf).map_err(|e| PeerError::Decode(e))?),
             None => None,
         };
         Ok(Async::Ready(message))
@@ -111,7 +116,7 @@ T: AsyncRead + AsyncWrite,
 // Wrapper to encode message to length-encoded frame
 impl<T> Sink for PeerCodec<T>
 where
-T: AsyncRead + AsyncWrite,
+    T: AsyncRead + AsyncWrite,
 {
     type SinkItem = Option<PeerMessage>;
     type SinkError = PeerError;
@@ -119,8 +124,7 @@ T: AsyncRead + AsyncWrite,
     fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
         match item {
             Some(item) => {
-                let message =
-                    bincode::serialize(&item, Infinite).map_err(|e| PeerError::Decode(e))?;
+                let message = bincode::serialize(&item).map_err(|e| PeerError::Decode(e))?;
                 match self.inner.start_send(message) {
                     Ok(AsyncSink::NotReady(_)) => Ok(AsyncSink::NotReady(Some(item))),
                     Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
@@ -151,7 +155,7 @@ impl PeerServer {
         handle: &Handle,
         chans: &Vec<Sender<Task>>,
         nodes: &Vec<SocketAddr>,
-        ) -> Self {
+    ) -> Self {
         Self {
             log: log.new(o!("source"=>"peer-server", "ip"=>format!("{}", listen.clone()))),
             listen,
@@ -229,19 +233,17 @@ impl IntoFuture for PeerServer {
                                         node.clone(),
                                         &handle,
                                         PeerCommand::LeaderDisable,
-                                        ).into_future()
+                                    ).into_future()
                                         .map_err(move |e| {
                                             warn!(
                                                 elog,
-                                                "could not send command to {:?}: {:?}",
-                                                node,
-                                                e
-                                                );
+                                                "could not send command to {:?}: {:?}", node, e
+                                            );
                                         })
-                                    .then(|_| Ok(()));
+                                        .then(|_| Ok(()));
                                     handle.spawn(command)
                                 })
-                            .last();
+                                .last();
                             None
                         }
                         PeerMessage::Command(PeerCommand::Status) => {
@@ -260,7 +262,7 @@ impl IntoFuture for PeerServer {
                             None
                         }
                     })
-                .forward(writer)
+                    .forward(writer)
                     .then(|_| Ok(())) // don't let send errors fail the server
             });
         Box::new(future)
@@ -282,7 +284,7 @@ impl PeerSnapshotClient {
         interval: Duration,
         handle: &Handle,
         chans: &Vec<Sender<Task>>,
-        ) -> Self {
+    ) -> Self {
         Self {
             log: log.new(o!("source"=>"peer-client")),
             nodes,
@@ -320,13 +322,14 @@ impl IntoFuture for PeerSnapshotClient {
                     handle.spawn(chan.send(Task::TakeSnapshot(tx)).then(|_| Ok(())));
                     rx
                 })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
             let get_metrics = join_all(metrics).map_err(|_| PeerError::TaskSend).and_then(
                 move |mut metrics| {
                     metrics.retain(|m| m.len() > 0);
                     Ok(metrics)
-                });
+                },
+            );
 
             // All nodes have to receive the same metrics
             // so we don't parallel connections and metrics fetching
@@ -334,7 +337,8 @@ impl IntoFuture for PeerSnapshotClient {
             // could've changed them to Arc
             let log = log.clone();
             get_metrics.and_then(move |metrics| {
-                let clients = nodes.into_iter()
+                let clients = nodes
+                    .into_iter()
                     .map(|address| {
                         let metrics = metrics.clone();
                         let log = log.clone();
@@ -344,13 +348,14 @@ impl IntoFuture for PeerSnapshotClient {
                                 let codec = PeerCodec::new(conn);
                                 codec.send(Some(PeerMessage::Snapshot(metrics))).map(|_| ())
                             })
-                        .map_err(move |e| {
-                            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                            debug!(log, "error sending snapshot: {}", e)
-                        })
-                        .then(|_| Ok(())) // we don't want to faill the whole timer cycle because of one send error
-                    }).collect::<Vec<_>>();
-                join_all(clients).map(|_|())
+                            .map_err(move |e| {
+                                PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                debug!(log, "error sending snapshot: {}", e)
+                            })
+                            .then(|_| Ok(())) // we don't want to faill the whole timer cycle because of one send error
+                    })
+                    .collect::<Vec<_>>();
+                join_all(clients).map(|_| ())
             })
         });
         Box::new(future)
@@ -368,11 +373,11 @@ impl PeerCommandClient {
     pub fn new(log: &Logger, address: SocketAddr, handle: &Handle, command: PeerCommand) -> Self {
         Self {
             log: log.new(
-                     o!("source"=>"peer-command-client", "server"=>format!("{}", address.clone())),
-                     ),
-                     address,
-                     handle: handle.clone(),
-                     command,
+                o!("source"=>"peer-command-client", "server"=>format!("{}", address.clone())),
+            ),
+            address,
+            handle: handle.clone(),
+            command,
         }
     }
 }
@@ -401,24 +406,24 @@ impl IntoFuture for PeerCommandClient {
                 let codec = PeerCodec::new(conn);
                 codec.send(Some(PeerMessage::Command(command)))
             })
-        .and_then(move |codec| {
-            if resp_required {
-                let resp = codec
-                    .into_future()
-                    .and_then(move |(status, _)| {
-                        if let Some(PeerMessage::Status(status)) = status {
-                            println!("status of {:?}: {:?}", address, status,);
-                        } else {
-                            warn!(log, "Unknown response from server: {:?}", status);
-                        }
-                        Ok(())
-                    })
-                .then(|_| Ok(()));
-                Box::new(resp) as Box<Future<Item = Self::Item, Error = Self::Error>>
-            } else {
-                Box::new(ok::<(), PeerError>(()))
-            }
-        });
+            .and_then(move |codec| {
+                if resp_required {
+                    let resp = codec
+                        .into_future()
+                        .and_then(move |(status, _)| {
+                            if let Some(PeerMessage::Status(status)) = status {
+                                println!("status of {:?}: {:?}", address, status,);
+                            } else {
+                                warn!(log, "Unknown response from server: {:?}", status);
+                            }
+                            Ok(())
+                        })
+                        .then(|_| Ok(()));
+                    Box::new(resp) as Box<Future<Item = Self::Item, Error = Self::Error>>
+                } else {
+                    Box::new(ok::<(), PeerError>(()))
+                }
+            });
 
         Box::new(future)
     }
