@@ -51,6 +51,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
 use std::thread;
 use std::time::{self, Duration, SystemTime};
@@ -344,6 +345,7 @@ fn main() {
 
             let update_counter_prefix = update_counter_prefix.clone();
             let update_counter_suffix = update_counter_suffix.clone();
+            let options = options.clone();
             thread::Builder::new()
                 .name("bioyino_carbon".into())
                 .spawn(move || {
@@ -369,10 +371,21 @@ fn main() {
                     };
 
                     if is_leader {
-                        let (backend, backend_tx) =
-                            CarbonBackend::new(backend_addr, carbon, ts, &handle);
+                        //  let (backend, backend_tx) =
+                        let backend = CarbonBackend::new(
+                            backend_addr,
+                            carbon,
+                            ts,
+                            &handle,
+                            Arc::new(Vec::new()),
+                        );
+
+                        let (backend_tx, backend_rx) = mpsc::unbounded();
                         let aggregator = Aggregator::new(options, tchans, backend_tx);
+
                         handle.spawn(aggregator.into_future());
+
+                        //let backend = backend_rx.cocllect();
 
                         core.run(backend.into_future().then(|_| Ok::<(), ()>(())))
                             .unwrap_or_else(

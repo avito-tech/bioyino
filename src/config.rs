@@ -5,7 +5,7 @@ use std::io::Read;
 use std::net::SocketAddr;
 use toml;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct System {
     /// Logging level
@@ -57,7 +57,7 @@ impl Default for System {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Metrics {
     // TODO: Maximum metric array size, 0 for unlimited
@@ -87,7 +87,7 @@ impl Default for Metrics {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Carbon {
     /// Enable sending to carbon protocol backend
@@ -127,7 +127,7 @@ impl Default for Carbon {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Network {
     /// Address and UDP port to listen for statsd metrics on
@@ -175,7 +175,7 @@ impl Default for Network {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Consul {
     /// Start in disabled leader finding mode

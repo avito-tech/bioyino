@@ -16,11 +16,11 @@ use {Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS,
 
 #[derive(Debug)]
 pub struct AggregateData {
-    buf: BytesMut,
-    name: Bytes,
-    metric: Metric<Float>,
-    options: AggregateOptions,
-    response: UnboundedSender<(Bytes, Float)>,
+    pub buf: BytesMut,
+    pub name: Bytes,
+    pub metric: Metric<Float>,
+    pub options: AggregateOptions,
+    pub response: UnboundedSender<(Bytes, Float)>,
 }
 
 #[derive(Debug)]
@@ -171,11 +171,11 @@ impl Task {
                 });
             }
             Task::Aggregate(AggregateData {
-                buf,
+                mut buf,
                 name,
                 metric,
                 options,
-                response,
+                mut response,
             }) => {
                 let upd = if let Some(options) = options.update_counter {
                     if metric.update_counter > options.threshold {
