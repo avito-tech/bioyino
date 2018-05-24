@@ -107,7 +107,8 @@ impl IntoFuture for Aggregator {
                         // TODO: at some day counting workers will probably work in work-stealing mode,
                         // after that we probably will be able to run task in common mode
                         task.run();
-                    });
+                    })
+                    .last();
                 Ok(())
             });
             Box::new(aggregate)

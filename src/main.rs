@@ -79,7 +79,7 @@ use metric::{Metric, MetricType};
 use peer::{PeerCommandClient, PeerServer, PeerSnapshotClient};
 use server::StatsdServer;
 use task::Task;
-use util::{AggregateOptions, Aggregator, UpdateCounterOptions};
+use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, UpdateCounterOptions};
 
 pub type Float = f64;
 pub type Cache = HashMap<String, Metric<Float>>;
@@ -345,7 +345,7 @@ fn main() {
 
             let update_counter_prefix = update_counter_prefix.clone();
             let update_counter_suffix = update_counter_suffix.clone();
-            let options = options.clone();
+            let carbon = carbon.clone();
             thread::Builder::new()
                 .name("bioyino_carbon".into())
                 .spawn(move || {
@@ -371,26 +371,29 @@ fn main() {
                     };
 
                     if is_leader {
-                        //  let (backend, backend_tx) =
-                        let backend = CarbonBackend::new(
-                            backend_addr,
-                            carbon,
-                            ts,
-                            &handle,
-                            Arc::new(Vec::new()),
-                        );
-
                         let (backend_tx, backend_rx) = mpsc::unbounded();
                         let aggregator = Aggregator::new(options, tchans, backend_tx);
 
                         handle.spawn(aggregator.into_future());
 
-                        //let backend = backend_rx.cocllect();
-
-                        core.run(backend.into_future().then(|_| Ok::<(), ()>(())))
-                            .unwrap_or_else(
-                                |e| warn!(tlog, "Failed to send to graphite"; "error"=>e),
+                        let backend = backend_rx.collect().and_then(|metrics| {
+                            let backend = CarbonBackend::new(
+                                backend_addr,
+                                carbon,
+                                ts,
+                                &handle,
+                                Arc::new(metrics),
                             );
+
+                            let retrier = BackoffRetryBuilder::default(); // TODO provide options
+                            let retrier = retrier.spawn(&handle, backend).map_err(|_| ()); // TODO error
+                            retrier
+                        });
+
+                        //core.run(backend.into_future().then(|_| Ok::<(), ()>(())))
+                        core.run(backend.then(|_| Ok::<(), ()>(()))).unwrap_or_else(
+                            |e| warn!(tlog, "Failed to send to graphite"; "error"=>e),
+                        );
                     } else {
                         let (backend_tx, _) = mpsc::unbounded();
                         let aggregator = Aggregator::new(options, tchans, backend_tx).into_future();

@@ -31,7 +31,6 @@ pub struct CarbonBackend {
     ts: Bytes,
 
     metrics: Arc<Vec<(Bytes, Float)>>,
-    //    rx: UnboundedReceiver<(Bytes, Float)>,
 }
 
 impl CarbonBackend {
@@ -41,7 +40,6 @@ impl CarbonBackend {
         ts: Duration,
         handle: &Handle,
         metrics: Arc<Vec<(Bytes, Float)>>,
-        //) -> (Self, UnboundedSender<(Bytes, Float)>) {
     ) -> Self {
         let ts: Bytes = ts.as_secs().to_string().into();
         let self_ = Self {
@@ -50,9 +48,7 @@ impl CarbonBackend {
             options,
             ts,
             metrics,
-            //rx,
         };
-        //(self_, tx)
         self_
     }
 }
@@ -69,26 +65,16 @@ impl IntoFuture for CarbonBackend {
             options,
             ts,
             metrics,
-            //rx,
         } = self;
 
-        /*
-        let gather = rx.collect().map(|vec| Arc::new(vec));
-
-        let pusher = gather.and_then(|metrics| {
-            let conn = TcpStream::connect(&addr, &handle).map_err(|e| GeneralError::Io(e));
-            let future = conn.and_then(move |conn| {
-                let writer = conn.framed(CarbonCodec::new());
-                let metric_stream = stream::iter_ok(gather);
-                metric_stream.forward(writer)
-            });
-            let retried = BackoffRetryBuilder::default();
-            retried.spawn(&handle, future)
+        let conn = TcpStream::connect(&addr, &handle).map_err(|e| GeneralError::Io(e));
+        let future = conn.and_then(move |conn| {
+            let writer = conn.framed(CarbonCodec::new());
+            let metric_stream = stream::iter_ok(metrics.iter());
+            metric_stream.forward(writer)
         });
-        */
-        let pusher = ok(());
 
-        Box::new(pusher)
+        Box::new(future)
     }
 }
 
