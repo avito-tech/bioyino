@@ -202,7 +202,7 @@ impl Task {
                     None
                 };
 
-                let aggregated = metric
+                metric
                     .into_iter()
                     .map(move |(suffix, value)| {
                         buf.extend_from_slice(&name);
@@ -212,14 +212,22 @@ impl Task {
                     })
                     .chain(upd)
                     .map(|data| {
-                        response.start_send(data).map_err(|_| {
-                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                        });
+                        response
+                            .start_send(data)
+                            .map_err(|_| {
+                                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            })
+                            .map(|_| ())
+                            .unwrap_or(());
                     })
                     .last();
-                response.poll_complete().map_err(|_| {
-                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                });
+                response
+                    .poll_complete()
+                    .map_err(|_| {
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    })
+                    .map(|_| ())
+                    .unwrap_or_else(|_| ());
             }
         }
     }

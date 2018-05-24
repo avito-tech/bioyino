@@ -1,18 +1,17 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
-use futures::future::{err, loop_fn, ok, Either, Loop};
+use futures::future::Either;
 use futures::stream::futures_unordered;
-use futures::sync::mpsc::{unbounded, Sender, UnboundedReceiver, UnboundedSender};
+use futures::sync::mpsc::{Sender, UnboundedSender};
 use futures::sync::oneshot;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
 use tokio_core::reactor::{Handle, Timeout};
 
 use task::{AggregateData, Task};
-use {Cache, Float, GeneralError, AGG_ERRORS, EGRESS};
+use {Cache, Float, AGG_ERRORS, EGRESS};
 
 #[derive(Debug, Clone)]
 pub struct UpdateCounterOptions {
@@ -206,10 +205,7 @@ where
                 },
                 Either::B(ref mut timer) => match timer.poll() {
                     // we are waiting for the delay
-                    Ok(Async::Ready(())) => {
-                        (false, true)
-                        //continue;
-                    }
+                    Ok(Async::Ready(())) => (false, true),
                     Ok(Async::NotReady) => return Ok(Async::NotReady),
                     Err(_) => unreachable!(), // timer should not return error
                 },

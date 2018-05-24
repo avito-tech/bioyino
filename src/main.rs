@@ -31,8 +31,7 @@ extern crate combine;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate dtoa;
-extern crate itoa;
+extern crate ftoa;
 extern crate serde_json;
 
 pub mod bigint;
@@ -56,22 +55,20 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATO
 use std::thread;
 use std::time::{self, Duration, SystemTime};
 
-use failure::Fail;
 use slog::{Drain, Level};
 
 use bytes::{Bytes, BytesMut};
-use futures::future::{join_all, lazy, loop_fn, ok, Either, Executor, Loop};
-use futures::sync::{mpsc, oneshot};
+use futures::future::{lazy, ok, Executor};
+use futures::sync::mpsc;
 use futures::{empty, Future, IntoFuture, Sink, Stream};
-use tokio_core::net::{TcpStream, UdpSocket};
+use tokio_core::net::UdpSocket;
 use tokio_core::reactor::{Core, Interval};
-use tokio_io::AsyncRead;
 
 use net2::UdpBuilder;
 use net2::unix::UnixUdpBuilderExt;
 use resolve::resolver;
 
-use carbon::{CarbonBackend, CarbonCodec};
+use carbon::CarbonBackend;
 use config::{Command, Consul, Metrics, Network, System};
 use consul::ConsulConsensus;
 use errors::GeneralError;
@@ -345,7 +342,6 @@ fn main() {
 
             let update_counter_prefix = update_counter_prefix.clone();
             let update_counter_suffix = update_counter_suffix.clone();
-            let carbon = carbon.clone();
             thread::Builder::new()
                 .name("bioyino_carbon".into())
                 .spawn(move || {
@@ -356,7 +352,6 @@ fn main() {
 
                     debug!(tlog, "leader sending metrics");
 
-                    let elog = tlog.clone();
                     let options = AggregateOptions {
                         is_leader,
                         update_counter: if count_updates {
@@ -376,24 +371,29 @@ fn main() {
 
                         handle.spawn(aggregator.into_future());
 
-                        let backend = backend_rx.collect().and_then(|metrics| {
-                            let backend = CarbonBackend::new(
-                                backend_addr,
-                                carbon,
-                                ts,
-                                &handle,
-                                Arc::new(metrics),
-                            );
+                        let backend = backend_rx
+                            .inspect(|_| {
+                                EGRESS.fetch_add(1, Ordering::Relaxed);
+                            })
+                            .collect()
+                            .and_then(|metrics| {
+                                let backend = CarbonBackend::new(
+                                    backend_addr,
+                                    ts,
+                                    &handle,
+                                    Arc::new(metrics),
+                                );
 
-                            let retrier = BackoffRetryBuilder::default(); // TODO provide options
-                            let retrier = retrier.spawn(&handle, backend).map_err(|_| ()); // TODO error
-                            retrier
-                        });
+                                let retrier = BackoffRetryBuilder::default(); // TODO provide options
+                                let retrier = retrier.spawn(&handle, backend).map_err(|_| ()); // TODO error
+                                retrier
+                            });
 
                         //core.run(backend.into_future().then(|_| Ok::<(), ()>(())))
-                        core.run(backend.then(|_| Ok::<(), ()>(()))).unwrap_or_else(
-                            |e| warn!(tlog, "Failed to send to graphite"; "error"=>e),
-                        );
+                        //core.run(backend.then(|_| Ok::<(), ()>(()))).unwrap_or_else(
+                        core.run(backend.map_err(|e| {
+                            warn!(tlog, "Failed to send to graphite"; "error"=>e);
+                        })).unwrap_or(());
                     } else {
                         let (backend_tx, _) = mpsc::unbounded();
                         let aggregator = Aggregator::new(options, tchans, backend_tx).into_future();

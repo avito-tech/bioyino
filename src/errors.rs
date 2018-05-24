@@ -11,6 +11,9 @@ pub enum GeneralError {
     #[fail(display = "Gave up connecting to {}", _0)]
     TcpOutOfTries(SocketAddr),
 
+    #[fail(display = "Carbon backend failure")]
+    CarbonBackend,
+
     #[fail(display = "future send error")]
     FutureSend,
 }
