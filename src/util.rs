@@ -8,10 +8,98 @@ use futures::stream::futures_unordered;
 use futures::sync::mpsc::{Sender, UnboundedSender};
 use futures::sync::oneshot;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
+use slog::Logger;
+use tokio::spawn;
+use tokio::timer::Interval;
 use tokio_core::reactor::{Handle, Timeout};
 
+use metric::{Metric, MetricType};
 use task::{AggregateData, Task};
-use {Cache, Float, AGG_ERRORS, EGRESS};
+use {Cache, Float, AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
+
+// A future to send own stats. Never gets ready.
+pub struct OwnStats {
+    interval: u64,
+    prefix: String,
+    timer: Interval,
+    chan: Sender<Task>,
+    log: Logger,
+}
+
+impl OwnStats {
+    pub fn new(interval: u64, prefix: String, chan: Sender<Task>, log: &Logger) -> Self {
+        let log = log.new(o!("source"=>"stats"));
+        let dur = Duration::from_millis(interval);
+        let now = Instant::now();
+        Self {
+            interval,
+            prefix,
+            timer: Interval::new(now + dur, dur),
+            chan,
+            log,
+        }
+    }
+
+    pub fn get_stats(&mut self) {
+        let mut metrics = HashMap::new();
+        macro_rules! add_metric {
+            ($global:ident, $value:ident, $suffix:expr) => {
+                let $value = $global.swap(0, Ordering::Relaxed) as Float;
+                if self.interval > 0 {
+                    metrics.insert(
+                        self.prefix.clone() + "." + $suffix,
+                        Metric::new($value, MetricType::Counter, None).unwrap(),
+                    );
+                }
+            };
+        };
+        add_metric!(EGRESS, egress, "egress");
+        add_metric!(INGRESS, ingress, "ingress");
+        add_metric!(INGRESS_METRICS, ingress_m, "ingress-metric");
+        add_metric!(AGG_ERRORS, agr_errors, "agg-error");
+        add_metric!(PARSE_ERRORS, parse_errors, "parse-error");
+        add_metric!(PEER_ERRORS, peer_errors, "peer-error");
+        add_metric!(DROPS, drops, "drop");
+        if self.interval > 0 {
+            let s_interval = self.interval as f64;
+            info!(self.log, "stats";
+                              "egress" => format!("{:2}", egress / s_interval),
+                              "ingress" => format!("{:2}", ingress / s_interval),
+                              "ingress-m" => format!("{:2}", ingress_m / s_interval),
+                              "a-err" => format!("{:2}", agr_errors / s_interval),
+                              "p-err" => format!("{:2}", parse_errors / s_interval),
+                              "pe-err" => format!("{:2}", peer_errors / s_interval),
+                              "drops" => format!("{:2}", drops / s_interval),
+                              );
+        }
+        self.chan
+            .start_send(Task::AddMetrics(metrics))
+            .map(|_| ())
+            .unwrap_or_else(|_| warn!(self.log, "stats future could not send metric to task"));
+
+        self.chan
+            .poll_complete()
+            .map(|_| ())
+            .unwrap_or_else(|_| warn!(self.log, "stats future could not flush task channel"));
+    }
+}
+
+impl Future for OwnStats {
+    type Item = ();
+    type Error = ();
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.timer.poll() {
+            Ok(Async::Ready(Some(_))) => {
+                self.get_stats();
+                Ok(Async::NotReady)
+            }
+            Ok(Async::Ready(None)) => unreachable!(),
+            Ok(Async::NotReady) => Ok(Async::NotReady),
+            Err(_) => Err(()),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct UpdateCounterOptions {
@@ -185,7 +273,7 @@ where
     type Item = F::Item;
     type Error = Option<F::Error>;
 
-    fn poll(&mut self) -> Poll<F::Item, Option<F::Error>> {
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             let (rotate_f, rotate_t) = match self.inner {
                 // we are polling a future currently

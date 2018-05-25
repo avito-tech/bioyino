@@ -22,6 +22,7 @@ extern crate libc;
 extern crate net2;
 extern crate num_cpus;
 extern crate resolve;
+extern crate tokio;
 extern crate tokio_core;
 extern crate tokio_io;
 
@@ -60,7 +61,10 @@ use slog::{Drain, Level};
 use bytes::{Bytes, BytesMut};
 use futures::future::{lazy, ok, Executor};
 use futures::sync::mpsc;
-use futures::{empty, Future, IntoFuture, Sink, Stream};
+use futures::{Future, IntoFuture, Sink, Stream};
+
+use tokio::runtime::current_thread::Runtime;
+use tokio::spawn;
 use tokio_core::net::UdpSocket;
 use tokio_core::reactor::{Core, Interval};
 
@@ -72,11 +76,11 @@ use carbon::CarbonBackend;
 use config::{Command, Consul, Metrics, Network, System};
 use consul::ConsulConsensus;
 use errors::GeneralError;
-use metric::{Metric, MetricType};
+use metric::Metric;
 use peer::{PeerCommandClient, PeerServer, PeerSnapshotClient};
 use server::StatsdServer;
 use task::Task;
-use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, UpdateCounterOptions};
+use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
 
 pub type Float = f64;
 pub type Cache = HashMap<String, Metric<Float>>;
@@ -200,20 +204,20 @@ fn main() {
         thread::Builder::new()
             .name(format!("bioyino_cnt{}", i).into())
             .spawn(move || {
-                let mut core = Core::new().unwrap();
+                let mut runtime = Runtime::new().expect("creating runtime for counting worker");
                 let future = rx.for_each(move |task: Task| lazy(|| ok(task.run())));
-                core.run(future).unwrap();
+                runtime.block_on(future).expect("worker thread failed");
             })
             .expect("starting counting worker thread");
     }
 
-    let ichans = chans.clone();
     let stats_prefix = stats_prefix.trim_right_matches(".").to_string();
 
-    let log = rlog.new(o!("source"=>"stats_thread"));
+    let own_stats = OwnStats::new(s_interval, stats_prefix, chans[0].clone(), &rlog);
+    spawn(own_stats);
+    /*
     std::thread::spawn(move || {
-        let mut core = Core::new().unwrap();
-        let handle = core.handle();
+        let mut runtime = Runtime::new().expect("creating runtime for counting worker");
 
         let stimer = Interval::new(
             Duration::from_millis({
@@ -226,7 +230,6 @@ fn main() {
             &handle,
         ).unwrap();
 
-        let shandle = handle.clone();
         let stats = stimer
             .map_err(|e| GeneralError::Io(e))
             .for_each(move |()| {
@@ -276,8 +279,11 @@ fn main() {
             .then(|_| Ok(()));
 
         handle.spawn(stats);
-        core.run(empty::<(), ()>()).unwrap();
-    });
+
+        runtime
+            .block_on(empty::<(), ()>())
+            .expect("stats thread failed");
+    });       */
 
     //for node in nodes.iter().cloned() {
     //let tchans = chans.clone();
