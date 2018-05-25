@@ -76,8 +76,7 @@ impl IntoFuture for Aggregator {
                                     acc.insert(name, metric);
                                 }
                             })
-                            .last()
-                            .unwrap();
+                            .last();
                         Ok(acc)
                    // })
             });
