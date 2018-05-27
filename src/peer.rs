@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bincode;
 use futures::future::{join_all, ok, Future, IntoFuture};
@@ -9,8 +9,10 @@ use futures::sync::mpsc::Sender;
 use futures::sync::oneshot;
 use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
 use slog::Logger;
-use tokio_core::net::TcpStream;
-use tokio_core::reactor::{Handle, Interval};
+use tokio;
+use tokio::executor::current_thread::spawn;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::timer::Interval;
 use tokio_io::codec::length_delimited;
 use tokio_io::codec::length_delimited::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
@@ -22,6 +24,9 @@ use {Cache, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
 pub enum PeerError {
     #[fail(display = "I/O error: {}", _0)]
     Io(#[cause] ::std::io::Error),
+
+    #[fail(display = "Error when creating timer: {}", _0)]
+    Timer(#[cause] ::tokio::timer::Error),
 
     #[fail(display = "bincode decoding error {}", _0)]
     Decode(#[cause] Box<bincode::ErrorKind>),
@@ -90,7 +95,10 @@ where
         Self {
             inner: length_delimited::Builder::new()
                 .length_field_length(8)
-                .max_frame_length(::std::u64::MAX as usize)
+                // TODO: currently max snapshot size is 4Gb
+                // we should make it into an option or make
+                // snapshot sending iterative and splittable
+                .max_frame_length(::std::u32::MAX as usize)
                 .new_framed(conn),
         }
     }
@@ -140,28 +148,26 @@ where
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct PeerServer {
     log: Logger,
     listen: SocketAddr,
     nodes: Vec<SocketAddr>,
-    handle: Handle,
     chans: Vec<Sender<Task>>,
 }
 
 impl PeerServer {
     pub fn new(
-        log: &Logger,
+        log: Logger,
         listen: SocketAddr,
-        handle: &Handle,
-        chans: &Vec<Sender<Task>>,
-        nodes: &Vec<SocketAddr>,
+        chans: Vec<Sender<Task>>,
+        nodes: Vec<SocketAddr>,
     ) -> Self {
         Self {
             log: log.new(o!("source"=>"peer-server", "ip"=>format!("{}", listen.clone()))),
             listen,
-            nodes: nodes.clone(),
-            handle: handle.clone(),
-            chans: chans.clone(),
+            nodes: nodes,
+            chans: chans,
         }
     }
 }
@@ -176,18 +182,19 @@ impl IntoFuture for PeerServer {
             log,
             listen,
             nodes,
-            handle,
             chans,
         } = self;
-        let future = ::tokio_core::net::TcpListener::bind(&listen, &handle)
+        let future = TcpListener::bind(&listen)
             .expect("listening peer port")
             .incoming()
             .map_err(|e| PeerError::Io(e))
-            .for_each(move |(conn, _inaddr)| {
-                let handle = handle.clone();
+            .for_each(move |conn| {
+                let peer_addr = conn.peer_addr()
+                    .map(|addr| addr.to_string())
+                    .unwrap_or("[UNCONNECTED]".into());
                 let transport = PeerCodec::new(conn);
 
-                let log = log.clone();
+                let log = log.new(o!("remote"=>peer_addr));
                 let nodes = nodes.clone();
 
                 let chans = chans.clone();
@@ -195,74 +202,80 @@ impl IntoFuture for PeerServer {
 
                 let (writer, reader) = transport.split();
 
+                let err_log = log.clone();
                 reader
-                    .map(move |m| match m {
-                        PeerMessage::Snapshot(shot) => {
-                            let next_chan = chans.next().unwrap();
-                            let future = next_chan
+                    .map(move |m| {
+                        match m {
+                            PeerMessage::Snapshot(shot) => {
+                                let next_chan = chans.next().unwrap();
+                                let future = next_chan
                                 .send(Task::JoinSnapshot(shot))
                                 .map(|_| ()) // drop next sender
                                 .map_err(|_| PeerError::TaskSend);
-                            let elog = log.clone();
-                            handle.spawn(future.map_err(move |e| {
-                                warn!(elog, "error joining snapshot: {:?}", e);
-                            }));
-                            None
-                        }
-                        PeerMessage::Command(PeerCommand::LeaderEnable) => {
-                            CAN_LEADER.store(true, Ordering::SeqCst);
-                            FORCE_LEADER.store(false, Ordering::SeqCst);
-                            None
-                        }
-                        PeerMessage::Command(PeerCommand::LeaderDisable) => {
-                            CAN_LEADER.store(false, Ordering::SeqCst);
-                            //IS_LEADER.store(false, Ordering::SeqCst);
-                            None
-                        }
-                        PeerMessage::Command(PeerCommand::ForceLeader) => {
-                            CAN_LEADER.store(false, Ordering::SeqCst);
-                            IS_LEADER.store(true, Ordering::SeqCst);
-                            FORCE_LEADER.store(true, Ordering::SeqCst);
-                            nodes
-                                .clone()
-                                .into_iter()
-                                .map(|node| {
-                                    let elog = log.clone();
-                                    let command = PeerCommandClient::new(
-                                        &log,
-                                        node.clone(),
-                                        &handle,
-                                        PeerCommand::LeaderDisable,
-                                    ).into_future()
-                                        .map_err(move |e| {
-                                            warn!(
-                                                elog,
-                                                "could not send command to {:?}: {:?}", node, e
-                                            );
-                                        })
-                                        .then(|_| Ok(()));
-                                    handle.spawn(command)
-                                })
-                                .last();
-                            None
-                        }
-                        PeerMessage::Command(PeerCommand::Status) => {
-                            let is_leader = IS_LEADER.load(Ordering::Relaxed);
-                            let can_leader = CAN_LEADER.load(Ordering::Relaxed);
-                            let force_leader = FORCE_LEADER.load(Ordering::Relaxed);
-                            let status = PeerStatus {
-                                is_leader,
-                                can_leader,
-                                force_leader,
-                            };
-                            Some(PeerMessage::Status(status))
-                        }
-                        PeerMessage::Status(_) => {
-                            // TODO: log bad error or response with BadMessage to client
-                            None
+                                let elog = log.clone();
+                                spawn(future.map_err(move |e| {
+                                    warn!(elog, "error joining snapshot: {:?}", e);
+                                }));
+                                None
+                            }
+                            PeerMessage::Command(PeerCommand::LeaderEnable) => {
+                                info!(log, "enabling leader"; "command"=>"leader_enable");
+                                CAN_LEADER.store(true, Ordering::SeqCst);
+                                FORCE_LEADER.store(false, Ordering::SeqCst);
+                                None
+                            }
+                            PeerMessage::Command(PeerCommand::LeaderDisable) => {
+                                info!(log, "disabling leader"; "command"=>"leader_disable");
+                                CAN_LEADER.store(false, Ordering::SeqCst);
+                                //IS_LEADER.store(false, Ordering::SeqCst);
+                                None
+                            }
+                            PeerMessage::Command(PeerCommand::ForceLeader) => {
+                                info!(log, "enforcing leader"; "command"=>"force_leader");
+                                CAN_LEADER.store(false, Ordering::SeqCst);
+                                IS_LEADER.store(true, Ordering::SeqCst);
+                                FORCE_LEADER.store(true, Ordering::SeqCst);
+                                nodes
+                                    .clone()
+                                    .into_iter()
+                                    .map(|node| {
+                                        let elog = log.clone();
+                                        let command = PeerCommandClient::new(
+                                            log.clone(),
+                                            node.clone(),
+                                            PeerCommand::LeaderDisable,
+                                        ).into_future()
+                                            .map_err(move |e| {
+                                                warn!(
+                                                    elog,
+                                                    "could not send command to {:?}: {:?}", node, e
+                                                );
+                                            })
+                                            .then(|_| Ok(()));
+                                        spawn(command)
+                                    })
+                                    .last();
+                                None
+                            }
+                            PeerMessage::Command(PeerCommand::Status) => {
+                                let is_leader = IS_LEADER.load(Ordering::Relaxed);
+                                let can_leader = CAN_LEADER.load(Ordering::Relaxed);
+                                let force_leader = FORCE_LEADER.load(Ordering::Relaxed);
+                                let status = PeerStatus {
+                                    is_leader,
+                                    can_leader,
+                                    force_leader,
+                                };
+                                Some(PeerMessage::Status(status))
+                            }
+                            PeerMessage::Status(_) => {
+                                // TODO: log bad error or response with BadMessage to client
+                                None
+                            }
                         }
                     })
                     .forward(writer)
+                    .map_err(move |e| info!(err_log, "peer command error"; "error"=>e.to_string()))
                     .then(|_| Ok(())) // don't let send errors fail the server
             });
         Box::new(future)
@@ -272,7 +285,6 @@ impl IntoFuture for PeerServer {
 pub struct PeerSnapshotClient {
     nodes: Vec<SocketAddr>,
     interval: Duration,
-    handle: Handle,
     chans: Vec<Sender<Task>>,
     log: Logger,
 }
@@ -282,14 +294,12 @@ impl PeerSnapshotClient {
         log: &Logger,
         nodes: Vec<SocketAddr>,
         interval: Duration,
-        handle: &Handle,
         chans: &Vec<Sender<Task>>,
     ) -> Self {
         Self {
             log: log.new(o!("source"=>"peer-client")),
             nodes,
             interval,
-            handle: handle.clone(),
             chans: chans.clone(),
         }
     }
@@ -305,21 +315,19 @@ impl IntoFuture for PeerSnapshotClient {
             log,
             nodes,
             interval,
-            handle,
             chans,
         } = self;
 
-        let timer = Interval::new(interval, &handle).unwrap();
-        let future = timer.map_err(|e| PeerError::Io(e)).for_each(move |_| {
+        let timer = Interval::new(Instant::now() + interval, interval);
+        let future = timer.map_err(|e| PeerError::Timer(e)).for_each(move |_| {
             let chans = chans.clone();
             let nodes = nodes.clone();
 
-            let handle = handle.clone();
             let metrics = chans
                 .into_iter()
                 .map(|chan| {
                     let (tx, rx) = oneshot::channel();
-                    handle.spawn(chan.send(Task::TakeSnapshot(tx)).then(|_| Ok(())));
+                    spawn(chan.send(Task::TakeSnapshot(tx)).then(|_| Ok(())));
                     rx
                 })
                 .collect::<Vec<_>>();
@@ -342,7 +350,7 @@ impl IntoFuture for PeerSnapshotClient {
                     .map(|address| {
                         let metrics = metrics.clone();
                         let log = log.clone();
-                        TcpStream::connect(&address, &handle)
+                        TcpStream::connect(&address)
                             .map_err(|e| PeerError::Io(e))
                             .and_then(move |conn| {
                                 let codec = PeerCodec::new(conn);
@@ -365,18 +373,16 @@ impl IntoFuture for PeerSnapshotClient {
 pub struct PeerCommandClient {
     log: Logger,
     address: SocketAddr,
-    handle: Handle,
     command: PeerCommand,
 }
 
 impl PeerCommandClient {
-    pub fn new(log: &Logger, address: SocketAddr, handle: &Handle, command: PeerCommand) -> Self {
+    pub fn new(log: Logger, address: SocketAddr, command: PeerCommand) -> Self {
         Self {
             log: log.new(
                 o!("source"=>"peer-command-client", "server"=>format!("{}", address.clone())),
             ),
             address,
-            handle: handle.clone(),
             command,
         }
     }
@@ -391,7 +397,6 @@ impl IntoFuture for PeerCommandClient {
         let Self {
             log,
             address,
-            handle,
             command,
         } = self;
 
@@ -400,7 +405,7 @@ impl IntoFuture for PeerCommandClient {
         } else {
             false
         };
-        let future = TcpStream::connect(&address, &handle)
+        let future = tokio::net::TcpStream::connect(&address)
             .map_err(|e| PeerError::Io(e))
             .and_then(move |conn| {
                 let codec = PeerCodec::new(conn);

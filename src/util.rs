@@ -9,9 +9,8 @@ use futures::sync::mpsc::{Sender, UnboundedSender};
 use futures::sync::oneshot;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
 use slog::Logger;
-use tokio::spawn;
-use tokio::timer::Interval;
-use tokio_core::reactor::{Handle, Timeout};
+use tokio::executor::current_thread::spawn;
+use tokio::timer::{Delay, Interval};
 
 use metric::{Metric, MetricType};
 use task::{AggregateData, Task};
@@ -27,10 +26,10 @@ pub struct OwnStats {
 }
 
 impl OwnStats {
-    pub fn new(interval: u64, prefix: String, chan: Sender<Task>, log: &Logger) -> Self {
+    pub fn new(interval: u64, prefix: String, chan: Sender<Task>, log: Logger) -> Self {
         let log = log.new(o!("source"=>"stats"));
-        let dur = Duration::from_millis(interval);
         let now = Instant::now();
+        let dur = Duration::from_millis(interval);
         Self {
             interval,
             prefix,
@@ -72,15 +71,14 @@ impl OwnStats {
                               "drops" => format!("{:2}", drops / s_interval),
                               );
         }
-        self.chan
-            .start_send(Task::AddMetrics(metrics))
-            .map(|_| ())
-            .unwrap_or_else(|_| warn!(self.log, "stats future could not send metric to task"));
-
-        self.chan
-            .poll_complete()
-            .map(|_| ())
-            .unwrap_or_else(|_| warn!(self.log, "stats future could not flush task channel"));
+        let log = self.log.clone();
+        spawn(
+            self.chan
+                .clone()
+                .send(Task::AddMetrics(metrics))
+                .map(|_| ())
+                .map_err(move |_| warn!(log, "stats future could not send metric to task")),
+        );
     }
 }
 
@@ -89,14 +87,15 @@ impl Future for OwnStats {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.timer.poll() {
-            Ok(Async::Ready(Some(_))) => {
-                self.get_stats();
-                Ok(Async::NotReady)
+        loop {
+            match self.timer.poll() {
+                Ok(Async::Ready(Some(_))) => {
+                    self.get_stats();
+                }
+                Ok(Async::Ready(None)) => unreachable!(),
+                Ok(Async::NotReady) => return Ok(Async::NotReady),
+                Err(_) => return Err(()),
             }
-            Ok(Async::Ready(None)) => unreachable!(),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(_) => Err(()),
         }
     }
 }
@@ -137,7 +136,7 @@ impl Aggregator {
 impl IntoFuture for Aggregator {
     type Item = ();
     type Error = ();
-    type Future = Box<Future<Item = Self::Item, Error = ()>>;
+    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { options, chans, tx } = self;
@@ -225,13 +224,12 @@ impl Default for BackoffRetryBuilder {
 }
 
 impl BackoffRetryBuilder {
-    pub fn spawn<F>(self, handle: &Handle, action: F) -> BackoffRetry<F>
+    pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
     where
         F: IntoFuture + Clone,
     {
         let inner = Either::A(action.clone().into_future());
         BackoffRetry {
-            handle: handle.clone(),
             action,
             inner: inner,
             options: self,
@@ -241,29 +239,9 @@ impl BackoffRetryBuilder {
 
 /// TCP client that is able to reconnect with customizable settings
 pub struct BackoffRetry<F: IntoFuture> {
-    handle: Handle,
     action: F,
-    inner: Either<F::Future, Timeout>,
+    inner: Either<F::Future, Delay>,
     options: BackoffRetryBuilder,
-}
-
-impl<F> BackoffRetry<F>
-where
-    F: IntoFuture,
-{
-    fn rotate(&mut self) {
-        self.options.retries -= 1;
-        let delay = self.options.delay as f32 * self.options.delay_mul;
-        let delay = if delay <= self.options.delay_max as f32 {
-            delay as u64
-        } else {
-            self.options.delay_max as u64
-        };
-        let delay =
-            Timeout::new_at(Instant::now() + Duration::from_millis(delay), &self.handle).unwrap();
-
-        self.inner = Either::B(delay)
-    }
 }
 
 impl<F> Future for BackoffRetry<F>
@@ -299,9 +277,16 @@ where
             };
 
             if rotate_f {
-                self.rotate();
-            }
-            if rotate_t {
+                self.options.retries -= 1;
+                let delay = self.options.delay as f32 * self.options.delay_mul;
+                let delay = if delay <= self.options.delay_max as f32 {
+                    delay as u64
+                } else {
+                    self.options.delay_max as u64
+                };
+                let delay = Delay::new(Instant::now() + Duration::from_millis(delay));
+                self.inner = Either::B(delay);
+            } else if rotate_t {
                 self.inner = Either::A(self.action.clone().into_future());
             }
         }

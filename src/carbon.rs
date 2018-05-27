@@ -8,8 +8,7 @@ use failure::Error;
 use ftoa;
 use futures::stream;
 use futures::{Future, IntoFuture, Sink, Stream};
-use tokio_core::net::TcpStream;
-use tokio_core::reactor::Handle;
+use tokio::net::TcpStream;
 use tokio_io::AsyncRead;
 use tokio_io::codec::{Decoder, Encoder};
 
@@ -20,18 +19,12 @@ use {Float, AGG_ERRORS};
 #[derive(Clone)]
 pub struct CarbonBackend {
     addr: SocketAddr,
-    handle: Handle,
 
     metrics: Arc<Vec<(Bytes, Bytes, Bytes)>>,
 }
 
 impl CarbonBackend {
-    pub(crate) fn new(
-        addr: SocketAddr,
-        ts: Duration,
-        handle: &Handle,
-        metrics: Arc<Vec<(Bytes, Float)>>,
-    ) -> Self {
+    pub(crate) fn new(addr: SocketAddr, ts: Duration, metrics: Arc<Vec<(Bytes, Float)>>) -> Self {
         let ts: Bytes = ts.as_secs().to_string().into();
 
         let buf = BytesMut::with_capacity(metrics.len() * 200); // 200 is an approximate for full metric name + value
@@ -55,11 +48,7 @@ impl CarbonBackend {
             },
         );
         let metrics = Arc::new(metrics);
-        let self_ = Self {
-            addr,
-            handle: handle.clone(),
-            metrics,
-        };
+        let self_ = Self { addr, metrics };
         self_
     }
 }
@@ -70,13 +59,9 @@ impl IntoFuture for CarbonBackend {
     type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self {
-            addr,
-            handle,
-            metrics,
-        } = self;
+        let Self { addr, metrics } = self;
 
-        let conn = TcpStream::connect(&addr, &handle).map_err(|e| GeneralError::Io(e));
+        let conn = TcpStream::connect(&addr).map_err(|e| GeneralError::Io(e));
         let future = conn.and_then(move |conn| {
             let writer = conn.framed(CarbonCodec::new());
             //let metric_stream = stream::iter_ok::<_, ()>(metrics.clone());
