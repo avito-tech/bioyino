@@ -96,6 +96,7 @@ impl IntoFuture for ConsulConsensus {
             error_pause,
         } = self;
 
+        let thandle = handle.clone();
         let renew_loop = loop_fn((), move |()| {
             let key = key.clone();
             let handle = handle.clone();
@@ -108,20 +109,30 @@ impl IntoFuture for ConsulConsensus {
             };
 
             let renewlog = log.clone();
+
+            let thandle = thandle.clone();
             // this tries to reconnect to consul infinitely
             let loop_session = loop_fn(session, move |session| {
                 let log = log.clone();
                 let new_session = session.clone();
+
+                let thandle = thandle.clone();
                 session.into_future().then(move |res| match res {
                     Err(e) => {
                         warn!(log, "error getting consul session"; "error" => format!("{}", e));
-                        ok(Loop::Continue(new_session))
+                        let new_session = new_session.clone();
+                        Box::new(
+                            Timeout::new(error_pause, &thandle)
+                                .unwrap()
+                                .then(move |_| Ok(Loop::Continue(new_session))),
+                        ) as Box<Future<Item = Loop<_, _>, Error = _>>
+                        //ok(Loop::Continue(new_session))
                     }
                     Ok(None) => {
                         warn!(log, "timed out getting consul session");
-                        ok(Loop::Continue(new_session))
+                        Box::new(ok(Loop::Continue(new_session)))
                     }
-                    Ok(Some(s)) => ok(Loop::Break(s)),
+                    Ok(Some(s)) => Box::new(ok(Loop::Break(s))),
                 })
             });
 
