@@ -29,12 +29,12 @@ pub(crate) struct System {
     /// Number of aggregating(worker) threads, set to 0 to use all CPU cores
     pub w_threads: usize,
 
+    /// queue size for single counting thread before packet is dropped
+    pub task_queue_size: usize,
+
     /// How often to gather own stats, in ms. Use 0 to disable (stats are still gathered, but not included in
     /// metric dump)
     pub stats_interval: u64,
-
-    /// queue size for single counting thread before packet is dropped
-    pub task_queue_size: usize,
 
     /// Prefix to send own metrics with
     pub stats_prefix: String,
@@ -90,9 +90,9 @@ impl Default for Metrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Carbon {
-    /// Enable sending to carbon protocol backend
-    pub enabled: bool,
-
+    // TODO: will be used when multiple backends support is implemented
+    ///// Enable sending to carbon protocol backend
+    //pub enabled: bool,
     /// IP and port of the carbon-protocol backend to send aggregated data to
     pub address: String,
 
@@ -116,7 +116,7 @@ pub(crate) struct Carbon {
 impl Default for Carbon {
     fn default() -> Self {
         Self {
-            enabled: true,
+            //            enabled: true,
             address: "127.0.0.1:2003".to_string(),
             interval: 30000,
             connect_delay: 250,
