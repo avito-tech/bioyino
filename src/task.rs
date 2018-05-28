@@ -2,6 +2,7 @@ use std::collections::hash_map::Entry;
 use std::sync::atomic::Ordering;
 
 use bytes::{BufMut, Bytes, BytesMut};
+use combine::Parser;
 use combine::primitives::FastResult;
 use futures::Sink;
 use futures::sync::mpsc::UnboundedSender;
@@ -129,7 +130,7 @@ impl Task {
                 });
             }
             Task::TakeSnapshot(channel) => {
-                let short = SHORT_CACHE.with(|c| {
+                let mut short = SHORT_CACHE.with(|c| {
                     let short = c.borrow().clone();
                     c.borrow_mut().clear();
                     short
@@ -137,7 +138,6 @@ impl Task {
                 // Aggregate short cache into long
                 LONG_CACHE.with(|c| {
                     let mut long = c.borrow_mut();
-                    let mut short = short.clone();
                     short
                         .drain()
                         .map(|(name, metric)| {
