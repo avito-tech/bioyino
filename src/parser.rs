@@ -10,7 +10,7 @@ use std::str::from_utf8;
 //use quantiles::ckms::CKMS;
 //use quantiles::greenwald_khanna::Stream as GK;
 
-use failure::{Compat, ResultExt};
+use failure::ResultExt;
 
 #[derive(Fail, Debug)]
 enum ParseError {
@@ -21,8 +21,7 @@ enum ParseError {
     Float(String),
 }
 
-pub type MetricParser<'a, F> = Box<Parser<Output = (String, Metric<F>), Input = &'a [u8]>>;
-pub fn metric_parser<'a, F>() -> MetricParser<'a, F>
+pub fn metric_parser<'a, F>() -> impl Parser<Output = (String, Metric<F>), Input = &'a [u8]>
 where
     F: FromStr
         + Add<Output = F>
@@ -75,19 +74,18 @@ where
         //        .or(byte(b'h').map(|_| MetricType::Histrogram))
         ;
 
-    let sampling = (bytes(b"|@"), take_while(|c: u8| c != b'\n'))
-        .and_then::<_, f32, Compat<ParseError>>(|(_, value)| {
-            from_utf8(value)
-                .map_err(|e| ParseError::Utf8(e))
-                .compat()?
-                .parse::<f32>()
-                .map_err(|_| {
-                    ParseError::Float(
-                        format!("parsing {:?} as float sampling value", value).to_string(),
-                    )
-                })
-                .compat()
-        });
+    let sampling = (bytes(b"|@"), take_while(|c: u8| c != b'\n')).and_then(|(_, value)| {
+        from_utf8(value)
+            .map_err(|e| ParseError::Utf8(e))
+            .compat()?
+            .parse::<f32>()
+            .map_err(|_| {
+                ParseError::Float(
+                    format!("parsing {:?} as float sampling value", value).to_string(),
+                )
+            })
+            .compat()
+    });
 
     let metric = name.and(
         (
@@ -107,81 +105,81 @@ where
         }),
     );
 
-    Box::new(metric)
+    metric
 }
 
 /*
 #[cfg(test)]
 mod tests {
-    // WARNING: these tests most probably don't work as of now
-    // FIXME: tests
-    use super::*;
-    use num::rational::Ratio;
+// WARNING: these tests most probably don't work as of now
+// FIXME: tests
+use super::*;
+use num::rational::Ratio;
 
-    // TODO; parse bad and tricky metrics
-    // Questioned cases:
-    //  * non-integer counters
-    //  * negative counters
+// TODO; parse bad and tricky metrics
+// Questioned cases:
+//  * non-integer counters
+//  * negative counters
 
-    #[test]
-    fn parse_good_counter() {
-        let data = b"gorets:1|c|@1";
-        let v = parse_metrics(data).unwrap();
-        assert_eq!(v[0].0, "gorets".to_string());
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].1.mtype, MetricType::Counter);
-        assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
-    }
+#[test]
+fn parse_good_counter() {
+let data = b"gorets:1|c|@1";
+let v = parse_metrics(data).unwrap();
+assert_eq!(v[0].0, "gorets".to_string());
+assert_eq!(v.len(), 1);
+assert_eq!(v[0].1.mtype, MetricType::Counter);
+assert_eq!(v[0].1.value, 0);
+}
 
-    #[test]
-    fn parse_multi_metric_one() {
-        let data = b"complex.bioyino.test:1|g\n";
-        let v = parse_metrics(data).unwrap();
-        assert_eq!(v[0].0, "complex.bioyino.test".to_string());
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].1.mtype, MetricType::Gauge(None));
-        assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
-    }
+#[test]
+fn parse_multi_metric_one() {
+let data = b"complex.bioyino.test:1|g\n";
+let v = parse_metrics(data).unwrap();
+assert_eq!(v[0].0, "complex.bioyino.test".to_string());
+assert_eq!(v.len(), 1);
+assert_eq!(v[0].1.mtype, MetricType::Gauge(None));
+assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
+}
 
-    #[test]
-    fn parse_multi_metric_many() {
-        let data = b"complex.bioyino.test.1:1|g\ncomplex.bioyino.test.2:2|g";
-        let v = parse_metrics(data).unwrap();
-        assert_eq!(v.len(), 2);
-        assert_eq!(v[0].0, "complex.bioyino.test.1".to_string());
-        assert_eq!(v[0].1.mtype, MetricType::Gauge(None));
-        assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
-        assert_eq!(v[1].0, "complex.bioyino.test.2".to_string());
-        assert_eq!(v[1].1.mtype, MetricType::Gauge(None));
-        assert_eq!(v[1].1.value, Ratio::new(2.into(), 1.into()));
-    }
+#[test]
+fn parse_multi_metric_many() {
+let data = b"complex.bioyino.test.1:1|g\ncomplex.bioyino.test.2:2|g";
+let v = parse_metrics(data).unwrap();
+assert_eq!(v.len(), 2);
+assert_eq!(v[0].0, "complex.bioyino.test.1".to_string());
+assert_eq!(v[0].1.mtype, MetricType::Gauge(None));
+assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
+assert_eq!(v[1].0, "complex.bioyino.test.2".to_string());
+assert_eq!(v[1].1.mtype, MetricType::Gauge(None));
+assert_eq!(v[1].1.value, Ratio::new(2.into(), 1.into()));
+}
 
-    #[test]
-    fn parse_short_metric() {
-        let data = b"gorets:1|c";
-        let d = parse_metrics(data);
-        let v = d.unwrap();
-        assert_eq!(v[0].1.mtype, MetricType::Counter);
-        assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
-    }
+#[test]
+fn parse_short_metric() {
+let data = b"gorets:1|c";
+let d = parse_metrics(data);
+let v = d.unwrap();
+assert_eq!(v[0].1.mtype, MetricType::Counter);
+assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
+}
 
-    #[test]
-    fn parse_gauge() {
-        let data = b"gorets:-75e-2|g|@1";
-        let v = parse_metrics(data).unwrap();
-        assert_eq!(v[0].1.mtype, MetricType::Gauge(Some(-1)), "bad type");
-        // 0.75 should parse to 3/4
-        assert_eq!(v[0].1.value, Ratio::new(3.into(), 4.into()), "bad value");
-    }
+#[test]
+fn parse_gauge() {
+let data = b"gorets:-75e-2|g|@1";
+let v = parse_metrics(data).unwrap();
+assert_eq!(v[0].1.mtype, MetricType::Gauge(Some(-1)), "bad type");
+// 0.75 should parse to 3/4
+assert_eq!(v[0].1.value, Ratio::new(3.into(), 4.into()), "bad value");
+}
 
-    #[test]
-    fn parse_complex_gauges() {
-        let data = b"gorets:+1000|g\ngorets:-1000|g|@0.5";
-        let v = parse_metrics(data).unwrap();
-        assert_eq!(v[0].1.mtype, MetricType::Gauge(Some(1)));
-        assert_eq!(v[0].1.value, Ratio::new(1000.into(), 1.into()));
-        assert_eq!(v[1].1.mtype, MetricType::Gauge(Some(-1)), "");
-        assert_eq!(v[1].1.value, Ratio::new(1000.into(), 1.into()));
-    }
+#[test]
+fn parse_complex_gauges() {
+let data = b"gorets:+1000|g\ngorets:-1000|g|@0.5";
+let v = parse_metrics(data).unwrap();
+assert_eq!(v[0].1.mtype, MetricType::Gauge(Some(1)));
+assert_eq!(v[0].1.value, Ratio::new(1000.into(), 1.into()));
+assert_eq!(v[1].1.mtype, MetricType::Gauge(Some(-1)), "");
+assert_eq!(v[1].1.value, Ratio::new(1000.into(), 1.into()));
+}
 }
 */
