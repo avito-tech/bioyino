@@ -48,7 +48,7 @@ impl OwnStats {
                     metrics.insert(
                         self.prefix.clone() + "." + $suffix,
                         Metric::new($value, MetricType::Counter, None).unwrap(),
-                    );
+                        );
                 }
             };
         };
@@ -62,23 +62,23 @@ impl OwnStats {
         if self.interval > 0 {
             let s_interval = self.interval as f64;
             info!(self.log, "stats";
-                              "egress" => format!("{:2}", egress / s_interval),
-                              "ingress" => format!("{:2}", ingress / s_interval),
-                              "ingress-m" => format!("{:2}", ingress_m / s_interval),
-                              "a-err" => format!("{:2}", agr_errors / s_interval),
-                              "p-err" => format!("{:2}", parse_errors / s_interval),
-                              "pe-err" => format!("{:2}", peer_errors / s_interval),
-                              "drops" => format!("{:2}", drops / s_interval),
-                              );
+                  "egress" => format!("{:2}", egress / s_interval),
+                  "ingress" => format!("{:2}", ingress / s_interval),
+                  "ingress-m" => format!("{:2}", ingress_m / s_interval),
+                  "a-err" => format!("{:2}", agr_errors / s_interval),
+                  "p-err" => format!("{:2}", parse_errors / s_interval),
+                  "pe-err" => format!("{:2}", peer_errors / s_interval),
+                  "drops" => format!("{:2}", drops / s_interval),
+                  );
         }
         let log = self.log.clone();
         spawn(
             self.chan
-                .clone()
-                .send(Task::AddMetrics(metrics))
-                .map(|_| ())
-                .map_err(move |_| warn!(log, "stats future could not send metric to task")),
-        );
+            .clone()
+            .send(Task::AddMetrics(metrics))
+            .map(|_| ())
+            .map_err(move |_| warn!(log, "stats future could not send metric to task")),
+            );
     }
 }
 
@@ -128,7 +128,7 @@ impl Aggregator {
         options: AggregateOptions,
         chans: Vec<Sender<Task>>,
         tx: UnboundedSender<(Bytes, Float)>,
-    ) -> Self {
+        ) -> Self {
         Self { options, chans, tx }
     }
 }
@@ -152,51 +152,51 @@ impl IntoFuture for Aggregator {
 
         if options.is_leader {
             let accumulate = futures_unordered(metrics)//.for_each(|| {
-                    .fold(HashMap::new(), move |mut acc: Cache, metrics| {
-                        metrics
-                            .into_iter()
-                            .map(|(name, metric)| {
-                                if acc.contains_key(&name) {
-                                 acc.get_mut(&name).unwrap()
+                .fold(HashMap::new(), move |mut acc: Cache, metrics| {
+                    metrics
+                        .into_iter()
+                        .map(|(name, metric)| {
+                            if acc.contains_key(&name) {
+                                acc.get_mut(&name).unwrap()
                                     .aggregate(metric).unwrap_or_else(|_| {AGG_ERRORS.fetch_add(1, Ordering::Relaxed);});
-                                } else {
-                                    acc.insert(name, metric);
-                                }
-                            })
-                            .last();
-                        Ok(acc)
-                   // })
-            });
-
-            let aggregate = accumulate.and_then(move |accumulated| {
-                accumulated
-                    .into_iter()
-                    .inspect(|_| {
-                        EGRESS.fetch_add(1, Ordering::Relaxed);
-                    })
-                    .map(move |(name, metric)| {
-                        let buf = BytesMut::with_capacity(1024);
-                        let task = Task::Aggregate(AggregateData {
-                            buf,
-                            name: Bytes::from(name),
-                            metric,
-                            options: options.clone(),
-                            response: tx.clone(),
-                        });
-                        // as of now we just run each task in the current thread
-                        // there is a reason we should not in general run the task in the counting workers:
-                        // workers will block on heavy computation and may cause metrics goind to them over
-                        // network to be dropped because of backpressure
-                        // at the same time counting aggregation is not urgent because of current backend(carbon/graphite)
-                        // nature where one can send metrics with any timestamp
-                        // TODO: at some day counting workers will probably work in work-stealing mode,
-                        // after that we probably will be able to run task in common mode
-                        task.run();
-                    })
+                            } else {
+                                acc.insert(name, metric);
+                            }
+                        })
                     .last();
-                Ok(())
-            });
-            Box::new(aggregate)
+                    Ok(acc)
+                        // })
+        });
+
+        let aggregate = accumulate.and_then(move |accumulated| {
+            accumulated
+                .into_iter()
+                .inspect(|_| {
+                    EGRESS.fetch_add(1, Ordering::Relaxed);
+                })
+            .map(move |(name, metric)| {
+                let buf = BytesMut::with_capacity(1024);
+                let task = Task::Aggregate(AggregateData {
+                    buf,
+                    name: Bytes::from(name),
+                    metric,
+                    options: options.clone(),
+                    response: tx.clone(),
+                });
+                // as of now we just run each task in the current thread
+                // there is a reason we should not in general run the task in the counting workers:
+                // workers will block on heavy computation and may cause metrics goind to them over
+                // network to be dropped because of backpressure
+                // at the same time counting aggregation is not urgent because of current backend(carbon/graphite)
+                // nature where one can send metrics with any timestamp
+                // TODO: at some day counting workers will probably work in work-stealing mode,
+                // after that we probably will be able to run task in common mode
+                task.run();
+            })
+            .last();
+            Ok(())
+        });
+        Box::new(aggregate)
         } else {
             // only get metrics from threads
             let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
@@ -225,16 +225,16 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-    where
+        where
         F: IntoFuture + Clone,
-    {
-        let inner = Either::A(action.clone().into_future());
-        BackoffRetry {
-            action,
-            inner: inner,
-            options: self,
+        {
+            let inner = Either::A(action.clone().into_future());
+            BackoffRetry {
+                action,
+                inner: inner,
+                options: self,
+            }
         }
-    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -246,7 +246,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-    F: IntoFuture + Clone,
+F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;
