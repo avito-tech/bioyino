@@ -209,9 +209,9 @@ impl IntoFuture for PeerServer {
                             PeerMessage::Snapshot(shot) => {
                                 let next_chan = chans.next().unwrap();
                                 let future = next_chan
-                                .send(Task::JoinSnapshot(shot))
-                                .map(|_| ()) // drop next sender
-                                .map_err(|_| PeerError::TaskSend);
+                                    .send(Task::JoinSnapshot(shot))
+                                    .map(|_| ()) // drop next sender
+                                    .map_err(|_| PeerError::TaskSend);
                                 let elog = log.clone();
                                 spawn(future.map_err(move |e| {
                                     warn!(elog, "error joining snapshot: {:?}", e);
@@ -332,12 +332,15 @@ impl IntoFuture for PeerSnapshotClient {
                 })
                 .collect::<Vec<_>>();
 
-            let get_metrics = join_all(metrics).map_err(|_| PeerError::TaskSend).and_then(
-                move |mut metrics| {
+            let get_metrics = join_all(metrics)
+                .map_err(|_| {
+                    PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    PeerError::TaskSend
+                })
+                .and_then(move |mut metrics| {
                     metrics.retain(|m| m.len() > 0);
                     Ok(metrics)
-                },
-            );
+                });
 
             // All nodes have to receive the same metrics
             // so we don't parallel connections and metrics fetching
