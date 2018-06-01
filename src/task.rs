@@ -1,13 +1,28 @@
-use futures::sync::oneshot;
-use metric::Metric;
-
-use parser::metric_parser;
-use bytes::Bytes;
 use std::collections::hash_map::Entry;
-use combine::primitives::FastResult;
 use std::sync::atomic::Ordering;
+
+use bytes::{BufMut, Bytes, BytesMut};
+use combine::Parser;
+use combine::primitives::FastResult;
+use futures::Sink;
+use futures::sync::mpsc::UnboundedSender;
+use futures::sync::oneshot;
+
+use metric::Metric;
+use parser::metric_parser;
+use util::AggregateOptions;
+
 use {Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS,
      SHORT_CACHE};
+
+#[derive(Debug)]
+pub struct AggregateData {
+    pub buf: BytesMut,
+    pub name: Bytes,
+    pub metric: Metric<Float>,
+    pub options: AggregateOptions,
+    pub response: UnboundedSender<(Bytes, Float)>,
+}
 
 #[derive(Debug)]
 pub enum Task {
@@ -16,7 +31,7 @@ pub enum Task {
     JoinSnapshot(Vec<Cache>),
     TakeSnapshot(oneshot::Sender<Cache>),
     Rotate(oneshot::Sender<Cache>),
-    Join(Metric<Float>, Metric<Float>, oneshot::Sender<Metric<Float>>),
+    Aggregate(AggregateData),
 }
 
 impl Task {
@@ -48,8 +63,7 @@ impl Task {
                                 };
                             });
                         }
-                        FastResult::EmptyOk(_) |
-                        FastResult::EmptyErr(_) => {
+                        FastResult::EmptyOk(_) | FastResult::EmptyErr(_) => {
                             break;
                         }
                         FastResult::ConsumedErr(_e) => {
@@ -116,15 +130,21 @@ impl Task {
                 });
             }
             Task::TakeSnapshot(channel) => {
-                let short = SHORT_CACHE.with(|c| {
+                let mut short = SHORT_CACHE.with(|c| {
                     let short = c.borrow().clone();
                     c.borrow_mut().clear();
                     short
                 });
+
+                channel.send(short.clone()).unwrap_or_else(|_| {
+                    PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    // TODO debug log
+                    //    println!("shapshot not sent");
+                });
+
                 // Aggregate short cache into long
                 LONG_CACHE.with(|c| {
                     let mut long = c.borrow_mut();
-                    let mut short = short.clone();
                     short
                         .drain()
                         .map(|(name, metric)| {
@@ -141,11 +161,6 @@ impl Task {
                         })
                         .last();
                 });
-                channel.send(short).unwrap_or_else(|_| {
-                    PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    // TODO debug log
-                    //    println!("shapshot not sent");
-                });
             }
             Task::Rotate(channel) => {
                 LONG_CACHE.with(|c| {
@@ -157,13 +172,64 @@ impl Task {
                     });
                 });
             }
-            Task::Join(mut metric1, metric2, channel) => {
-                metric1.aggregate(metric2).unwrap_or_else(|_| {
-                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                });
-                channel.send(metric1).unwrap_or_else(|_| {
-                    DROPS.fetch_add(1, Ordering::Relaxed);
-                });
+            Task::Aggregate(AggregateData {
+                mut buf,
+                name,
+                metric,
+                options,
+                mut response,
+            }) => {
+                let upd = if let Some(options) = options.update_counter {
+                    if metric.update_counter > options.threshold {
+                        // + 2 is for dots
+                        let cut_len = options.prefix.len() + name.len() + options.suffix.len() + 2;
+                        buf.reserve(cut_len);
+                        if options.prefix.len() > 0 {
+                            buf.put_slice(&options.prefix);
+                            buf.put_slice(b".");
+                        }
+
+                        buf.put_slice(&name);
+                        if options.suffix.len() > 0 {
+                            buf.put_slice(b".");
+                            buf.put_slice(&options.suffix);
+                        }
+
+                        let counter = buf.take().freeze();
+                        Some((counter, metric.update_counter.into()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                metric
+                    .into_iter()
+                    .map(move |(suffix, value)| {
+                        buf.extend_from_slice(&name);
+                        buf.extend_from_slice(suffix.as_bytes());
+                        let name = buf.take().freeze();
+                        (name, value)
+                    })
+                    .chain(upd)
+                    .map(|data| {
+                        response
+                            .start_send(data)
+                            .map_err(|_| {
+                                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            })
+                            .map(|_| ())
+                            .unwrap_or(());
+                    })
+                    .last();
+                response
+                    .poll_complete()
+                    .map_err(|_| {
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    })
+                    .map(|_| ())
+                    .unwrap_or_else(|_| ());
             }
         }
     }

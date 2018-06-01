@@ -1,14 +1,14 @@
-use std::sync::atomic::Ordering;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use hyper;
-use hyper::header::{ContentLength, ContentType};
-use tokio_core::reactor::{Handle, Interval, Timeout};
 use futures::Stream;
 use futures::future::{err, loop_fn, ok, Future, IntoFuture, Loop};
+use hyper;
+use hyper::header::{ContentLength, ContentType};
 use serde_json::{self, from_slice};
 use slog::Logger;
+use tokio_core::reactor::{Handle, Interval, Timeout};
 use {CAN_LEADER, FORCE_LEADER, IS_LEADER};
 
 #[derive(Fail, Debug)]
@@ -23,21 +23,12 @@ pub enum ConsulError {
     ConnectionTimeout,
 
     #[fail(display = "Http error: {}", _0)]
-    Http(
-        #[cause]
-        hyper::Error
-    ),
+    Http(#[cause] hyper::Error),
 
     #[fail(display = "Parsing response: {}", _0)]
-    Parsing(
-        #[cause]
-        serde_json::Error
-    ),
+    Parsing(#[cause] serde_json::Error),
     #[fail(display = "I/O error {}", _0)]
-    Io(
-        #[cause]
-        ::std::io::Error
-    ),
+    Io(#[cause] ::std::io::Error),
 
     #[fail(display = "{}", _0)]
     Renew(String),
@@ -105,6 +96,7 @@ impl IntoFuture for ConsulConsensus {
             error_pause,
         } = self;
 
+        let thandle = handle.clone();
         let renew_loop = loop_fn((), move |()| {
             let key = key.clone();
             let handle = handle.clone();
@@ -117,20 +109,30 @@ impl IntoFuture for ConsulConsensus {
             };
 
             let renewlog = log.clone();
+
+            let thandle = thandle.clone();
             // this tries to reconnect to consul infinitely
             let loop_session = loop_fn(session, move |session| {
                 let log = log.clone();
                 let new_session = session.clone();
+
+                let thandle = thandle.clone();
                 session.into_future().then(move |res| match res {
                     Err(e) => {
                         warn!(log, "error getting consul session"; "error" => format!("{}", e));
-                        ok(Loop::Continue(new_session))
+                        let new_session = new_session.clone();
+                        Box::new(
+                            Timeout::new(error_pause, &thandle)
+                                .unwrap()
+                                .then(move |_| Ok(Loop::Continue(new_session))),
+                        ) as Box<Future<Item = Loop<_, _>, Error = _>>
+                        //ok(Loop::Continue(new_session))
                     }
                     Ok(None) => {
                         warn!(log, "timed out getting consul session");
-                        ok(Loop::Continue(new_session))
+                        Box::new(ok(Loop::Continue(new_session)))
                     }
-                    Ok(Some(s)) => ok(Loop::Break(s)),
+                    Ok(Some(s)) => Box::new(ok(Loop::Break(s))),
                 })
             });
 
@@ -223,16 +225,15 @@ impl IntoFuture for ConsulSession {
         let ttl_ns = ttl.as_secs() * 1000000000u64 + ttl.subsec_nanos() as u64;
         let b = format!(
             "{{\"TTL\": \"{}ns\", \"LockDelay\": \"{}ns\"}}",
-            ttl_ns,
-            ttl_ns
+            ttl_ns, ttl_ns
         );
         let bodylen = b.len() as u64;
         session_req.set_body(b);
         // Override sending request as multipart
         session_req.headers_mut().set(ContentLength(bodylen));
-        session_req.headers_mut().set(
-            ContentType::form_url_encoded(),
-        );
+        session_req
+            .headers_mut()
+            .set(ContentType::form_url_encoded());
 
         let thandle = handle.clone();
         let c_session = client

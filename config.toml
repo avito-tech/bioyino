@@ -2,22 +2,26 @@
 
 verbosity = "warn"
 
-# Number of async UDP network worker threads, use 0 to use all CPU core
-n-threads = 2
+# Number of network worker threads in any mode, use 0(not recommended) to use all CPU cores
+n-threads = 4
 
-# Prefix for sending own stats
-stats-prefix = "resources.monitoring.bioyino"
-
-# How often to gather own stats, in ms. Use 0 to disable (stats are still gathered, but not included in
-# metric dump
-stats-interval = 10000
+# Number of aggregating and counting threads, use 0(not recommended) to use all CPU cores
+w-threads = 4
 
 # Queue size for single counting thread before packet is dropped
 task-queue-size = 1024
 
+# How often to gather own stats, in ms. Use 0 to disable (stats are still gathered and printed to log,
+# but not included in metric dump
+stats-interval = 10000
+
+# Prefix for sending own stats
+stats-prefix = "resources.monitoring.bioyino"
+
 [metrics]
-# Should we provide metrics with top update numbers
+# Should we provide metrics that update more than update-counter-threshold times diring aggregation interval
 count-updates = true
+
 # Prefix for metric update statistics (no trailing dot!)
 update-counter-prefix = "resources.monitoring.bioyino.updates"
 
@@ -27,6 +31,27 @@ update-counter-suffix = ""
 # Minimal update counter to be reported
 update-counter-threshold = 200
 
+[carbon]
+
+# IP and port of the carbon-protocol backend to send aggregated data to
+address = "127.0.0.1:2003"
+
+# How often to send metrics to carbon backend, ms
+interval = 30000
+
+# How much to sleep when connection to backend fails, ms
+connect-delay = 250
+
+# Multiply delay to this value for each consequent connection failure, float
+connect-delay-multiplier = 2
+
+# Maximum retry delay, ms
+connect-delay-max = 10000
+
+# How much times to retry when sending data to backend before giving up and dropping all metrics
+#note, that 0 means 1 try
+send-retries = 30
+
 # Network settings
 [network]
 # Address:port to listen for metrics at
@@ -34,12 +59,6 @@ listen = "127.0.0.1:8125"
 
 # Address and port for replication/command server to listen on
 peer-listen = "127.0.0.1:8136"
-
-# IP and port of the carbon-protocol backend to send aggregated data to
-backend = "127.0.0.1:2003"
-
-# How often to send metrics to carbon backend, ms
-backend-interval = 30000
 
 # UDP buffer size for single packet. Needs to be around MTU. Packet's bytes after that value
 # may be lost
