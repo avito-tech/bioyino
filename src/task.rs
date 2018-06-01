@@ -135,6 +135,13 @@ impl Task {
                     c.borrow_mut().clear();
                     short
                 });
+
+                channel.send(short.clone()).unwrap_or_else(|_| {
+                    PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    // TODO debug log
+                    //    println!("shapshot not sent");
+                });
+
                 // Aggregate short cache into long
                 LONG_CACHE.with(|c| {
                     let mut long = c.borrow_mut();
@@ -153,11 +160,6 @@ impl Task {
                             };
                         })
                         .last();
-                });
-                channel.send(short).unwrap_or_else(|_| {
-                    PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    // TODO debug log
-                    //    println!("shapshot not sent");
                 });
             }
             Task::Rotate(channel) => {
