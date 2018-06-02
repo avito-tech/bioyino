@@ -17,6 +17,8 @@ extern crate toml;
 extern crate bytes;
 #[macro_use]
 extern crate futures;
+extern crate capnp;
+extern crate capnp_futures;
 extern crate hyper;
 extern crate libc;
 extern crate net2;
@@ -47,20 +49,24 @@ pub mod server;
 pub mod task;
 pub mod util;
 
+pub mod protocol_capnp {
+    include!(concat!(env!("OUT_DIR"), "/schema/protocol_capnp.rs"));
+}
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
+use std::sync::Arc;
 use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
 
 use slog::{Drain, Level};
 
 use bytes::{Bytes, BytesMut};
-use futures::future::{empty, lazy, ok};
+use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
 
@@ -69,8 +75,8 @@ use tokio::runtime::current_thread::Runtime;
 use tokio::timer::Interval;
 use tokio_core::reactor::Core;
 
-use net2::UdpBuilder;
 use net2::unix::UnixUdpBuilderExt;
+use net2::UdpBuilder;
 use resolve::resolver;
 
 use carbon::CarbonBackend;
@@ -78,15 +84,15 @@ use config::{Command, Consul, Metrics, Network, System};
 use consul::ConsulConsensus;
 use errors::GeneralError;
 use metric::Metric;
-use peer::{PeerCommandClient, PeerServer, PeerSnapshotClient};
+use peer::{NativeProtocolServer, NativeProtocolSnapshot, PeerCommandClient};
 use server::StatsdServer;
 use task::Task;
 use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
 
 pub type Float = f64;
-pub type Cache = HashMap<String, Metric<Float>>;
-thread_local!(static LONG_CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
-thread_local!(static SHORT_CACHE: RefCell<HashMap<String, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
+pub type Cache = HashMap<Bytes, Metric<Float>>;
+thread_local!(static LONG_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
+thread_local!(static SHORT_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 
 pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -133,28 +139,28 @@ fn main() {
                 nodes,
                 snapshot_interval,
             },
-            consul:
-                Consul {
-                    start_disabled: consul_disable,
-                    agent,
-                    session_ttl: consul_session_ttl,
-                    renew_time: consul_renew_time,
-                    key_name: consul_key,
-                },
-                metrics:
-                    Metrics {
-                        //           max_metrics,
-                        mut count_updates,
-                        update_counter_prefix,
-                        update_counter_suffix,
-                        update_counter_threshold,
-                    },
-                    carbon,
-                    n_threads,
-                    w_threads,
-                    stats_interval: s_interval,
-                    task_queue_size,
-                    stats_prefix,
+        consul:
+            Consul {
+                start_disabled: consul_disable,
+                agent,
+                session_ttl: consul_session_ttl,
+                renew_time: consul_renew_time,
+                key_name: consul_key,
+            },
+        metrics:
+            Metrics {
+                //           max_metrics,
+                mut count_updates,
+                update_counter_prefix,
+                update_counter_suffix,
+                update_counter_threshold,
+            },
+        carbon,
+        n_threads,
+        w_threads,
+        stats_interval: s_interval,
+        task_queue_size,
+        stats_prefix,
     } = system.clone();
 
     let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
@@ -207,10 +213,10 @@ fn main() {
             .name(format!("bioyino_cnt{}", i).into())
             .spawn(move || {
                 let mut runtime = Runtime::new().expect("creating runtime for counting worker");
-                let future = rx.for_each(move |task: Task| lazy(|| ok(task.run())));
+                let future = rx.for_each(move |task: Task| ok(task.run()));
                 runtime.block_on(future).expect("worker thread failed");
             })
-        .expect("starting counting worker thread");
+            .expect("starting counting worker thread");
     }
 
     let stats_prefix = stats_prefix.trim_right_matches(".").to_string();
@@ -225,19 +231,19 @@ fn main() {
     info!(log, "starting snapshot sender");
     let snap_log = rlog.clone();
     let snap_err_log = rlog.clone();
-    let snapshot = PeerSnapshotClient::new(
+    let snapshot = NativeProtocolSnapshot::new(
         &snap_log,
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
-        ).into_future()
+    ).into_future()
         .map_err(move |e| {
             PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
             info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
         });
     runtime.spawn(snapshot);
 
-    // settings afe for asap restart
+    // settings safe for asap restart
     info!(log, "starting snapshot receiver");
     let peer_server_ret = BackoffRetryBuilder {
         delay: 1,
@@ -246,7 +252,8 @@ fn main() {
         retries: ::std::usize::MAX,
     };
     let serv_log = rlog.clone();
-    let peer_server = PeerServer::new(rlog.clone(), peer_listen, chans.clone(), nodes.clone());
+
+    let peer_server = NativeProtocolServer::new(rlog.clone(), peer_listen, chans.clone());
     let peer_server = peer_server_ret.spawn(peer_server).map_err(move |e| {
         warn!(serv_log, "shot server gone with error: {:?}", e);
     });
@@ -275,7 +282,7 @@ fn main() {
                 core.run(consensus.into_future().map_err(|_| ()))
                     .expect("running core for Consul consensus");
             })
-        .expect("starting thread for running consul");
+            .expect("starting thread for running consul");
     } else {
         info!(log, "consul is diabled, starting as leader");
         IS_LEADER.store(true, Ordering::SeqCst);
@@ -339,7 +346,7 @@ fn main() {
                             .inspect(|_| {
                                 EGRESS.fetch_add(1, Ordering::Relaxed);
                             })
-                        .collect()
+                            .collect()
                             .and_then(|metrics| {
                                 let backend =
                                     CarbonBackend::new(backend_addr, ts, Arc::new(metrics));
@@ -366,10 +373,10 @@ fn main() {
                             .block_on(aggregator.then(|_| Ok::<(), ()>(())))
                             .unwrap_or_else(
                                 |e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e),
-                                );
+                            );
                     }
                 })
-            .expect("starting thread for sending to graphite");
+                .expect("starting thread for sending to graphite");
             Ok(())
         });
 
@@ -425,7 +432,7 @@ fn main() {
                                     iov_base: buf.as_mut_ptr() as *mut c_void,
                                     iov_len: bufsize as size_t,
                                 },
-                                );
+                            );
                             let m = mmsghdr {
                                 msg_hdr: msghdr {
                                     msg_name: null_mut(),
@@ -467,7 +474,7 @@ fn main() {
                                     vlen as c_uint,
                                     MSG_WAITFORONE,
                                     null_mut(),
-                                    )
+                                )
                             };
 
                             use bytes::BufMut;
@@ -504,7 +511,7 @@ fn main() {
                                             warn!(log, "error sending buffer(queue full?)");
                                             DROPS.fetch_add(res as usize, Ordering::Relaxed);
                                         })
-                                    .unwrap_or(());
+                                        .unwrap_or(());
                                     chunks = task_queue_size as isize;
                                 }
                             } else {
@@ -520,7 +527,7 @@ fn main() {
                         }
                     }
                 })
-            .expect("starting multimsg thread");
+                .expect("starting multimsg thread");
         }
     } else {
         info!(log, "multimessage is disabled, starting in async UDP mode");
@@ -561,7 +568,7 @@ fn main() {
                             let socket = socket.try_clone().expect("cloning socket");
                             let socket =
                                 UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
-                                .expect("adding socket to event loop");
+                                    .expect("adding socket to event loop");
 
                             let server = StatsdServer::new(
                                 socket,
@@ -572,7 +579,7 @@ fn main() {
                                 i,
                                 readbuf,
                                 task_queue_size * bufsize,
-                                );
+                            );
 
                             runtime.spawn(server.into_future());
                         }
@@ -582,7 +589,7 @@ fn main() {
                         .block_on(empty::<(), ()>())
                         .expect("starting runtime for async UDP");
                 })
-            .expect("creating UDP reader thread");
+                .expect("creating UDP reader thread");
         }
     }
 

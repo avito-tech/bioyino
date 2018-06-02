@@ -4,6 +4,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bincode;
+use capnp;
+use capnp::message::{Builder, ReaderOptions};
+use capnp_futures::ReadStream;
 use futures::future::{join_all, ok, Future, IntoFuture};
 use futures::sync::mpsc::Sender;
 use futures::sync::oneshot;
@@ -17,8 +20,12 @@ use tokio_io::codec::length_delimited;
 use tokio_io::codec::length_delimited::Framed;
 use tokio_io::{AsyncRead, AsyncWrite};
 
+use metric::{Metric, MetricError};
+use protocol_capnp::message as cmsg;
+
+use protocol_capnp::peer_command;
 use task::Task;
-use {Cache, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
+use {Cache, Float, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
@@ -45,6 +52,15 @@ pub enum PeerError {
 
     #[fail(display = "response not sent")]
     Response,
+
+    #[fail(display = "decoding capnp failed: {}", _0)]
+    Capnp(capnp::Error),
+
+    #[fail(display = "decoding capnp schema failed: {}", _0)]
+    CapnpSchema(capnp::NotInSchema),
+
+    #[fail(display = "decoding metric failed: {}", _0)]
+    Metric(MetricError),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -149,41 +165,29 @@ where
 }
 
 #[derive(Clone, Debug)]
-pub struct PeerServer {
+pub struct NativeProtocolServer {
     log: Logger,
     listen: SocketAddr,
-    nodes: Vec<SocketAddr>,
     chans: Vec<Sender<Task>>,
 }
 
-impl PeerServer {
-    pub fn new(
-        log: Logger,
-        listen: SocketAddr,
-        chans: Vec<Sender<Task>>,
-        nodes: Vec<SocketAddr>,
-    ) -> Self {
+impl NativeProtocolServer {
+    pub fn new(log: Logger, listen: SocketAddr, chans: Vec<Sender<Task>>) -> Self {
         Self {
-            log: log.new(o!("source"=>"peer-server", "ip"=>format!("{}", listen.clone()))),
+            log: log.new(o!("source"=>"canproto-peer-server", "ip"=>format!("{}", listen.clone()))),
             listen,
-            nodes: nodes,
             chans: chans,
         }
     }
 }
 
-impl IntoFuture for PeerServer {
+impl IntoFuture for NativeProtocolServer {
     type Item = ();
     type Error = PeerError;
     type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self {
-            log,
-            listen,
-            nodes,
-            chans,
-        } = self;
+        let Self { log, listen, chans } = self;
         let future = TcpListener::bind(&listen)
             .expect("listening peer port")
             .incoming()
@@ -192,104 +196,104 @@ impl IntoFuture for PeerServer {
                 let peer_addr = conn.peer_addr()
                     .map(|addr| addr.to_string())
                     .unwrap_or("[UNCONNECTED]".into());
-                let transport = PeerCodec::new(conn);
+                let transport = ReadStream::new(conn, ReaderOptions::default());
 
                 let log = log.new(o!("remote"=>peer_addr));
-                let nodes = nodes.clone();
 
                 let chans = chans.clone();
                 let mut chans = chans.into_iter().cycle();
 
-                let (writer, reader) = transport.split();
-
-                let err_log = log.clone();
-                reader
-                    .map(move |m| {
-                        match m {
-                            PeerMessage::Snapshot(shot) => {
-                                let next_chan = chans.next().unwrap();
-                                let future = next_chan
-                                    .send(Task::JoinSnapshot(shot))
-                                    .map(|_| ()) // drop next sender
-                                    .map_err(|_| PeerError::TaskSend);
-                                let elog = log.clone();
-                                spawn(future.map_err(move |e| {
-                                    warn!(elog, "error joining snapshot: {:?}", e);
-                                }));
-                                None
-                            }
-                            PeerMessage::Command(PeerCommand::LeaderEnable) => {
-                                info!(log, "enabling leader"; "command"=>"leader_enable");
-                                CAN_LEADER.store(true, Ordering::SeqCst);
-                                FORCE_LEADER.store(false, Ordering::SeqCst);
-                                None
-                            }
-                            PeerMessage::Command(PeerCommand::LeaderDisable) => {
-                                info!(log, "disabling leader"; "command"=>"leader_disable");
-                                CAN_LEADER.store(false, Ordering::SeqCst);
-                                //IS_LEADER.store(false, Ordering::SeqCst);
-                                None
-                            }
-                            PeerMessage::Command(PeerCommand::ForceLeader) => {
-                                info!(log, "enforcing leader"; "command"=>"force_leader");
-                                CAN_LEADER.store(false, Ordering::SeqCst);
-                                IS_LEADER.store(true, Ordering::SeqCst);
-                                FORCE_LEADER.store(true, Ordering::SeqCst);
-                                nodes
-                                    .clone()
-                                    .into_iter()
-                                    .map(|node| {
-                                        let elog = log.clone();
-                                        let command = PeerCommandClient::new(
-                                            log.clone(),
-                                            node.clone(),
-                                            PeerCommand::LeaderDisable,
-                                        ).into_future()
-                                            .map_err(move |e| {
-                                                warn!(
-                                                    elog,
-                                                    "could not send command to {:?}: {:?}", node, e
-                                                );
-                                            })
-                                            .then(|_| Ok(()));
-                                        spawn(command)
-                                    })
-                                    .last();
-                                None
-                            }
-                            PeerMessage::Command(PeerCommand::Status) => {
-                                let is_leader = IS_LEADER.load(Ordering::Relaxed);
-                                let can_leader = CAN_LEADER.load(Ordering::Relaxed);
-                                let force_leader = FORCE_LEADER.load(Ordering::Relaxed);
-                                let status = PeerStatus {
-                                    is_leader,
-                                    can_leader,
-                                    force_leader,
-                                };
-                                Some(PeerMessage::Status(status))
-                            }
-                            PeerMessage::Status(_) => {
-                                // TODO: log bad error or response with BadMessage to client
-                                None
-                            }
-                        }
+                transport
+                    .then(move |reader| {
+                        // decode incoming capnp data into message
+                        // FIXME unwraps
+                        let reader = reader.map_err(PeerError::Capnp)?;
+                        let reader = reader.get_root::<cmsg::Reader>().map_err(PeerError::Capnp)?;
+                        let next_chan = chans.next().unwrap();
+                        parse_and_send(reader, next_chan, log.clone()).map_err(|e| {
+                            warn!(log, "bad incoming message"; "error" => e.to_string());
+                            PeerError::Metric(e)
+                        })
                     })
-                    .forward(writer)
-                    .map_err(move |e| info!(err_log, "peer command error"; "error"=>e.to_string()))
-                    .then(|_| Ok(())) // don't let send errors fail the server
+                    .for_each(|_| {
+                        //
+                        Ok(())
+                    })
             });
         Box::new(future)
     }
 }
 
-pub struct PeerSnapshotClient {
+fn parse_and_send(
+    reader: cmsg::Reader,
+    next_chan: Sender<Task>,
+    log: Logger,
+) -> Result<(), MetricError> {
+    match reader.which().map_err(MetricError::CapnpSchema)? {
+        cmsg::Single(reader) => {
+            let reader = reader.map_err(MetricError::Capnp)?;
+            let (name, metric) = Metric::<Float>::from_capnp(reader)?;
+            let future = next_chan
+                .send(Task::AddMetric(name, metric))
+                .map(|_| ()) // drop next sender
+                .map_err(|_| PeerError::TaskSend);
+            let elog = log.clone();
+            spawn(future.map_err(move |e| {
+                warn!(elog, "error joining snapshot: {:?}", e);
+            }));
+            Ok(())
+        }
+        cmsg::Multi(reader) => {
+            let reader = reader.map_err(MetricError::Capnp)?;
+            let mut metrics = Vec::new();
+            reader
+                .iter()
+                .map(|reader| {
+                    Metric::<Float>::from_capnp(reader)
+                        .map(|(name, metric)| metrics.push((name, metric)))
+                })
+                .last();
+            let future = next_chan
+                .send(Task::AddMetrics(metrics))
+                .map(|_| ()) // drop next sender
+                .map_err(|_| PeerError::TaskSend);
+            let elog = log.clone();
+            spawn(future.map_err(move |e| {
+                warn!(elog, "error joining snapshot: {:?}", e);
+            }));
+            Ok(())
+        }
+        cmsg::Snapshot(reader) => {
+            let reader = reader.map_err(MetricError::Capnp)?;
+            let mut metrics = Vec::new();
+            reader
+                .iter()
+                .map(|reader| {
+                    Metric::<Float>::from_capnp(reader)
+                        .map(|(name, metric)| metrics.push((name, metric)))
+                })
+                .last();
+            let future = next_chan
+                .send(Task::AddSnapshot(metrics))
+                .map(|_| ()) // drop next sender
+                .map_err(|_| PeerError::TaskSend);
+            let elog = log.clone();
+            spawn(future.map_err(move |e| {
+                warn!(elog, "error joining snapshot: {:?}", e);
+            }));
+            Ok(())
+        }
+    }
+}
+
+pub struct NativeProtocolSnapshot {
     nodes: Vec<SocketAddr>,
     interval: Duration,
     chans: Vec<Sender<Task>>,
     log: Logger,
 }
 
-impl PeerSnapshotClient {
+impl NativeProtocolSnapshot {
     pub fn new(
         log: &Logger,
         nodes: Vec<SocketAddr>,
@@ -305,7 +309,7 @@ impl PeerSnapshotClient {
     }
 }
 
-impl IntoFuture for PeerSnapshotClient {
+impl IntoFuture for NativeProtocolSnapshot {
     type Item = ();
     type Error = PeerError;
     type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
@@ -346,22 +350,51 @@ impl IntoFuture for PeerSnapshotClient {
             // so we don't parallel connections and metrics fetching
             // TODO: we probably clne a lots of bytes here,
             // could've changed them to Arc
-            let log = log.clone();
+            let dlog = log.clone();
+            let elog = log.clone();
             get_metrics.and_then(move |metrics| {
                 let clients = nodes
                     .into_iter()
                     .map(|address| {
                         let metrics = metrics.clone();
-                        let log = log.clone();
+                        let elog = elog.clone();
+                        let dlog = dlog.clone();
                         TcpStream::connect(&address)
                             .map_err(|e| PeerError::Io(e))
                             .and_then(move |conn| {
-                                let codec = PeerCodec::new(conn);
-                                codec.send(Some(PeerMessage::Snapshot(metrics))).map(|_| ())
+                                let codec = ::capnp_futures::serialize::Transport::new(
+                                    conn,
+                                    ReaderOptions::default(),
+                                );
+
+                                let mut snapshot_message = Builder::new_default();
+                                {
+                                    let builder = snapshot_message
+                                        .init_root::<::protocol_capnp::message::Builder>();
+                                    let mut multi_metric =
+                                        builder.init_snapshot(metrics.len() as u32);
+                                    metrics
+                                        .into_iter()
+                                        .flat_map(|hmap| hmap.into_iter())
+                                        .enumerate()
+                                        .map(|(idx, (name, metric))| {
+                                            let mut c_metric =
+                                                multi_metric.reborrow().get(idx as u32);
+                                            let name =
+                                                unsafe { ::std::str::from_utf8_unchecked(&name) };
+                                            c_metric.set_name(name);
+                                            metric.fill_capnp(&mut c_metric);
+                                        })
+                                        .last();
+                                }
+                                codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
+                                    debug!(elog, "codec error"; "error"=>e.to_string());
+                                    PeerError::Capnp(e)
+                                })
                             })
                             .map_err(move |e| {
                                 PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                debug!(log, "error sending snapshot: {}", e)
+                                debug!(dlog, "error sending snapshot: {}", e)
                             })
                             .then(|_| Ok(())) // we don't want to faill the whole timer cycle because of one send error
                     })
@@ -411,28 +444,164 @@ impl IntoFuture for PeerCommandClient {
         let future = tokio::net::TcpStream::connect(&address)
             .map_err(|e| PeerError::Io(e))
             .and_then(move |conn| {
-                let codec = PeerCodec::new(conn);
-                codec.send(Some(PeerMessage::Command(command)))
-            })
-            .and_then(move |codec| {
-                if resp_required {
-                    let resp = codec
-                        .into_future()
-                        .and_then(move |(status, _)| {
-                            if let Some(PeerMessage::Status(status)) = status {
-                                println!("status of {:?}: {:?}", address, status,);
-                            } else {
-                                warn!(log, "Unknown response from server: {:?}", status);
-                            }
-                            Ok(())
-                        })
-                        .then(|_| Ok(()));
-                    Box::new(resp) as Box<Future<Item = Self::Item, Error = Self::Error>>
-                } else {
-                    Box::new(ok::<(), PeerError>(()))
-                }
+                let transport = ReadStream::new(conn, ReaderOptions::default());
+                transport
+                    .map_err(|e| PeerError::Capnp(e))
+                    .for_each(move |reader| {
+                        // decode incoming capnp data into message
+                        let reader = reader
+                            .get_root::<peer_command::Reader>()
+                            .map_err(PeerError::Capnp)?;
+                        match reader.which().map_err(PeerError::CapnpSchema)? {
+                            peer_command::Which::Status(()) => (),
+                            _ => info!(log, "command not implemented"),
+                        }
+                        Ok(())
+                    })
             });
-
         Box::new(future)
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use std::net::SocketAddr;
+    use std::thread;
+    use {slog, slog_async, slog_term};
+
+    use bytes::Bytes;
+    use capnp::message::Builder;
+    use futures::sync::mpsc::{self, Receiver};
+    use metric::{Metric, MetricType};
+    use slog::Drain;
+    use slog::Logger;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::runtime::current_thread::Runtime;
+    use tokio::timer::Delay;
+
+    use {LONG_CACHE, SHORT_CACHE};
+
+    use super::*;
+    fn prepare_log() -> Logger {
+        // Set logging
+        let decorator = slog_term::TermDecorator::new().build();
+        let drain = slog_term::FullFormat::new(decorator).build().fuse();
+        let filter = slog::LevelFilter::new(drain, slog::Level::Trace).fuse();
+        let drain = slog_async::Async::new(filter).build().fuse();
+        let rlog = slog::Logger::root(drain, o!("program"=>"test"));
+        return rlog;
+    }
+
+    fn prepare_runtime_with_server(
+        test_timeout: Instant,
+    ) -> (
+        Runtime,
+        Vec<Sender<Task>>,
+        Receiver<Task>,
+        Logger,
+        SocketAddr,
+    ) {
+        let rlog = prepare_log();
+        let mut chans = Vec::new();
+        let (tx, rx) = mpsc::channel(5);
+        chans.push(tx);
+
+        let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
+        let mut runtime = Runtime::new().expect("creating runtime for main thread");
+
+        let c_peer_listen = address.clone();
+        let c_serv_log = rlog.clone();
+        let peer_server = NativeProtocolServer::new(rlog.clone(), c_peer_listen, chans.clone())
+            .into_future()
+            .map_err(move |e| {
+                warn!(c_serv_log, "shot server gone with error: {:?}", e);
+            });
+        runtime.spawn(peer_server);
+
+        (runtime, chans, rx, rlog, address)
+    }
+
+    #[test]
+    fn test_peer_protocol_capnp() {
+        let test_timeout = Instant::now() + Duration::from_secs(3);
+        let (mut runtime, chans, rx, rlog, address) = prepare_runtime_with_server(test_timeout);
+
+        let future = rx.for_each(move |task: Task| ok(task.run()).and_then(|_| Ok(())));
+        runtime.spawn(future);
+
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let ts = ts.as_secs() as u64;
+
+        let outmetric = Metric::new(42f64, MetricType::Gauge(None), ts.into(), None).unwrap();
+        let log = rlog.clone();
+
+        let metric = outmetric.clone();
+        let sender = TcpStream::connect(&address)
+            .map_err(|e| {
+                println!("connection err: {:?}", e);
+            })
+            .and_then(move |conn| {
+                let codec =
+                    ::capnp_futures::serialize::Transport::new(conn, ReaderOptions::default());
+
+                let mut single_message = Builder::new_default();
+                {
+                    let builder = single_message.init_root::<::protocol_capnp::message::Builder>();
+                    let mut c_metric = builder.init_single();
+                    c_metric.set_name("complex.test.bioyino_single");
+                    metric.fill_capnp(&mut c_metric);
+                }
+
+                let mut multi_message = Builder::new_default();
+                {
+                    let builder = multi_message.init_root::<::protocol_capnp::message::Builder>();
+                    let multi_metric = builder.init_multi(1);
+                    let mut new_metric = multi_metric.get(0);
+                    new_metric.set_name("complex.test.bioyino_multi");
+                    metric.fill_capnp(&mut new_metric);
+                }
+
+                let mut snapshot_message = Builder::new_default();
+                {
+                    let builder =
+                        snapshot_message.init_root::<::protocol_capnp::message::Builder>();
+                    let multi_metric = builder.init_snapshot(1);
+                    let mut new_metric = multi_metric.get(0);
+                    new_metric.set_name("complex.test.bioyino_snapshot");
+                    metric.fill_capnp(&mut new_metric);
+                }
+                codec
+                    .send(single_message)
+                    .and_then(|codec| {
+                        codec
+                            .send(multi_message)
+                            .and_then(|codec| codec.send(snapshot_message))
+                    })
+                    .map(|_| ())
+                    .map_err(|e| println!("codec error: {:?}", e))
+            })
+            .map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
+
+        let metric = outmetric.clone();
+        let log = rlog.clone();
+
+        let d = Delay::new(Instant::now() + Duration::from_secs(1));
+        let delayed = d.map_err(|_| ()).and_then(|_| sender);
+        runtime.spawn(delayed);
+
+        let test_delay = Delay::new(test_timeout);
+        runtime.block_on(test_delay).expect("runtime");
+
+        let single_name: Bytes = "complex.test.bioyino_single".into();
+        let multi_name: Bytes = "complex.test.bioyino_multi".into();
+        let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
+        LONG_CACHE.with(|c| {
+            assert_eq!(c.borrow().get(&shot_name), Some(&outmetric));
+        });
+        SHORT_CACHE.with(|c| {
+            assert_eq!(c.borrow().get(&single_name), Some(&outmetric));
+            assert_eq!(c.borrow().get(&multi_name), Some(&outmetric));
+        });
     }
 }

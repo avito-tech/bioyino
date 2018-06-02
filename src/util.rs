@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use bytes::{Bytes, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use futures::future::Either;
 use futures::stream::futures_unordered;
 use futures::sync::mpsc::{Sender, UnboundedSender};
@@ -40,15 +40,25 @@ impl OwnStats {
     }
 
     pub fn get_stats(&mut self) {
-        let mut metrics = HashMap::new();
+        let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
         macro_rules! add_metric {
             ($global:ident, $value:ident, $suffix:expr) => {
                 let $value = $global.swap(0, Ordering::Relaxed) as Float;
                 if self.interval > 0 {
-                    metrics.insert(
-                        self.prefix.clone() + "." + $suffix,
-                        Metric::new($value, MetricType::Counter, None).unwrap(),
-                        );
+                    buf.put(&self.prefix);
+                    buf.put(".");
+                    buf.put(&$suffix);
+                    let name = buf.take().freeze();
+                    let metric = Metric::new($value, MetricType::Counter, None, None).unwrap();
+                    let log = self.log.clone();
+                    let sender = self.chan
+                        .clone()
+                        .send(Task::AddMetric(name, metric))
+                        .map(|_| ())
+                        .map_err(move |_| {
+                            warn!(log, "stats future could not send metric to task")
+                        });
+                    spawn(sender);
                 }
             };
         };
@@ -61,6 +71,7 @@ impl OwnStats {
         add_metric!(DROPS, drops, "drop");
         if self.interval > 0 {
             let s_interval = self.interval as f64;
+
             info!(self.log, "stats";
                   "egress" => format!("{:2}", egress / s_interval),
                   "ingress" => format!("{:2}", ingress / s_interval),
@@ -71,14 +82,6 @@ impl OwnStats {
                   "drops" => format!("{:2}", drops / s_interval),
                   );
         }
-        let log = self.log.clone();
-        spawn(
-            self.chan
-            .clone()
-            .send(Task::AddMetrics(metrics))
-            .map(|_| ())
-            .map_err(move |_| warn!(log, "stats future could not send metric to task")),
-            );
     }
 }
 
@@ -128,7 +131,7 @@ impl Aggregator {
         options: AggregateOptions,
         chans: Vec<Sender<Task>>,
         tx: UnboundedSender<(Bytes, Float)>,
-        ) -> Self {
+    ) -> Self {
         Self { options, chans, tx }
     }
 }
@@ -168,35 +171,35 @@ impl IntoFuture for Aggregator {
                         // })
         });
 
-        let aggregate = accumulate.and_then(move |accumulated| {
-            accumulated
-                .into_iter()
-                .inspect(|_| {
-                    EGRESS.fetch_add(1, Ordering::Relaxed);
-                })
-            .map(move |(name, metric)| {
-                let buf = BytesMut::with_capacity(1024);
-                let task = Task::Aggregate(AggregateData {
-                    buf,
-                    name: Bytes::from(name),
-                    metric,
-                    options: options.clone(),
-                    response: tx.clone(),
-                });
-                // as of now we just run each task in the current thread
-                // there is a reason we should not in general run the task in the counting workers:
-                // workers will block on heavy computation and may cause metrics goind to them over
-                // network to be dropped because of backpressure
-                // at the same time counting aggregation is not urgent because of current backend(carbon/graphite)
-                // nature where one can send metrics with any timestamp
-                // TODO: at some day counting workers will probably work in work-stealing mode,
-                // after that we probably will be able to run task in common mode
-                task.run();
-            })
-            .last();
-            Ok(())
-        });
-        Box::new(aggregate)
+            let aggregate = accumulate.and_then(move |accumulated| {
+                accumulated
+                    .into_iter()
+                    .inspect(|_| {
+                        EGRESS.fetch_add(1, Ordering::Relaxed);
+                    })
+                    .map(move |(name, metric)| {
+                        let buf = BytesMut::with_capacity(1024);
+                        let task = Task::Aggregate(AggregateData {
+                            buf,
+                            name: Bytes::from(name),
+                            metric,
+                            options: options.clone(),
+                            response: tx.clone(),
+                        });
+                        // as of now we just run each task in the current thread
+                        // there is a reason we should not in general run the task in the counting workers:
+                        // workers will block on heavy computation and may cause metrics goind to them over
+                        // network to be dropped because of backpressure
+                        // at the same time counting aggregation is not urgent because of current backend(carbon/graphite)
+                        // nature where one can send metrics with any timestamp
+                        // TODO: at some day counting workers will probably work in work-stealing mode,
+                        // after that we probably will be able to run task in common mode
+                        task.run();
+                    })
+                    .last();
+                Ok(())
+            });
+            Box::new(aggregate)
         } else {
             // only get metrics from threads
             let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
@@ -205,6 +208,7 @@ impl IntoFuture for Aggregator {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct BackoffRetryBuilder {
     pub delay: u64,
     pub delay_mul: f32,
@@ -225,16 +229,16 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-        where
+    where
         F: IntoFuture + Clone,
-        {
-            let inner = Either::A(action.clone().into_future());
-            BackoffRetry {
-                action,
-                inner: inner,
-                options: self,
-            }
+    {
+        let inner = Either::A(action.clone().into_future());
+        BackoffRetry {
+            action,
+            inner: inner,
+            options: self,
         }
+    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -246,7 +250,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-F: IntoFuture + Clone,
+    F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;

@@ -1,8 +1,14 @@
-//use errors::*;
-use Float;
-use failure::Error;
 use std::fmt::Debug;
 use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
+
+use bytes::Bytes;
+use capnp;
+use capnp::message::{Allocator, Builder, HeapAllocator, Reader, ReaderSegments};
+//use capnp::message::ReaderSegments;
+use failure::Error;
+
+use protocol_capnp::metric as cmetric;
+use Float;
 
 #[derive(Fail, Debug)]
 pub enum MetricError {
@@ -14,6 +20,12 @@ pub enum MetricError {
 
     #[fail(display = "aggregating metrics of different types")]
     Aggregating,
+
+    #[fail(display = "decoding error: {}", _0)]
+    Capnp(capnp::Error),
+
+    #[fail(display = "schema error: {}", _0)]
+    CapnpSchema(capnp::NotInSchema),
 }
 
 // Percentile counter. Not safe. Requires at least two elements in vector
@@ -52,18 +64,19 @@ where
     Counter,
     DiffCounter(F),
     Timer(Vec<F>),
-    //    Histogram,
     Gauge(Option<i8>),
+    //    Histogram,
     //    Set(HashSet<MetricValue>),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Metric<F>
 where
     F: Copy + PartialEq + Debug,
 {
     pub value: F,
     pub mtype: MetricType<F>,
+    pub timestamp: Option<u64>,
     pub update_counter: u32,
     pub sampling: Option<f32>,
 }
@@ -79,21 +92,27 @@ where
         + Mul<Output = F>
         + PartialOrd
         + PartialEq
-        + Into<f64>
+        + Into<Float>
+        + From<Float>
         + Copy
         + Debug
         + Sync,
 {
-    pub fn new(value: F, mtype: MetricType<F>, sampling: Option<f32>) -> Result<Self, Error> {
+    pub fn new(
+        value: F,
+        mtype: MetricType<F>,
+        timestamp: Option<u64>,
+        sampling: Option<f32>,
+    ) -> Result<Self, MetricError> {
         let mut metric = Metric {
-            value: value,
-            mtype: mtype,
-            sampling: sampling,
+            value,
+            mtype,
+            timestamp,
+            sampling,
             update_counter: 1,
         };
 
         if let MetricType::Timer(ref mut agg) = metric.mtype {
-            // ckms.insert(metric.value);
             agg.push(metric.value)
         };
         // if let MetricType::Set(ref mut set) = metric.mtype {
@@ -145,6 +164,130 @@ where
             }
         };
         Ok(())
+    }
+
+    pub fn from_capnp<'a>(
+        reader: cmetric::Reader<'a>,
+    ) -> Result<(Bytes, Metric<Float>), MetricError> {
+        let name = reader.get_name().map_err(MetricError::Capnp)?.into();
+        let value = reader.get_value();
+
+        let mtype = reader.get_type().map_err(MetricError::Capnp)?;
+        use protocol_capnp::metric_type;
+        let mtype = match mtype.which().map_err(MetricError::CapnpSchema)? {
+            metric_type::Which::Counter(()) => MetricType::Counter,
+            metric_type::Which::DiffCounter(c) => MetricType::DiffCounter(c),
+            metric_type::Which::Gauge(reader) => {
+                use protocol_capnp::gauge;
+                let reader = reader.map_err(MetricError::Capnp)?;
+                match reader.which().map_err(MetricError::CapnpSchema)? {
+                    gauge::Which::Unsigned(()) => MetricType::Gauge(None),
+                    gauge::Which::Signed(sign) => MetricType::Gauge(Some(sign)),
+                }
+            }
+            metric_type::Which::Timer(reader) => {
+                let reader = reader.map_err(MetricError::Capnp)?;
+                let mut v = Vec::new();
+                v.reserve_exact(reader.len() as usize);
+                reader.iter().map(|ms| v.push(ms)).last();
+                MetricType::Timer(v)
+            }
+        };
+
+        let timestamp = if reader.has_timestamp() {
+            Some(reader.get_timestamp().map_err(MetricError::Capnp)?.get_ts())
+        } else {
+            None
+        };
+
+        let (sampling, up_counter) = match reader.get_meta() {
+            Ok(reader) => (
+                if reader.has_sampling() {
+                    reader
+                        .get_sampling()
+                        .ok()
+                        .map(|reader| reader.get_sampling())
+                } else {
+                    None
+                },
+                //                   .ok()
+                Some(reader.get_update_counter()),
+            ),
+            Err(_) => (None, None),
+        };
+
+        let mut metric = Metric::new(value.into(), mtype, timestamp, sampling)?;
+
+        if let Some(c) = up_counter {
+            metric.update_counter = c;
+        }
+
+        Ok((name, metric))
+    }
+
+    pub fn fill_capnp<'a>(&self, builder: &mut cmetric::Builder<'a>) {
+        // no name is known at this stage
+        // value
+        builder.set_value(self.value.into());
+        // mtype
+        {
+            let mut t_builder = builder.reborrow().init_type();
+            match self.mtype {
+                MetricType::Counter => t_builder.set_counter(()),
+                MetricType::DiffCounter(v) => t_builder.set_diff_counter(v.into()),
+                MetricType::Gauge(sign) => {
+                    let mut g_builder = t_builder.init_gauge();
+                    match sign {
+                        Some(v) => g_builder.set_signed(v),
+                        None => g_builder.set_unsigned(()),
+                    }
+                }
+                MetricType::Timer(ref v) => {
+                    let mut timer_builder = t_builder.init_timer(v.len() as u32);
+                    v.iter()
+                        .enumerate()
+                        .map(|(idx, value)| {
+                            let value: f64 = (*value).into();
+                            timer_builder.set(idx as u32, value);
+                        })
+                        .last();
+                }
+            }
+        }
+
+        // timestamp
+        {
+            if let Some(timestamp) = self.timestamp {
+                builder.reborrow().init_timestamp().set_ts(timestamp);
+            }
+        }
+
+        // meta
+        let mut m_builder = builder.reborrow().init_meta();
+        if let Some(sampling) = self.sampling {
+            m_builder.reborrow().init_sampling().set_sampling(sampling)
+        }
+        m_builder.set_update_counter(self.update_counter);
+    }
+
+    // may be useful in future somehow
+    pub fn as_capnp<A: Allocator>(&self, allocator: A) -> Builder<A> {
+        let mut builder = Builder::new(allocator);
+        {
+            let mut root = builder.init_root::<cmetric::Builder>();
+            self.fill_capnp(&mut root);
+        }
+        builder
+    }
+    // may be useful in future somehow
+    pub fn as_capnp_heap(&self) -> Builder<HeapAllocator> {
+        let allocator = HeapAllocator::new();
+        let mut builder = Builder::new(allocator);
+        {
+            let mut root = builder.init_root::<cmetric::Builder>();
+            self.fill_capnp(&mut root);
+        }
+        builder
     }
 }
 
