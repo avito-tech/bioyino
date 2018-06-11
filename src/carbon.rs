@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -9,8 +9,8 @@ use ftoa;
 use futures::stream;
 use futures::{Future, IntoFuture, Sink, Stream};
 use tokio::net::TcpStream;
-use tokio_io::AsyncRead;
 use tokio_io::codec::{Decoder, Encoder};
+use tokio_io::AsyncRead;
 
 use errors::GeneralError;
 

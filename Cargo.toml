@@ -5,6 +5,7 @@ authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 
 [dependencies]
+lazy_static="^1.0"
 clap="^2.31"
 failure="^0.1"
 failure_derive="^0.1"
@@ -12,13 +13,13 @@ libc="^0.2"
 num_cpus="^1.8"
 futures="^0.1"
 tokio="^0.1"
-tokio-core="^0.1"
 tokio-io="^0.1"
 bytes = { version = "^0.4", features = [ "serde" ] }
 resolve="^0.1"
 net2="^0.2"
 combine="^3.3"
-hyper="^0.11"
+hyper="^0.12"
+mime="^0.3"
 serde="^1.0"
 serde_derive="^1.0"
 serde_json="^1.0"

@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
 use toml;
+use ConsensusState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -32,6 +33,9 @@ pub(crate) struct System {
     /// queue size for single counting thread before packet is dropped
     pub task_queue_size: usize,
 
+    /// Should we start as leader state enabled or not
+    pub start_as_leader: bool,
+
     /// How often to gather own stats, in ms. Use 0 to disable (stats are still gathered, but not included in
     /// metric dump)
     pub stats_interval: u64,
@@ -52,6 +56,7 @@ impl Default for System {
             w_threads: 4,
             stats_interval: 10000,
             task_queue_size: 2048,
+            start_as_leader: false,
             stats_prefix: "resources.monitoring.bioyino".to_string(),
         }
     }
@@ -179,7 +184,7 @@ impl Default for Network {
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Consul {
     /// Start in disabled leader finding mode
-    pub start_disabled: bool,
+    pub start_as: ConsensusState,
 
     /// Consul agent address
     pub agent: SocketAddr,
@@ -197,7 +202,7 @@ pub(crate) struct Consul {
 impl Default for Consul {
     fn default() -> Self {
         Self {
-            start_disabled: false,
+            start_as: ConsensusState::Disabled,
             agent: "127.0.0.1:8500".parse().unwrap(),
             session_ttl: 11000,
             renew_time: 1000,

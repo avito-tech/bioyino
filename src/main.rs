@@ -1,4 +1,6 @@
 // General
+#[macro_use]
+extern crate lazy_static;
 extern crate failure;
 #[macro_use]
 extern crate failure_derive;
@@ -21,11 +23,11 @@ extern crate capnp;
 extern crate capnp_futures;
 extern crate hyper;
 extern crate libc;
+extern crate mime;
 extern crate net2;
 extern crate num_cpus;
 extern crate resolve;
 extern crate tokio;
-extern crate tokio_core;
 extern crate tokio_io;
 
 // Other
@@ -59,7 +61,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
 
@@ -73,7 +75,6 @@ use futures::{Future, IntoFuture, Stream};
 use tokio::net::UdpSocket;
 use tokio::runtime::current_thread::Runtime;
 use tokio::timer::Interval;
-use tokio_core::reactor::Core;
 
 use net2::unix::UnixUdpBuilderExt;
 use net2::UdpBuilder;
@@ -89,11 +90,17 @@ use server::StatsdServer;
 use task::Task;
 use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
 
+// floating type used all over the code, can be changed to f32, to use less memory at the price of
+// precision
+// TODO: make in into compilation feature
 pub type Float = f64;
+
+// a type to store pre-aggregated data
 pub type Cache = HashMap<Bytes, Metric<Float>>;
 thread_local!(static LONG_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 thread_local!(static SHORT_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 
+// statistic counters
 pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static PEER_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -102,9 +109,31 @@ pub static INGRESS_METRICS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
 
-pub static CAN_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ConsensusState {
+    Enabled,
+    Paused,
+    Disabled,
+}
+
+impl FromStr for ConsensusState {
+    type Err = GeneralError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "enabled" | "enable" => Ok(ConsensusState::Enabled),
+            "disabled" | "disable" => Ok(ConsensusState::Disabled),
+            "pause" | "paused" => Ok(ConsensusState::Paused),
+            _ => Err(GeneralError::UnknownState),
+        }
+    }
+}
+
+lazy_static! {
+    pub static ref CONSENSUS_STATE: Mutex<ConsensusState> = { Mutex::new(ConsensusState::Disabled) };
+}
+
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
-pub static FORCE_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
 
 pub fn try_resolve(s: &str) -> SocketAddr {
     s.parse().unwrap_or_else(|_| {
@@ -141,7 +170,7 @@ fn main() {
             },
         consul:
             Consul {
-                start_disabled: consul_disable,
+                start_as: consul_start_as,
                 agent,
                 session_ttl: consul_session_ttl,
                 renew_time: consul_renew_time,
@@ -160,6 +189,7 @@ fn main() {
         w_threads,
         stats_interval: s_interval,
         task_queue_size,
+        start_as_leader,
         stats_prefix,
     } = system.clone();
 
@@ -260,34 +290,21 @@ fn main() {
 
     runtime.spawn(peer_server);
 
-    // TODO (maybe) change to option, not-depending on number of nodes
-    if nodes.len() > 0 {
-        info!(log, "consul is enabled, starting consul consensus");
-        if consul_disable {
-            CAN_LEADER.store(false, Ordering::SeqCst);
-            IS_LEADER.store(false, Ordering::SeqCst);
-        } else {
-            CAN_LEADER.store(true, Ordering::SeqCst);
-        }
-        let consul_log = rlog.clone();
-        thread::Builder::new()
-            .name("bioyino_consul".into())
-            .spawn(move || {
-                let mut core = Core::new().unwrap();
-                let handle = core.handle();
+    // Init leader state before starting backend
+    IS_LEADER.store(start_as_leader, Ordering::SeqCst);
 
-                let mut consensus = ConsulConsensus::new(&consul_log, agent, consul_key, &handle);
-                consensus.set_session_ttl(Duration::from_millis(consul_session_ttl as u64));
-                consensus.set_renew_time(Duration::from_millis(consul_renew_time as u64));
-                core.run(consensus.into_future().map_err(|_| ()))
-                    .expect("running core for Consul consensus");
-            })
-            .expect("starting thread for running consul");
-    } else {
-        info!(log, "consul is diabled, starting as leader");
-        IS_LEADER.store(true, Ordering::SeqCst);
-        CAN_LEADER.store(false, Ordering::SeqCst);
+    {
+        let mut con_state = CONSENSUS_STATE.lock().unwrap();
+        info!(log, "starting consul consensus"; "initial_state"=>format!("{:?}", con_state));
+        *con_state = consul_start_as;
     }
+
+    let consul_log = rlog.clone();
+
+    let mut consensus = ConsulConsensus::new(&consul_log, agent, consul_key);
+    consensus.set_session_ttl(Duration::from_millis(consul_session_ttl as u64));
+    consensus.set_renew_time(Duration::from_millis(consul_renew_time as u64));
+    runtime.spawn(consensus.into_future().map_err(|_| ())); // TODO errors
 
     info!(log, "starting carbon backend");
     let tchans = chans.clone();

@@ -25,7 +25,7 @@ use protocol_capnp::message as cmsg;
 
 use protocol_capnp::peer_command;
 use task::Task;
-use {Cache, Float, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
+use {Cache, ConsensusState, Float, CONSENSUS_STATE, IS_LEADER, PEER_ERRORS};
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
@@ -436,11 +436,6 @@ impl IntoFuture for PeerCommandClient {
             command,
         } = self;
 
-        let resp_required = if let PeerCommand::Status = command {
-            true
-        } else {
-            false
-        };
         let future = tokio::net::TcpStream::connect(&address)
             .map_err(|e| PeerError::Io(e))
             .and_then(move |conn| {
