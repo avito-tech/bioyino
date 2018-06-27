@@ -31,7 +31,6 @@ extern crate tokio;
 extern crate tokio_io;
 
 // Other
-extern crate bincode;
 extern crate combine;
 extern crate serde;
 #[macro_use]
@@ -44,6 +43,7 @@ pub mod carbon;
 pub mod config;
 pub mod consul;
 pub mod errors;
+pub mod management;
 pub mod metric;
 pub mod parser;
 pub mod peer;
@@ -69,7 +69,7 @@ use slog::{Drain, Level};
 
 use bytes::{Bytes, BytesMut};
 use futures::future::{empty, ok};
-use futures::sync::mpsc;
+use futures::sync::{mpsc, oneshot};
 use futures::{Future, IntoFuture, Stream};
 
 use tokio::net::UdpSocket;
@@ -84,8 +84,9 @@ use carbon::CarbonBackend;
 use config::{Command, Consul, Metrics, Network, System};
 use consul::ConsulConsensus;
 use errors::GeneralError;
+use management::{MgmtClient, MgmtServer};
 use metric::Metric;
-use peer::{NativeProtocolServer, NativeProtocolSnapshot, PeerCommandClient};
+use peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use server::StatsdServer;
 use task::Task;
 use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
@@ -213,7 +214,7 @@ fn main() {
 
     if let Command::Query(command, dest) = command {
         let dest = try_resolve(&dest);
-        let command = PeerCommandClient::new(rlog.clone(), dest.clone(), command);
+        let command = MgmtClient::new(rlog.clone(), dest.clone(), command);
 
         runtime.block_on(command.into_future()).unwrap_or_else(|e| {
             warn!(rlog,

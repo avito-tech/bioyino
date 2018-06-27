@@ -19,50 +19,6 @@ struct Message {
     }
 }
 
-# A message type for internal messaging, should not be used by clients
-# WARNING: This is reserved for future, only some commands may work
-struct PeerCommand {
-    union {
-        # server will answer with ServerStatus message
-        status @0 :Void;
-
-        # send a command to consensus module
-        consensusCommand @1 :ConsensusCommand;
-    }
-}
-
-# Turn consensus off for time(in milliseconds).
-struct ConsensusCommand {
-    action :union {
-
-        # enable consensus leadership
-        enable @0 :Void;
-
-        # disable consensus leadership changes consensus will be turned off
-        disable @1 :Void;
-
-        # Pause consensus leadership.
-        # The consensus module will still work and interact with others,
-        # but any leadership changes will not be counted by backend as internal leader state
-        pause @2 :UInt64;
-
-        # resume consensus from pause
-        resume @3 :Void;
-    }
-
-    # Along with the consensus state change the internal leadership state can be changed
-    setLeader :union {
-        unchanged @4 :Void;
-        enable @5 :Void;
-        disable @6 :Void;
-    }
-}
-
-struct ServerStatus {
-    leaderStatus @0 :Bool;
-    consensusPaused @1 :UInt64;
-}
-
 struct Metric {
 
     # everyone should have a name, even metrics

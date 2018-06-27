@@ -3,7 +3,6 @@ use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use bincode;
 use capnp;
 use capnp::message::{Builder, ReaderOptions};
 use capnp_futures::ReadStream;
@@ -23,7 +22,6 @@ use tokio_io::{AsyncRead, AsyncWrite};
 use metric::{Metric, MetricError};
 use protocol_capnp::message as cmsg;
 
-use protocol_capnp::peer_command;
 use task::Task;
 use {Cache, ConsensusState, Float, CONSENSUS_STATE, IS_LEADER, PEER_ERRORS};
 
@@ -34,12 +32,6 @@ pub enum PeerError {
 
     #[fail(display = "Error when creating timer: {}", _0)]
     Timer(#[cause] ::tokio::timer::Error),
-
-    #[fail(display = "bincode decoding error {}", _0)]
-    Decode(#[cause] Box<bincode::ErrorKind>),
-
-    #[fail(display = "bincode encoding error: {}", _0)]
-    Encode(#[cause] Box<bincode::ErrorKind>),
 
     #[fail(display = "error sending task to worker thread")]
     TaskSend,
@@ -61,107 +53,6 @@ pub enum PeerError {
 
     #[fail(display = "decoding metric failed: {}", _0)]
     Metric(MetricError),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum PeerCommand {
-    LeaderDisable,
-    LeaderEnable,
-    ForceLeader,
-    Status,
-}
-
-impl FromStr for PeerCommand {
-    type Err = PeerError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "leader_enable" => Ok(PeerCommand::LeaderEnable),
-            "leader_disable" => Ok(PeerCommand::LeaderDisable),
-            "force_leader" => Ok(PeerCommand::ForceLeader),
-            "status" => Ok(PeerCommand::Status),
-            _ => Err(PeerError::BadCommand),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PeerStatus {
-    is_leader: bool,
-    can_leader: bool,
-    force_leader: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub enum PeerMessage {
-    Snapshot(Vec<Cache>),
-    Command(PeerCommand),
-    Status(PeerStatus),
-}
-
-pub struct PeerCodec<T> {
-    inner: Framed<T, Vec<u8>>,
-}
-
-impl<T> PeerCodec<T>
-where
-    T: AsyncRead + AsyncWrite,
-{
-    pub fn new(conn: T) -> Self {
-        Self {
-            inner: length_delimited::Builder::new()
-                .length_field_length(8)
-                // TODO: currently max snapshot size is 4Gb
-                // we should make it into an option or make
-                // snapshot sending iterative and splittable
-                .max_frame_length(::std::u32::MAX as usize)
-                .new_framed(conn),
-        }
-    }
-}
-
-// Wrapper to decode  message from length-encoded frame
-impl<T> Stream for PeerCodec<T>
-where
-    T: AsyncRead + AsyncWrite,
-{
-    type Item = PeerMessage;
-    type Error = PeerError;
-
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        let message = match try_ready!(self.inner.poll().map_err(|e| PeerError::Io(e))) {
-            Some(buf) => Some(bincode::deserialize(&buf).map_err(|e| PeerError::Decode(e))?),
-            None => None,
-        };
-        Ok(Async::Ready(message))
-    }
-}
-
-// Wrapper to encode message to length-encoded frame
-impl<T> Sink for PeerCodec<T>
-where
-    T: AsyncRead + AsyncWrite,
-{
-    type SinkItem = Option<PeerMessage>;
-    type SinkError = PeerError;
-
-    fn start_send(&mut self, item: Self::SinkItem) -> StartSend<Self::SinkItem, Self::SinkError> {
-        match item {
-            Some(item) => {
-                let message = bincode::serialize(&item).map_err(|e| PeerError::Decode(e))?;
-                match self.inner.start_send(message) {
-                    Ok(AsyncSink::NotReady(_)) => Ok(AsyncSink::NotReady(Some(item))),
-                    Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
-                    Err(e) => Err(PeerError::Io(e)),
-                }
-            }
-            None => Ok(AsyncSink::Ready),
-        }
-    }
-
-    fn poll_complete(&mut self) -> Poll<(), Self::SinkError> {
-        self.inner.poll_complete().map_err(|e| PeerError::Io(e))
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -402,58 +293,6 @@ impl IntoFuture for NativeProtocolSnapshot {
                 join_all(clients).map(|_| ())
             })
         });
-        Box::new(future)
-    }
-}
-
-pub struct PeerCommandClient {
-    log: Logger,
-    address: SocketAddr,
-    command: PeerCommand,
-}
-
-impl PeerCommandClient {
-    pub fn new(log: Logger, address: SocketAddr, command: PeerCommand) -> Self {
-        Self {
-            log: log.new(
-                o!("source"=>"peer-command-client", "server"=>format!("{}", address.clone())),
-            ),
-            address,
-            command,
-        }
-    }
-}
-
-impl IntoFuture for PeerCommandClient {
-    type Item = ();
-    type Error = PeerError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
-
-    fn into_future(self) -> Self::Future {
-        let Self {
-            log,
-            address,
-            command,
-        } = self;
-
-        let future = tokio::net::TcpStream::connect(&address)
-            .map_err(|e| PeerError::Io(e))
-            .and_then(move |conn| {
-                let transport = ReadStream::new(conn, ReaderOptions::default());
-                transport
-                    .map_err(|e| PeerError::Capnp(e))
-                    .for_each(move |reader| {
-                        // decode incoming capnp data into message
-                        let reader = reader
-                            .get_root::<peer_command::Reader>()
-                            .map_err(PeerError::Capnp)?;
-                        match reader.which().map_err(PeerError::CapnpSchema)? {
-                            peer_command::Which::Status(()) => (),
-                            _ => info!(log, "command not implemented"),
-                        }
-                        Ok(())
-                    })
-            });
         Box::new(future)
     }
 }

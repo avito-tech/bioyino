@@ -1,9 +1,12 @@
-use clap::{Arg, SubCommand};
-use peer::PeerCommand;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
+
+use clap::{Arg, SubCommand};
 use toml;
+
+use management::MgmtCommand;
+
 use ConsensusState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,7 +217,7 @@ impl Default for Consul {
 #[derive(Debug)]
 pub enum Command {
     Daemon,
-    Query(PeerCommand, String),
+    Query(MgmtCommand, String),
 }
 
 impl System {
@@ -238,9 +241,9 @@ impl System {
             )
             .subcommand(
                 SubCommand::with_name("query")
-                    .about("send a request to running peer server")
-                    .arg(Arg::with_name("peer_command").index(1))
-                    .arg(Arg::with_name("server").default_value("127.0.0.1:8136")),
+                    .about("send a management command to running bioyino server")
+                    .arg(Arg::with_name("mgmt_command").index(1))
+                    .arg(Arg::with_name("server").default_value("127.0.0.1:8137")),
             )
             .get_matches();
 
@@ -256,8 +259,8 @@ impl System {
         }
 
         if let Some(matches) = app.subcommand_matches("query") {
-            let cmd =
-                value_t!(matches.value_of("peer_command"), PeerCommand).expect("bad peer command");
+            let cmd = value_t!(matches.value_of("mgmt_command"), MgmtCommand)
+                .expect("bad management command");
             let server = value_t!(matches.value_of("server"), String).expect("bad server");
             (system, Command::Query(cmd, server))
         } else {
