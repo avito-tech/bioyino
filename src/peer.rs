@@ -1,29 +1,24 @@
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use capnp;
 use capnp::message::{Builder, ReaderOptions};
 use capnp_futures::ReadStream;
-use futures::future::{join_all, ok, Future, IntoFuture};
+use futures::future::{join_all, Future, IntoFuture};
 use futures::sync::mpsc::Sender;
 use futures::sync::oneshot;
-use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
+use futures::{Sink, Stream};
 use slog::Logger;
-use tokio;
 use tokio::executor::current_thread::spawn;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::timer::Interval;
-use tokio_io::codec::length_delimited;
-use tokio_io::codec::length_delimited::Framed;
-use tokio_io::{AsyncRead, AsyncWrite};
 
 use metric::{Metric, MetricError};
 use protocol_capnp::message as cmsg;
 
 use task::Task;
-use {Cache, ConsensusState, Float, CONSENSUS_STATE, IS_LEADER, PEER_ERRORS};
+use {Float, PEER_ERRORS};
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
@@ -107,7 +102,7 @@ impl IntoFuture for NativeProtocolServer {
                         })
                     })
                     .for_each(|_| {
-                        //
+                        // Consume all messages from the stream
                         Ok(())
                     })
             });
@@ -239,7 +234,7 @@ impl IntoFuture for NativeProtocolSnapshot {
 
             // All nodes have to receive the same metrics
             // so we don't parallel connections and metrics fetching
-            // TODO: we probably clne a lots of bytes here,
+            // TODO: we probably clone a lots of bytes here,
             // could've changed them to Arc
             let dlog = log.clone();
             let elog = log.clone();
@@ -301,11 +296,11 @@ impl IntoFuture for NativeProtocolSnapshot {
 mod test {
 
     use std::net::SocketAddr;
-    use std::thread;
     use {slog, slog_async, slog_term};
 
     use bytes::Bytes;
     use capnp::message::Builder;
+    use futures::future::ok;
     use futures::sync::mpsc::{self, Receiver};
     use metric::{Metric, MetricType};
     use slog::Drain;
@@ -327,15 +322,7 @@ mod test {
         return rlog;
     }
 
-    fn prepare_runtime_with_server(
-        test_timeout: Instant,
-    ) -> (
-        Runtime,
-        Vec<Sender<Task>>,
-        Receiver<Task>,
-        Logger,
-        SocketAddr,
-    ) {
+    fn prepare_runtime_with_server() -> (Runtime, Receiver<Task>, Logger, SocketAddr) {
         let rlog = prepare_log();
         let mut chans = Vec::new();
         let (tx, rx) = mpsc::channel(5);
@@ -346,20 +333,20 @@ mod test {
 
         let c_peer_listen = address.clone();
         let c_serv_log = rlog.clone();
-        let peer_server = NativeProtocolServer::new(rlog.clone(), c_peer_listen, chans.clone())
+        let peer_server = NativeProtocolServer::new(rlog.clone(), c_peer_listen, chans)
             .into_future()
             .map_err(move |e| {
                 warn!(c_serv_log, "shot server gone with error: {:?}", e);
             });
         runtime.spawn(peer_server);
 
-        (runtime, chans, rx, rlog, address)
+        (runtime, rx, rlog, address)
     }
 
     #[test]
     fn test_peer_protocol_capnp() {
         let test_timeout = Instant::now() + Duration::from_secs(3);
-        let (mut runtime, chans, rx, rlog, address) = prepare_runtime_with_server(test_timeout);
+        let (mut runtime, rx, rlog, address) = prepare_runtime_with_server();
 
         let future = rx.for_each(move |task: Task| ok(task.run()).and_then(|_| Ok(())));
         runtime.spawn(future);
@@ -416,9 +403,6 @@ mod test {
                     .map_err(|e| println!("codec error: {:?}", e))
             })
             .map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
-
-        let metric = outmetric.clone();
-        let log = rlog.clone();
 
         let d = Delay::new(Instant::now() + Duration::from_secs(1));
         let delayed = d.map_err(|_| ()).and_then(|_| sender);

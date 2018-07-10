@@ -11,6 +11,11 @@ w-threads = 4
 # Queue size for single counting thread before packet is dropped
 task-queue-size = 1024
 
+# if server should start in leader enabled state
+# NOTE: this is importnt to set this value to true, when working in standalone mode
+# since leader state only changes on command
+start-as-leader = false
+
 # How often to gather own stats, in ms. Use 0 to disable (stats are still gathered and printed to log,
 # but not included in metric dump
 stats-interval = 10000
@@ -57,8 +62,11 @@ send-retries = 30
 # Address:port to listen for metrics at
 listen = "127.0.0.1:8125"
 
-# Address and port for replication/command server to listen on
+# Address and port for replication server to listen on
 peer-listen = "127.0.0.1:8136"
+
+# Address and port for management server to listen on
+mgmt-listen = "127.0.0.1:8137"
 
 # UDP buffer size for single packet. Needs to be around MTU. Packet's bytes after that value
 # may be lost
@@ -84,7 +92,7 @@ snapshot-interval = 1000
 
 [consul]
 # Start in disabled leader finding mode
-start-disabled = false
+start-as = "disabled"
 
 # Consul agent address
 agent = "127.0.0.1:8500"

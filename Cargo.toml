@@ -14,6 +14,7 @@ num_cpus="^1.8"
 futures="^0.1"
 tokio="^0.1"
 tokio-io="^0.1"
+tokio-codec="^0.1"
 bytes = { version = "^0.4", features = [ "serde" ] }
 resolve="^0.1"
 net2="^0.2"

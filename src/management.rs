@@ -1,34 +1,17 @@
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
 
-use capnp;
-use capnp::message::{Builder, ReaderOptions};
-use capnp_futures::ReadStream;
-use futures::future::{err, join_all, ok, Future, IntoFuture};
-use futures::sync::mpsc::Sender;
-use futures::sync::oneshot;
-use futures::{Async, AsyncSink, Poll, Sink, StartSend, Stream};
+use futures::future::{err, ok, Future, IntoFuture};
+use futures::Stream;
 use serde_json;
 use slog::Logger;
-use tokio;
-use tokio::executor::current_thread::spawn;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::timer::Interval;
-use tokio_io::codec::length_delimited;
-use tokio_io::codec::length_delimited::Framed;
-use tokio_io::{AsyncRead, AsyncWrite};
 
-use hyper::service::{NewService, Service};
+use hyper::service::Service;
 use hyper::{self, Body, Method, Request, Response, StatusCode};
 
-use metric::{Metric, MetricError};
-use protocol_capnp::message as cmsg;
-
-use failure::Compat;
-use task::Task;
-use {Cache, ConsensusState, Float, CONSENSUS_STATE, IS_LEADER, PEER_ERRORS};
+use failure::{Compat, Fail};
+use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
 
 #[derive(Fail, Debug)]
 pub enum MgmtError {
@@ -53,6 +36,7 @@ pub enum MgmtError {
 
 // Top level list of available commands
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum MgmtCommand {
     // server will answer with ServerStatus message
     Status,
@@ -60,20 +44,13 @@ pub enum MgmtCommand {
     ConsensusCommand(ConsensusAction, LeaderAction),
 }
 
-impl FromStr for MgmtCommand {
-    type Err = Compat<MgmtError>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // FIXME:
-        unimplemented!()
-    }
-}
-
 // Turn consensus off for time(in milliseconds).
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ConsensusAction {
     // enable consensus leadership
     Enable,
-    // disable consensus leadership changes consensus will be turned off
+    // disable consensus leadership changes, consensus will be turned off
     Disable,
     // Pause consensus leadership.
     // The consensus module will still work and interact with others,
@@ -83,49 +60,159 @@ pub enum ConsensusAction {
     Resume,
 }
 
+impl FromStr for ConsensusAction {
+    type Err = Compat<MgmtError>;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "enable" | "enabled" => Ok(ConsensusAction::Enable),
+            "disable" | "disabled" => Ok(ConsensusAction::Disable),
+            "pause" | "paused" => Ok(ConsensusAction::Pause),
+            "resume" | "resumed" | "unpause" | "unpaused" => Ok(ConsensusAction::Resume),
+            _ => Err(MgmtError::BadCommand.compat()),
+        }
+    }
+}
+
 // Along with the consensus state change the internal leadership state can be changed
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum LeaderAction {
     Unchanged,
     Enable,
     Disable,
 }
 
+impl FromStr for LeaderAction {
+    type Err = Compat<MgmtError>;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "unchanged" | "unchange" => Ok(LeaderAction::Unchanged),
+            "enable" | "enabled" => Ok(LeaderAction::Enable),
+            "disable" | "disabled" => Ok(LeaderAction::Disable),
+            _ => Err(MgmtError::BadCommand.compat()),
+        }
+    }
+}
 // this is what answered as server response
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct ServerStatus {
     leader_status: bool,
     consensus_status: ConsensusState,
 }
 
-pub struct MgmtServer;
+impl ServerStatus {
+    fn new() -> Self {
+        let state = &*CONSENSUS_STATE.lock().unwrap();
+        Self {
+            leader_status: IS_LEADER.load(Ordering::SeqCst),
+            consensus_status: state.clone(),
+        }
+    }
+}
+
+pub struct MgmtServer {
+    log: Logger,
+}
+
+impl MgmtServer {
+    pub fn new(log: Logger, address: &SocketAddr) -> Self {
+        Self {
+            log: log.new(o!("source"=>"management-server", "server"=>format!("{}", address))),
+        }
+    }
+}
+
 impl Service for MgmtServer {
     type ReqBody = Body;
     type ResBody = Body;
-    type Error = Compat<MgmtError>;
-    type Future = Box<Future<Item = Response<Self::ResBody>, Error = Self::Error>>;
+    type Error = hyper::Error;
+    type Future = Box<Future<Item = Response<Self::ResBody>, Error = Self::Error> + Send>;
     fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
         let mut response = Response::new(Body::empty());
 
+        let log = self.log.clone();
         match (req.method(), req.uri().path()) {
             (&Method::GET, "/") => {
                 *response.body_mut() = Body::from(
                     "Available endpoints:
-                status - will show server status 
-                consensus - posting will change consensus state",
+    status - will show server status
+    consensus - posting will change consensus state",
                 );
+                Box::new(ok(response))
             }
             (&Method::GET, "/status") => {
-                *response.body_mut() = Body::from("HI");
+                let status = ServerStatus::new();
+                let body = serde_json::to_vec_pretty(&status).unwrap(); // TODO unwrap
+                *response.body_mut() = Body::from(body);
+                Box::new(ok(response))
+            }
+            (&Method::GET, _) => {
+                *response.status_mut() = StatusCode::NOT_FOUND;
+                Box::new(ok(response))
             }
             (&Method::POST, "/consensus") => {
-                // we'll be back
+                let fut = req.into_body().concat2().map(move |body| {
+                    match serde_json::from_slice(&*body) {
+                        Ok(MgmtCommand::ConsensusCommand(consensus_action, leader_action)) => {
+                            {
+                                // free a lock to avoid server status deadlocking
+                                let mut constate = CONSENSUS_STATE.lock().unwrap();
+
+                                *constate = match consensus_action {
+                                    ConsensusAction::Enable | ConsensusAction::Resume => {
+                                        ConsensusState::Enabled
+                                    }
+                                    ConsensusAction::Disable => ConsensusState::Disabled,
+                                    ConsensusAction::Pause => ConsensusState::Paused,
+                                };
+                            }
+
+                            match leader_action {
+                                LeaderAction::Enable => {
+                                    IS_LEADER.store(true, Ordering::SeqCst);
+                                }
+                                LeaderAction::Disable => {
+                                    IS_LEADER.store(false, Ordering::SeqCst);
+                                }
+                                _ => (),
+                            };
+
+                            *response.status_mut() = StatusCode::OK;
+
+                            let status = ServerStatus::new();
+                            let body = serde_json::to_vec_pretty(&status).unwrap(); // TODO unwrap
+                            *response.body_mut() = Body::from(body);
+                            info!(log, "state changed"; "consensus_state"=>format!("{:?}", status.consensus_status), "leader_state"=>status.leader_status);
+
+                            response
+                        }
+                        Ok(command) => {
+                            info!(log, "bad command received"; "command"=>format!("{:?}", command));
+                            *response.status_mut() = StatusCode::BAD_REQUEST;
+
+                            response
+                        }
+                        Err(e) => {
+                            info!(log, "error parsing command"; "error"=>e.to_string());
+                            *response.status_mut() = StatusCode::BAD_REQUEST;
+
+                            response
+                        }
+                    }
+                });
+
+                Box::new(fut)
+            }
+            (&Method::POST, _) => {
+                *response.status_mut() = StatusCode::NOT_FOUND;
+                Box::new(ok(response))
             }
             _ => {
-                *response.status_mut() = StatusCode::NOT_FOUND;
+                *response.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
+                Box::new(ok(response))
             }
         }
-        Box::new(ok(response))
     }
 }
 
@@ -160,6 +247,8 @@ impl IntoFuture for MgmtClient {
             command,
         } = self;
         let mut req = hyper::Request::default();
+
+        info!(log, "received command {:?}", command);
         match command {
             MgmtCommand::Status => {
                 *req.method_mut() = Method::GET;
@@ -168,56 +257,78 @@ impl IntoFuture for MgmtClient {
                     .expect("creating url for management command ");
 
                 let client = hyper::Client::new();
+                let clog = log.clone();
                 let future = client.request(req).then(move |res| match res {
                     Err(e) => Box::new(err(MgmtError::Http(e))),
                     Ok(resp) => {
-                        if resp.status() != StatusCode::OK {
+                        if resp.status() == StatusCode::OK {
                             let body = resp.into_body()
                                 .concat2()
                                 .map_err(|e| MgmtError::Http(e))
                                 .map(move |body| {
-                                    // FIXME unwrap
-                                    let status: ServerStatus =
-                                        serde_json::from_slice(&*body).unwrap();
-                                    println!("{:?}", status);
+                                    match serde_json::from_slice::<ServerStatus>(&*body) {
+                                        Ok(status) => {
+                                            println!("{:?}", status);
+                                        }
+                                        Err(e) => {
+                                            println!(
+                                                "Error parsing server response: {}",
+                                                e.to_string()
+                                            );
+                                        }
+                                    }
                                 });
                             Box::new(body) as Box<Future<Item = (), Error = MgmtError>>
                         } else {
-                            Box::new(ok(println!("Bad status returned from server")))
+                            Box::new(ok(warn!(
+                                clog,
+                                "Bad status returned from server: {:?}", resp
+                            )))
                         }
                     }
                 });
                 Box::new(future)
             }
-            MgmtCommand::ConsensusCommand(consensus_action, leader_action) => {
-                let mut constate = CONSENSUS_STATE.lock().unwrap();
+            command @ MgmtCommand::ConsensusCommand(_, _) => {
+                *req.method_mut() = Method::POST;
+                *req.uri_mut() = format!("http://{}/consensus", address)
+                    .parse()
+                    .expect("creating url for management command");
+                let body = serde_json::to_vec_pretty(&command).unwrap();
+                *req.body_mut() = Body::from(body);
 
-                match consensus_action {
-                    ConsensusAction::Enable | ConsensusAction::Resume => {
-                        *constate = ConsensusState::Enabled;
+                let client = hyper::Client::new();
+                let clog = log.clone();
+                let future = client.request(req).then(move |res| match res {
+                    Err(e) => Box::new(err(MgmtError::Http(e))),
+                    Ok(resp) => {
+                        if resp.status() == StatusCode::OK {
+                            let body = resp.into_body()
+                                .concat2()
+                                .map_err(|e| MgmtError::Http(e))
+                                .map(move |body| {
+                                    match serde_json::from_slice::<ServerStatus>(&*body) {
+                                        Ok(status) => {
+                                            println!("New server state: {:?}", status);
+                                        }
+                                        Err(e) => {
+                                            println!(
+                                                "Error parsing server response: {}",
+                                                e.to_string()
+                                            );
+                                        }
+                                    }
+                                });
+                            Box::new(body) as Box<Future<Item = (), Error = MgmtError>>
+                        } else {
+                            Box::new(ok(warn!(
+                                clog,
+                                "Bad status returned from server: {:?}", resp
+                            )))
+                        }
                     }
-                    ConsensusAction::Disable => {
-                        *constate = ConsensusState::Disabled;
-                    }
-                    ConsensusAction::Pause => {
-                        *constate = ConsensusState::Paused;
-                    }
-                    ConsensusAction::Resume => {
-                        *constate = ConsensusState::Enabled;
-                    }
-                }
-
-                match leader_action {
-                    LeaderAction::Enable => {
-                        IS_LEADER.store(true, Ordering::SeqCst);
-                    }
-                    LeaderAction::Disable => {
-                        IS_LEADER.store(false, Ordering::SeqCst);
-                    }
-                    _ => (),
-                }
-
-                Box::new(ok(println!("State is set")))
+                });
+                Box::new(future)
             }
         }
     }
@@ -227,20 +338,13 @@ impl IntoFuture for MgmtClient {
 mod test {
 
     use std::net::SocketAddr;
-    use std::thread;
+    use std::time::{Duration, Instant};
     use {slog, slog_async, slog_term};
 
-    use bytes::Bytes;
-    use capnp::message::Builder;
-    use futures::sync::mpsc::{self, Receiver};
-    use metric::{Metric, MetricType};
     use slog::Drain;
     use slog::Logger;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
-
-    use {LONG_CACHE, SHORT_CACHE};
 
     use super::*;
     fn prepare_log() -> Logger {
@@ -253,33 +357,66 @@ mod test {
         return rlog;
     }
 
-    fn prepare_runtime_with_server(
-        test_timeout: Instant,
-    ) -> (
-        Runtime,
-        Vec<Sender<Task>>,
-        Receiver<Task>,
-        Logger,
-        SocketAddr,
-    ) {
+    fn prepare_runtime_with_server() -> (Runtime, Logger, SocketAddr) {
         let rlog = prepare_log();
-        let mut chans = Vec::new();
-        let (tx, rx) = mpsc::channel(5);
-        chans.push(tx);
 
-        let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
+        let address: ::std::net::SocketAddr = "127.0.0.1:8137".parse().unwrap();
         let mut runtime = Runtime::new().expect("creating runtime for main thread");
 
-        let c_peer_listen = address.clone();
         let c_serv_log = rlog.clone();
-        let peer_server = NativeProtocolServer::new(rlog.clone(), c_peer_listen, chans.clone())
-            .into_future()
+        let c_serv_err_log = rlog.clone();
+        let s_addr = address.clone();
+        let server = hyper::Server::bind(&address)
+            .serve(move || ok::<_, hyper::Error>(MgmtServer::new(c_serv_log.clone(), &s_addr)))
             .map_err(move |e| {
-                warn!(c_serv_log, "shot server gone with error: {:?}", e);
+                warn!(c_serv_err_log, "management server gone with error: {:?}", e);
             });
-        runtime.spawn(peer_server);
 
-        (runtime, chans, rx, rlog, address)
+        runtime.spawn(server);
+
+        (runtime, rlog, address)
     }
 
+    #[test]
+    fn management_command() {
+        let test_timeout = Instant::now() + Duration::from_secs(3);
+        let (mut runtime, log, address) = prepare_runtime_with_server();
+
+        let command = MgmtCommand::Status;
+        let client = MgmtClient::new(log.clone(), address, command);
+
+        // let server some time to settle
+        // then test the status command
+        let d = Delay::new(Instant::now() + Duration::from_secs(1));
+        let delayed = d.map_err(|_| ())
+            .and_then(move |_| client.into_future().map_err(|e| panic!(e)));
+        runtime.spawn(delayed);
+
+        // then send a status change command
+        let d = Delay::new(Instant::now() + Duration::from_secs(2));
+        let delayed = d.map_err(|_| ()).and_then(move |_| {
+            let command =
+                MgmtCommand::ConsensusCommand(ConsensusAction::Enable, LeaderAction::Enable);
+            let client = MgmtClient::new(log.clone(), address, command);
+
+            client
+                .into_future()
+                .map_err(|e| panic!("{:?}", e))
+                .map(move |_| {
+                    // ensure state has changed
+                    let state = ServerStatus::new();
+                    assert_eq!(
+                        state,
+                        ServerStatus {
+                            consensus_status: ConsensusState::Enabled,
+                            leader_status: true,
+                        }
+                    )
+                })
+        });
+        runtime.spawn(delayed);
+
+        let test_delay = Delay::new(test_timeout);
+        runtime.block_on(test_delay).expect("runtime");
+    }
 }

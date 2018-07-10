@@ -3,8 +3,7 @@ use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
 
 use bytes::Bytes;
 use capnp;
-use capnp::message::{Allocator, Builder, HeapAllocator, Reader, ReaderSegments};
-//use capnp::message::ReaderSegments;
+use capnp::message::{Allocator, Builder, HeapAllocator};
 use failure::Error;
 
 use protocol_capnp::metric as cmetric;
@@ -210,7 +209,6 @@ where
                 } else {
                     None
                 },
-                //                   .ok()
                 Some(reader.get_update_counter()),
             ),
             Err(_) => (None, None),

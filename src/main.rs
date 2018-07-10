@@ -17,10 +17,9 @@ extern crate toml;
 
 // Network
 extern crate bytes;
-#[macro_use]
-extern crate futures;
 extern crate capnp;
 extern crate capnp_futures;
+extern crate futures;
 extern crate hyper;
 extern crate libc;
 extern crate mime;
@@ -28,6 +27,7 @@ extern crate net2;
 extern crate num_cpus;
 extern crate resolve;
 extern crate tokio;
+extern crate tokio_codec;
 extern crate tokio_io;
 
 // Other
@@ -69,7 +69,7 @@ use slog::{Drain, Level};
 
 use bytes::{Bytes, BytesMut};
 use futures::future::{empty, ok};
-use futures::sync::{mpsc, oneshot};
+use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
 
 use tokio::net::UdpSocket;
@@ -111,6 +111,7 @@ pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ConsensusState {
     Enabled,
     Paused,
@@ -131,7 +132,8 @@ impl FromStr for ConsensusState {
 }
 
 lazy_static! {
-    pub static ref CONSENSUS_STATE: Mutex<ConsensusState> = { Mutex::new(ConsensusState::Disabled) };
+    pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
+        { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
@@ -161,6 +163,7 @@ fn main() {
             Network {
                 listen,
                 peer_listen,
+                mgmt_listen,
                 bufsize,
                 multimessage,
                 mm_packets,
@@ -234,6 +237,7 @@ fn main() {
     let update_counter_prefix: Bytes = update_counter_prefix.into();
     let update_counter_suffix: Bytes = update_counter_suffix.into();
     let log = rlog.new(o!("thread" => "main"));
+
     // Start counting threads
     info!(log, "starting counting threads");
     let mut chans = Vec::with_capacity(w_threads);
@@ -306,6 +310,17 @@ fn main() {
     consensus.set_session_ttl(Duration::from_millis(consul_session_ttl as u64));
     consensus.set_renew_time(Duration::from_millis(consul_renew_time as u64));
     runtime.spawn(consensus.into_future().map_err(|_| ())); // TODO errors
+
+    info!(log, "starting management server");
+    let m_serv_log = rlog.clone();
+    let m_serv_err_log = rlog.clone();
+    let m_server = hyper::Server::bind(&mgmt_listen)
+        .serve(move || ok::<_, hyper::Error>(MgmtServer::new(m_serv_log.clone(), &mgmt_listen)))
+        .map_err(move |e| {
+            warn!(m_serv_err_log, "management server gone with error: {:?}", e);
+        });
+
+    runtime.spawn(m_server);
 
     info!(log, "starting carbon backend");
     let tchans = chans.clone();

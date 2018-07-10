@@ -9,8 +9,7 @@ use ftoa;
 use futures::stream;
 use futures::{Future, IntoFuture, Sink, Stream};
 use tokio::net::TcpStream;
-use tokio_io::codec::{Decoder, Encoder};
-use tokio_io::AsyncRead;
+use tokio_codec::{Decoder, Encoder};
 
 use errors::GeneralError;
 
@@ -63,8 +62,7 @@ impl IntoFuture for CarbonBackend {
 
         let conn = TcpStream::connect(&addr).map_err(|e| GeneralError::Io(e));
         let future = conn.and_then(move |conn| {
-            let writer = conn.framed(CarbonCodec::new());
-            //let metric_stream = stream::iter_ok::<_, ()>(metrics.clone());
+            let writer = CarbonCodec::new().framed(conn);
             let metric_stream = stream::iter_ok::<_, ()>(SharedIter::new(metrics));
             metric_stream
                 .map_err(|_| GeneralError::CarbonBackend)

@@ -3,7 +3,6 @@ use std::sync::atomic::Ordering;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use combine::Parser;
-use futures::future::Either;
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::oneshot;
 use futures::Sink;
@@ -12,8 +11,10 @@ use metric::Metric;
 use parser::metric_parser;
 use util::AggregateOptions;
 
-use {Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS,
-     SHORT_CACHE};
+use {
+    Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS,
+    SHORT_CACHE,
+};
 
 #[derive(Debug)]
 pub struct AggregateData {

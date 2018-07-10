@@ -10,10 +10,8 @@ use hyper::{Method, StatusCode};
 use mime::WWW_FORM_URLENCODED;
 use serde_json::{self, from_slice};
 use slog::Logger;
-use tokio::executor::current_thread::spawn;
 use tokio::timer::{self, Delay, Interval};
 
-use util::BackoffRetryBuilder;
 use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
 
 #[derive(Fail, Debug)]

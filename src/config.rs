@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use clap::{Arg, SubCommand};
 use toml;
 
-use management::MgmtCommand;
+use management::{ConsensusAction, LeaderAction, MgmtCommand};
 
 use ConsensusState;
 
@@ -141,8 +141,11 @@ pub(crate) struct Network {
     /// Address and UDP port to listen for statsd metrics on
     pub listen: SocketAddr,
 
-    /// Address and port for replication/command server to listen on
+    /// Address and port for replication server to listen on
     pub peer_listen: SocketAddr,
+
+    /// Address and port for management server to listen on
+    pub mgmt_listen: SocketAddr,
 
     /// UDP buffer size for single packet. Needs to be around MTU. Packet's bytes after that value
     /// may be lost
@@ -172,6 +175,7 @@ impl Default for Network {
         Self {
             listen: "127.0.0.1:8125".parse().unwrap(),
             peer_listen: "127.0.0.1:8136".parse().unwrap(),
+            mgmt_listen: "127.0.0.1:8137".parse().unwrap(),
             bufsize: 1500,
             multimessage: false,
             mm_packets: 100,
@@ -242,8 +246,21 @@ impl System {
             .subcommand(
                 SubCommand::with_name("query")
                     .about("send a management command to running bioyino server")
-                    .arg(Arg::with_name("mgmt_command").index(1))
-                    .arg(Arg::with_name("server").default_value("127.0.0.1:8137")),
+                    .arg(
+                        Arg::with_name("host")
+                            .short("h")
+                            .default_value("127.0.0.1:8137"),
+                    )
+                    .subcommand(SubCommand::with_name("status").about("get server state"))
+                    .subcommand(
+                        SubCommand::with_name("consensus")
+                            .arg(Arg::with_name("action").index(1))
+                            .arg(
+                                Arg::with_name("leader_action")
+                                    .index(2)
+                                    .default_value("unchanged"),
+                            ),
+                    ),
             )
             .get_matches();
 
@@ -258,11 +275,23 @@ impl System {
             system.verbosity = v.into()
         }
 
-        if let Some(matches) = app.subcommand_matches("query") {
-            let cmd = value_t!(matches.value_of("mgmt_command"), MgmtCommand)
-                .expect("bad management command");
-            let server = value_t!(matches.value_of("server"), String).expect("bad server");
-            (system, Command::Query(cmd, server))
+        if let Some(query) = app.subcommand_matches("query") {
+            let server = value_t!(query.value_of("host"), String).expect("bad server");
+            if let Some(_) = query.subcommand_matches("status") {
+                (system, Command::Query(MgmtCommand::Status, server))
+            } else if let Some(args) = query.subcommand_matches("consensus") {
+                let c_action = value_t!(args.value_of("action"), ConsensusAction)
+                    .expect("bad consensus action");
+                let l_action = value_t!(args.value_of("leader_action"), LeaderAction)
+                    .expect("bad leader action");
+                (
+                    system,
+                    Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server),
+                )
+            } else {
+                // shold be unreachable
+                unreachable!("clap bug?")
+            }
         } else {
             (system, Command::Daemon)
         }
