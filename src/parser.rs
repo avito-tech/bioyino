@@ -129,6 +129,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_metric_without_newline() {
+        let data = b"complex.bioyino.test1:-1e10|gcomplex.bioyino.test10:-1e10|g\n";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"complex.bioyino.test1");
+        assert_eq!(v.1, 1e10f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        let (v, rest) = parser.parse(rest).unwrap();
+        assert_eq!(v.0, b"complex.bioyino.test10");
+        assert_eq!(v.1, 1e10f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        assert_eq!(rest.len(), 0);
+    }
+
+    #[test]
     fn parse_metric_short() {
         let data = b"gorets:1|c";
         let mut parser = metric_parser::<f64>();
