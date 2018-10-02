@@ -11,10 +11,7 @@ use metric::Metric;
 use parser::metric_parser;
 use util::AggregateOptions;
 
-use {
-    Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS,
-    SHORT_CACHE,
-};
+use {Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS, SHORT_CACHE};
 
 #[derive(Debug)]
 pub struct AggregateData {
@@ -53,23 +50,29 @@ impl Task {
     pub fn run(self) {
         match self {
             Task::Parse(buf) => parse_and_insert(buf),
-            Task::AddMetric(name, metric) => SHORT_CACHE.with(move |c| {
-                let mut short = c.borrow_mut();
-                update_metric(&mut short, name, metric);
-            }),
-            Task::AddMetrics(mut list) => SHORT_CACHE.with(move |c| {
-                let mut short = c.borrow_mut();
-                list.drain(..)
-                    .map(|(name, metric)| update_metric(&mut short, name, metric))
-                    .last();
-            }),
-            Task::AddSnapshot(mut list) => LONG_CACHE.with(move |c| {
-                // snapshots go to long cache to avoid being duplicated to other nodes
-                let mut long = c.borrow_mut();
-                list.drain(..)
-                    .map(|(name, metric)| update_metric(&mut long, name, metric))
-                    .last();
-            }),
+            Task::AddMetric(name, metric) => {
+                SHORT_CACHE.with(move |c| {
+                    let mut short = c.borrow_mut();
+                    update_metric(&mut short, name, metric);
+                })
+            }
+            Task::AddMetrics(mut list) => {
+                SHORT_CACHE.with(move |c| {
+                    let mut short = c.borrow_mut();
+                    list.drain(..)
+                        .map(|(name, metric)| update_metric(&mut short, name, metric))
+                        .last();
+                })
+            }
+            Task::AddSnapshot(mut list) => {
+                LONG_CACHE.with(move |c| {
+                    // snapshots go to long cache to avoid being duplicated to other nodes
+                    let mut long = c.borrow_mut();
+                    list.drain(..)
+                        .map(|(name, metric)| update_metric(&mut long, name, metric))
+                        .last();
+                })
+            }
             Task::TakeSnapshot(channel) => {
                 let mut short = SHORT_CACHE.with(|c| {
                     let short = c.borrow().clone();
@@ -103,12 +106,12 @@ impl Task {
                 });
             }
             Task::Aggregate(AggregateData {
-                mut buf,
-                name,
-                metric,
-                options,
-                mut response,
-            }) => {
+                                mut buf,
+                                name,
+                                metric,
+                                options,
+                                mut response,
+                            }) => {
                 let upd = if let Some(options) = options.update_counter {
                     if metric.update_counter > options.threshold {
                         // + 2 is for dots
@@ -146,18 +149,14 @@ impl Task {
                     .map(|data| {
                         response
                             .start_send(data)
-                            .map_err(|_| {
-                                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                            })
+                            .map_err(|_| { AGG_ERRORS.fetch_add(1, Ordering::Relaxed); })
                             .map(|_| ())
                             .unwrap_or(());
                     })
                     .last();
                 response
                     .poll_complete()
-                    .map_err(|_| {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    })
+                    .map_err(|_| { AGG_ERRORS.fetch_add(1, Ordering::Relaxed); })
                     .map(|_| ())
                     .unwrap_or_else(|_| ());
             }

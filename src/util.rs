@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use std::ffi::CStr;
+use std::net::SocketAddr;
+use libc;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::future::Either;
@@ -8,13 +11,62 @@ use futures::stream::futures_unordered;
 use futures::sync::mpsc::{Sender, UnboundedSender};
 use futures::sync::oneshot;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
+use resolve::resolver;
 use slog::Logger;
 use tokio::executor::current_thread::spawn;
 use tokio::timer::{Delay, Interval};
 
 use metric::{Metric, MetricType};
 use task::{AggregateData, Task};
-use {Cache, Float, AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
+use {Cache, Float};
+use {AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
+
+use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
+
+pub fn try_resolve(s: &str) -> SocketAddr {
+    s.parse().unwrap_or_else(|_| {
+        // for name that have failed to be parsed we try to resolve it via DNS
+        let mut split = s.split(':');
+        let host = split.next().unwrap(); // Split always has first element
+        let port = split.next().expect("port not found");
+        let port = port.parse().expect("bad port value");
+
+        let first_ip = resolver::resolve_host(host)
+            .expect("failed resolving backend name")
+            .next()
+            .expect("at least one IP address required");
+        SocketAddr::new(first_ip, port)
+    })
+}
+
+/// Get hostname. Copypyasted from some crate
+pub fn get_hostname() -> Option<String> {
+    let len = 255;
+    let mut buf = Vec::<u8>::with_capacity(len);
+    let ptr = buf.as_mut_ptr() as *mut libc::c_char;
+
+    unsafe {
+        if libc::gethostname(ptr, len as libc::size_t) != 0 {
+            return None;
+        }
+        Some(CStr::from_ptr(ptr).to_string_lossy().into_owned())
+    }
+}
+
+pub fn switch_leader(acquired: bool, log: &Logger) {
+    let should_set = {
+        let state = &*CONSENSUS_STATE.lock().unwrap();
+        // only set leader when consensus is enabled
+        state == &ConsensusState::Enabled
+    };
+    if should_set {
+        let is_leader = IS_LEADER.load(Ordering::SeqCst);
+        if is_leader != acquired {
+            warn!(log, "leader state change: {} -> {}", is_leader, acquired);
+        }
+        IS_LEADER.store(acquired, Ordering::SeqCst);
+    }
+}
 
 // A future to send own stats. Never gets ready.
 pub struct OwnStats {
@@ -127,11 +179,7 @@ pub struct Aggregator {
 }
 
 impl Aggregator {
-    pub fn new(
-        options: AggregateOptions,
-        chans: Vec<Sender<Task>>,
-        tx: UnboundedSender<(Bytes, Float)>,
-    ) -> Self {
+    pub fn new(options: AggregateOptions, chans: Vec<Sender<Task>>, tx: UnboundedSender<(Bytes, Float)>) -> Self {
         Self { options, chans, tx }
     }
 }
@@ -148,9 +196,9 @@ impl IntoFuture for Aggregator {
             // TODO: change oneshots to single channel
             // to do that, task must run in new tokio, then we will not have to pass handle to it
             //handle.spawn(chan.send(Task::Rotate(tx)).then(|_| Ok(())));
-            chan.send(Task::Rotate(tx))
-                .map_err(|_| ())
-                .and_then(|_| rx.and_then(|m| Ok(m)).map_err(|_| ()))
+            chan.send(Task::Rotate(tx)).map_err(|_| ()).and_then(|_| {
+                rx.and_then(|m| Ok(m)).map_err(|_| ())
+            })
         });
 
         if options.is_leader {
@@ -171,35 +219,33 @@ impl IntoFuture for Aggregator {
                         // })
         });
 
-            let aggregate = accumulate.and_then(move |accumulated| {
-                accumulated
-                    .into_iter()
-                    .inspect(|_| {
-                        EGRESS.fetch_add(1, Ordering::Relaxed);
-                    })
-                    .map(move |(name, metric)| {
-                        let buf = BytesMut::with_capacity(1024);
-                        let task = Task::Aggregate(AggregateData {
-                            buf,
-                            name: Bytes::from(name),
-                            metric,
-                            options: options.clone(),
-                            response: tx.clone(),
-                        });
-                        // as of now we just run each task in the current thread
-                        // there is a reason we should not in general run the task in the counting workers:
-                        // workers will block on heavy computation and may cause metrics goind to them over
-                        // network to be dropped because of backpressure
-                        // at the same time counting aggregation is not urgent because of current backend(carbon/graphite)
-                        // nature where one can send metrics with any timestamp
-                        // TODO: at some day counting workers will probably work in work-stealing mode,
-                        // after that we probably will be able to run task in common mode
-                        task.run();
-                    })
-                    .last();
-                Ok(())
-            });
-            Box::new(aggregate)
+        let aggregate = accumulate.and_then(move |accumulated| {
+            accumulated
+                .into_iter()
+                .inspect(|_| { EGRESS.fetch_add(1, Ordering::Relaxed); })
+                .map(move |(name, metric)| {
+                    let buf = BytesMut::with_capacity(1024);
+                    let task = Task::Aggregate(AggregateData {
+                        buf,
+                        name: Bytes::from(name),
+                        metric,
+                        options: options.clone(),
+                        response: tx.clone(),
+                    });
+                    // as of now we just run each task in the current thread
+                    // there is a reason we should not in general run the task in the counting workers:
+                    // workers will block on heavy computation and may cause metrics goind to them over
+                    // network to be dropped because of backpressure
+                    // at the same time counting aggregation is not urgent because of current backend(carbon/graphite)
+                    // nature where one can send metrics with any timestamp
+                    // TODO: at some day counting workers will probably work in work-stealing mode,
+                    // after that we probably will be able to run task in common mode
+                    task.run();
+                })
+            .last();
+            Ok(())
+        });
+        Box::new(aggregate)
         } else {
             // only get metrics from threads
             let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
@@ -229,16 +275,16 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-    where
+        where
         F: IntoFuture + Clone,
-    {
-        let inner = Either::A(action.clone().into_future());
-        BackoffRetry {
-            action,
-            inner: inner,
-            options: self,
+        {
+            let inner = Either::A(action.clone().into_future());
+            BackoffRetry {
+                action,
+                inner: inner,
+                options: self,
+            }
         }
-    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -250,7 +296,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-    F: IntoFuture + Clone,
+F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;
@@ -259,25 +305,29 @@ where
         loop {
             let (rotate_f, rotate_t) = match self.inner {
                 // we are polling a future currently
-                Either::A(ref mut future) => match future.poll() {
-                    Ok(Async::Ready(item)) => {
-                        return Ok(Async::Ready(item));
-                    }
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Err(e) => {
-                        if self.options.retries == 0 {
-                            return Err(Some(e));
-                        } else {
-                            (true, false)
+                Either::A(ref mut future) => {
+                    match future.poll() {
+                        Ok(Async::Ready(item)) => {
+                            return Ok(Async::Ready(item));
+                        }
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Err(e) => {
+                            if self.options.retries == 0 {
+                                return Err(Some(e));
+                            } else {
+                                (true, false)
+                            }
                         }
                     }
-                },
-                Either::B(ref mut timer) => match timer.poll() {
-                    // we are waiting for the delay
-                    Ok(Async::Ready(())) => (false, true),
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Err(_) => unreachable!(), // timer should not return error
-                },
+                }
+                Either::B(ref mut timer) => {
+                    match timer.poll() {
+                        // we are waiting for the delay
+                        Ok(Async::Ready(())) => (false, true),
+                        Ok(Async::NotReady) => return Ok(Async::NotReady),
+                        Err(_) => unreachable!(), // timer should not return error
+                    }
+                }
             };
 
             if rotate_f {

@@ -1,13 +1,16 @@
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
+use std::time::Duration;
+use std::ops::Range;
 
 use clap::{Arg, SubCommand};
 use toml;
 
 use management::{ConsensusAction, LeaderAction, MgmtCommand};
 
-use ConsensusState;
+use raft_tokio::RaftOptions;
+use {ConsensusState, ConsensusKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -17,6 +20,9 @@ pub(crate) struct System {
 
     /// Network settings
     pub network: Network,
+
+    /// Internal Raft settings
+    pub raft: Raft,
 
     /// Consul settings
     pub consul: Consul,
@@ -45,6 +51,9 @@ pub(crate) struct System {
 
     /// Prefix to send own metrics with
     pub stats_prefix: String,
+
+    /// Consensus kind to use
+    pub consensus: ConsensusKind,
 }
 
 impl Default for System {
@@ -52,6 +61,7 @@ impl Default for System {
         Self {
             verbosity: "warn".to_string(),
             network: Network::default(),
+            raft: Raft::default(),
             consul: Consul::default(),
             metrics: Metrics::default(),
             carbon: Carbon::default(),
@@ -61,6 +71,7 @@ impl Default for System {
             task_queue_size: 2048,
             start_as_leader: false,
             stats_prefix: "resources.monitoring.bioyino".to_string(),
+            consensus: ConsensusKind::None,
         }
     }
 }
@@ -157,11 +168,17 @@ pub(crate) struct Network {
     /// Number of multimessage packets to receive at once if in multimessage mode
     pub mm_packets: usize,
 
+    /// Number of multimessage packets to receive at once if in multimessage mode
+    pub mm_async: bool,
+
+    /// A timer to flush incoming buffer making sure metrics are not stuck there
+    pub buffer_flush: u64,
+
     /// Nmber of green threads for single-message mode
     pub greens: usize,
 
     /// Socket pool size for single-message mode
-    pub snum: usize,
+    pub async_sockets: usize,
 
     /// List of nodes to replicate metrics to
     pub nodes: Vec<String>,
@@ -179,8 +196,10 @@ impl Default for Network {
             bufsize: 1500,
             multimessage: false,
             mm_packets: 100,
+            mm_async: false,
+            buffer_flush: 3000,
             greens: 4,
-            snum: 4,
+            async_sockets: 4,
             nodes: Vec::new(),
             snapshot_interval: 1000,
         }
@@ -218,6 +237,47 @@ impl Default for Consul {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub(crate) struct Raft {
+    /// Raft heartbeat timeout (ms)
+    pub heartbeat_timeout: u64,
+
+    /// Raft heartbeat timeout (ms)
+    pub election_timeout_min: u64,
+
+    /// Raft heartbeat timeout (ms)
+    pub election_timeout_max: u64,
+
+    /// Name of this node. By default is taken by resolving hostname in DNS.
+    pub this_node: Option<String>,
+
+    /// List of Raft nodes, may include this_node
+    pub nodes: Vec<String>,
+}
+
+impl Default for Raft {
+    fn default() -> Self {
+        Self {
+            heartbeat_timeout: 250,
+            election_timeout_min: 500,
+            election_timeout_max: 750,
+            this_node: None,
+            nodes: Vec::new(),
+        }
+    }
+}
+
+impl Raft {
+    pub fn get_raft_options(&self) -> RaftOptions {
+        RaftOptions {
+            heartbeat_timeout: Duration::from_millis(self.heartbeat_timeout),
+            election_timeout: Range{start: Duration::from_millis(self.election_timeout_min), end: Duration::from_millis(self.election_timeout_max)},
+
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Command {
     Daemon,
@@ -230,45 +290,42 @@ impl System {
         let app = app_from_crate!()
             .arg(
                 Arg::with_name("config")
-                    .help("configuration file path")
-                    .long("config")
-                    .short("c")
-                    .required(true)
-                    .takes_value(true)
-                    .default_value("/etc/bioyino/bioyino.toml"),
-            )
+                .help("configuration file path")
+                .long("config")
+                .short("c")
+                .required(true)
+                .takes_value(true)
+                .default_value("/etc/bioyino/bioyino.toml"),
+                )
             .arg(
                 Arg::with_name("verbosity")
-                    .short("v")
-                    .help("logging level")
-                    .takes_value(true),
-            )
+                .short("v")
+                .help("logging level")
+                .takes_value(true),
+                )
             .subcommand(
                 SubCommand::with_name("query")
-                    .about("send a management command to running bioyino server")
-                    .arg(
-                        Arg::with_name("host")
-                            .short("h")
-                            .default_value("127.0.0.1:8137"),
-                    )
-                    .subcommand(SubCommand::with_name("status").about("get server state"))
-                    .subcommand(
-                        SubCommand::with_name("consensus")
-                            .arg(Arg::with_name("action").index(1))
-                            .arg(
-                                Arg::with_name("leader_action")
-                                    .index(2)
-                                    .default_value("unchanged"),
+                .about("send a management command to running bioyino server")
+                .arg(Arg::with_name("host").short("h").default_value(
+                        "127.0.0.1:8137",
+                        ))
+                .subcommand(SubCommand::with_name("status").about("get server state"))
+                .subcommand(
+                    SubCommand::with_name("consensus")
+                    .arg(Arg::with_name("action").index(1))
+                    .arg(Arg::with_name("leader_action").index(2).default_value(
+                            "unchanged",
+                            )),
                             ),
-                    ),
-            )
+                            )
             .get_matches();
 
         let config = value_t!(app.value_of("config"), String).expect("config file must be string");
         let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
         let mut config_str = String::new();
-        file.read_to_string(&mut config_str)
-            .expect("reading config file");
+        file.read_to_string(&mut config_str).expect(
+            "reading config file",
+            );
         let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
 
         if let Some(v) = app.value_of("verbosity") {
@@ -280,14 +337,12 @@ impl System {
             if let Some(_) = query.subcommand_matches("status") {
                 (system, Command::Query(MgmtCommand::Status, server))
             } else if let Some(args) = query.subcommand_matches("consensus") {
-                let c_action = value_t!(args.value_of("action"), ConsensusAction)
-                    .expect("bad consensus action");
-                let l_action = value_t!(args.value_of("leader_action"), LeaderAction)
-                    .expect("bad leader action");
+                let c_action = value_t!(args.value_of("action"), ConsensusAction).expect("bad consensus action");
+                let l_action = value_t!(args.value_of("leader_action"), LeaderAction).expect("bad leader action");
                 (
                     system,
                     Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server),
-                )
+                    )
             } else {
                 // shold be unreachable
                 unreachable!("clap bug?")

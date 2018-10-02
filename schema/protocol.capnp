@@ -27,7 +27,7 @@ struct Metric {
     # each metric has a value when it's sent
     value @1 :Float64;
 
-    # some types also imply additional internal values depending if metric type
+    # some types also imply additional internal values depending on metric type
     type @2 :MetricType;
 
     # a timesamp can optionally be sent, i.e. for historic reasons
@@ -72,8 +72,14 @@ struct Gauge {
 struct MetricMeta {
     sampling @0 :Sampling;
     updateCounter @1 :UInt32;
+    tags @2 :List(Tag);
 }
 
 struct Sampling  {
     sampling @0 :Float32;
+}
+
+struct Tag {
+    key @0 :Text;
+    value @1 :Text;
 }

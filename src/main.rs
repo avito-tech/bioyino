@@ -9,6 +9,7 @@ extern crate slog;
 extern crate slog_async;
 extern crate slog_scope;
 extern crate slog_term;
+extern crate rand;
 
 // Options
 #[macro_use]
@@ -30,6 +31,9 @@ extern crate tokio;
 extern crate tokio_codec;
 extern crate tokio_io;
 
+// Raft
+extern crate raft_tokio;
+
 // Other
 extern crate combine;
 extern crate serde;
@@ -48,8 +52,10 @@ pub mod metric;
 pub mod parser;
 pub mod peer;
 pub mod server;
+pub mod udp;
 pub mod task;
 pub mod util;
+pub mod raft;
 
 pub mod protocol_capnp {
     include!(concat!(env!("OUT_DIR"), "/schema/protocol_capnp.rs"));
@@ -57,8 +63,6 @@ pub mod protocol_capnp {
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io;
-use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
 use std::sync::{Arc, Mutex};
@@ -67,18 +71,15 @@ use std::time::{self, Duration, Instant, SystemTime};
 
 use slog::{Drain, Level};
 
-use bytes::{Bytes, BytesMut};
+use bytes::{Bytes};
 use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
 
-use tokio::net::UdpSocket;
 use tokio::runtime::current_thread::Runtime;
 use tokio::timer::Interval;
 
-use net2::unix::UnixUdpBuilderExt;
-use net2::UdpBuilder;
-use resolve::resolver;
+use udp::{start_sync_udp, start_async_udp};
 
 use carbon::CarbonBackend;
 use config::{Command, Consul, Metrics, Network, System};
@@ -87,9 +88,9 @@ use errors::GeneralError;
 use management::{MgmtClient, MgmtServer};
 use metric::Metric;
 use peer::{NativeProtocolServer, NativeProtocolSnapshot};
-use server::StatsdServer;
 use task::Task;
-use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
+use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions, try_resolve};
+use raft::start_internal_raft;
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
 // precision
@@ -131,63 +132,55 @@ impl FromStr for ConsensusState {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConsensusKind {
+    None,
+    Consul,
+    Internal,
+}
+
 lazy_static! {
     pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
-        { Mutex::new(ConsensusState::Disabled) };
+    { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
-
-pub fn try_resolve(s: &str) -> SocketAddr {
-    s.parse().unwrap_or_else(|_| {
-        // for name that have failed to be parsed we try to resolve it via DNS
-        let mut split = s.split(':');
-        let host = split.next().unwrap(); // Split always has first element
-        let port = split.next().expect("port not found");
-        let port = port.parse().expect("bad port value");
-
-        let first_ip = resolver::resolve_host(host)
-            .expect("failed resolving backend name")
-            .next()
-            .expect("at least one IP address required");
-        SocketAddr::new(first_ip, port)
-    })
-}
 
 fn main() {
     let (system, command) = System::load();
 
     let System {
         verbosity,
-        network:
-            Network {
-                listen,
-                peer_listen,
-                mgmt_listen,
-                bufsize,
-                multimessage,
-                mm_packets,
-                greens,
-                snum,
-                nodes,
-                snapshot_interval,
-            },
-        consul:
-            Consul {
-                start_as: consul_start_as,
-                agent,
-                session_ttl: consul_session_ttl,
-                renew_time: consul_renew_time,
-                key_name: consul_key,
-            },
-        metrics:
-            Metrics {
-                //           max_metrics,
-                mut count_updates,
-                update_counter_prefix,
-                update_counter_suffix,
-                update_counter_threshold,
-            },
+        network: Network {
+            listen,
+            peer_listen,
+            mgmt_listen,
+            bufsize,
+            multimessage,
+            mm_packets,
+            mm_async,
+            buffer_flush,
+            greens,
+            async_sockets,
+            nodes,
+            snapshot_interval,
+        },
+        raft,
+        consul: Consul {
+            start_as: consul_start_as,
+            agent,
+            session_ttl: consul_session_ttl,
+            renew_time: consul_renew_time,
+            key_name: consul_key,
+        },
+        metrics: Metrics {
+            //           max_metrics,
+            mut count_updates,
+            update_counter_prefix,
+            update_counter_suffix,
+            update_counter_threshold,
+        },
         carbon,
         n_threads,
         w_threads,
@@ -195,6 +188,7 @@ fn main() {
         task_queue_size,
         start_as_leader,
         stats_prefix,
+        consensus,
     } = system.clone();
 
     let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
@@ -230,7 +224,10 @@ fn main() {
     }
 
     if count_updates && update_counter_prefix.len() == 0 && update_counter_suffix.len() == 0 {
-        warn!(rlog, "update counting suffix and prefix are empty, update counting disabled to avoid metric rewriting");
+        warn!(
+            rlog,
+            "update counting suffix and prefix are empty, update counting disabled to avoid metric rewriting"
+        );
         count_updates = false;
     }
 
@@ -251,7 +248,7 @@ fn main() {
                 let future = rx.for_each(move |task: Task| ok(task.run()));
                 runtime.block_on(future).expect("worker thread failed");
             })
-            .expect("starting counting worker thread");
+        .expect("starting counting worker thread");
     }
 
     let stats_prefix = stats_prefix.trim_right_matches(".").to_string();
@@ -271,7 +268,7 @@ fn main() {
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
-    ).into_future()
+        ).into_future()
         .map_err(move |e| {
             PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
             info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
@@ -298,27 +295,38 @@ fn main() {
     // Init leader state before starting backend
     IS_LEADER.store(start_as_leader, Ordering::SeqCst);
 
-    {
-        let mut con_state = CONSENSUS_STATE.lock().unwrap();
-        info!(log, "starting consul consensus"; "initial_state"=>format!("{:?}", con_state));
-        *con_state = consul_start_as;
+
+    let consensus_log = rlog.clone();
+
+    match consensus {
+        ConsensusKind::Internal => {
+            start_internal_raft(raft, &mut runtime, consensus_log);
+        }
+        ConsensusKind::Consul => {
+            {
+                let mut con_state = CONSENSUS_STATE.lock().unwrap();
+                info!(log, "starting consul consensus"; "initial_state"=>format!("{:?}", con_state));
+                *con_state = consul_start_as;
+            }
+
+            let mut consensus = ConsulConsensus::new(&consensus_log, agent, consul_key);
+            consensus.set_session_ttl(Duration::from_millis(consul_session_ttl as u64));
+            consensus.set_renew_time(Duration::from_millis(consul_renew_time as u64));
+            runtime.spawn(consensus.into_future().map_err(|_| ())); // TODO errors
+        }
+        ConsensusKind::None => {IS_LEADER.store(true, Ordering::SeqCst);},
     }
-
-    let consul_log = rlog.clone();
-
-    let mut consensus = ConsulConsensus::new(&consul_log, agent, consul_key);
-    consensus.set_session_ttl(Duration::from_millis(consul_session_ttl as u64));
-    consensus.set_renew_time(Duration::from_millis(consul_renew_time as u64));
-    runtime.spawn(consensus.into_future().map_err(|_| ())); // TODO errors
 
     info!(log, "starting management server");
     let m_serv_log = rlog.clone();
     let m_serv_err_log = rlog.clone();
     let m_server = hyper::Server::bind(&mgmt_listen)
-        .serve(move || ok::<_, hyper::Error>(MgmtServer::new(m_serv_log.clone(), &mgmt_listen)))
-        .map_err(move |e| {
-            warn!(m_serv_err_log, "management server gone with error: {:?}", e);
-        });
+        .serve(move || {
+            ok::<_, hyper::Error>(MgmtServer::new(m_serv_log.clone(), &mgmt_listen))
+        })
+    .map_err(move |e| {
+        warn!(m_serv_err_log, "management server gone with error: {:?}", e);
+    });
 
     runtime.spawn(m_server);
 
@@ -328,12 +336,13 @@ fn main() {
 
     let dur = Duration::from_millis(carbon.interval);
     let carbon_timer = Interval::new(Instant::now() + dur, dur);
-    let carbon_timer = carbon_timer
-        .map_err(|e| GeneralError::Timer(e))
-        .for_each(move |_tick| {
-            let ts = SystemTime::now()
-                .duration_since(time::UNIX_EPOCH)
-                .map_err(|e| GeneralError::Time(e))?;
+    let carbon_timer = carbon_timer.map_err(|e| GeneralError::Timer(e)).for_each(
+        move |_tick| {
+            let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(
+                |e| {
+                    GeneralError::Time(e)
+                },
+                )?;
 
             let backend_addr = try_resolve(&carbon.address);
             let tchans = tchans.clone();
@@ -376,13 +385,10 @@ fn main() {
                         runtime.spawn(aggregator);
 
                         let backend = backend_rx
-                            .inspect(|_| {
-                                EGRESS.fetch_add(1, Ordering::Relaxed);
-                            })
+                            .inspect(|_| { EGRESS.fetch_add(1, Ordering::Relaxed); })
                             .collect()
                             .and_then(|metrics| {
-                                let backend =
-                                    CarbonBackend::new(backend_addr, ts, Arc::new(metrics));
+                                let backend = CarbonBackend::new(backend_addr, ts, Arc::new(metrics));
 
                                 let retrier = BackoffRetryBuilder {
                                     delay: backend_opts.connect_delay,
@@ -404,229 +410,54 @@ fn main() {
                         let aggregator = Aggregator::new(options, tchans, backend_tx).into_future();
                         runtime
                             .block_on(aggregator.then(|_| Ok::<(), ()>(())))
-                            .unwrap_or_else(
-                                |e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e),
-                            );
+                            .unwrap_or_else(|e| {
+                                error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e)
+                            });
                     }
                 })
-                .expect("starting thread for sending to graphite");
+            .expect("starting thread for sending to graphite");
             Ok(())
-        });
+        },
+        );
 
     let tlog = rlog.clone();
     runtime.spawn(carbon_timer.map_err(move |e| {
         warn!(tlog, "error running carbon"; "error"=>e.to_string());
     }));
 
-    if multimessage {
-        info!(log, "multimessage enabled, starting in sync UDP mode");
-        use std::os::unix::io::AsRawFd;
-
-        // It is crucial for recvmmsg to have one socket per many threads
-        // to avoid drops because at lease two threads have to work on socket
-        // simultaneously
-        let socket = UdpBuilder::new_v4().unwrap();
-        socket.reuse_address(true).unwrap();
-        socket.reuse_port(true).unwrap();
-        let sck = socket.bind(listen).unwrap();
-
-        for i in 0..n_threads {
-            let chans = chans.clone();
-            let log = rlog.new(o!("source"=>"mudp_thread"));
-
-            let sck = sck.try_clone().unwrap();
-            thread::Builder::new()
-                .name(format!("bioyino_mudp{}", i).into())
-                .spawn(move || {
-                    let fd = sck.as_raw_fd();
-                    let messages = mm_packets;
-                    {
-                        // <--- this limits `use::libc::*` scope
-                        use libc::*;
-                        use std::ptr::null_mut;
-
-                        let mut ichans = chans.iter().cycle();
-
-                        // a vector to avoid dropping iovec structures
-                        let mut iovecs = Vec::with_capacity(messages);
-
-                        // a vector to avoid dropping message buffers
-                        let mut message_vec = Vec::new();
-
-                        let mut v: Vec<mmsghdr> = Vec::with_capacity(messages);
-                        for _ in 0..messages {
-                            let mut buf = Vec::with_capacity(bufsize);
-                            buf.resize(bufsize, 0);
-
-                            let mut iov = Vec::with_capacity(1);
-                            iov.resize(
-                                1,
-                                iovec {
-                                    iov_base: buf.as_mut_ptr() as *mut c_void,
-                                    iov_len: bufsize as size_t,
-                                },
-                            );
-                            let m = mmsghdr {
-                                msg_hdr: msghdr {
-                                    msg_name: null_mut(),
-                                    msg_namelen: 0 as socklen_t,
-                                    msg_iov: iov.as_mut_ptr(),
-                                    msg_iovlen: iov.len() as size_t,
-                                    msg_control: null_mut(),
-                                    msg_controllen: 0,
-                                    msg_flags: 0,
-                                },
-                                msg_len: 0,
-                            };
-                            v.push(m);
-                            iovecs.push(iov);
-                            message_vec.push(buf);
-                        }
-
-                        let vp = v.as_mut_ptr();
-                        let vlen = v.len();
-
-                        // This is the buffer we fill with metrics and periodically send to
-                        // tasks
-                        // To avoid allocations we make it bigger than multimsg message count
-                        // Also, it can be the huge value already allocated here, so for even less
-                        // allocations, we split the filled part and leave the rest for future bytes
-                        let mut b = BytesMut::with_capacity(bufsize * messages * task_queue_size);
-
-                        // We cannot count on allocator to allocate a value close to capacity
-                        // it can be much more than that and stall our buffer for too long
-                        // So we set our chunk size ourselves and send buffer when this value
-                        // exhausted, but we only allocate when buffer becomes empty
-                        let mut chunks = task_queue_size as isize;
-
-                        loop {
-                            let res = unsafe {
-                                recvmmsg(
-                                    fd as c_int,
-                                    vp,
-                                    vlen as c_uint,
-                                    MSG_WAITFORONE,
-                                    null_mut(),
-                                )
-                            };
-
-                            use bytes::BufMut;
-                            if res >= 0 {
-                                let end = res as usize;
-
-                                // Check if we can fit all packets into buffer
-                                let mut total_bytes = 0;
-                                for i in 0..end {
-                                    total_bytes += v[i].msg_len as usize;
-                                }
-                                // newlines
-                                total_bytes += end - 1;
-
-                                // if we cannot, allocate more
-                                if b.remaining_mut() < total_bytes {
-                                    b.reserve(bufsize * messages * task_queue_size)
-                                }
-
-                                // put packets into buffer
-                                for i in 0..end {
-                                    let len = v[i].msg_len as usize;
-
-                                    b.put(&message_vec[i][0..len]);
-                                    chunks -= end as isize;
-                                }
-
-                                // when it's time to send bytes, send them
-                                if chunks <= 0 {
-                                    let mut chan = ichans.next().unwrap().clone();
-                                    INGRESS.fetch_add(res as usize, Ordering::Relaxed);
-                                    chan.try_send(Task::Parse(b.take().freeze()))
-                                        .map_err(|_| {
-                                            warn!(log, "error sending buffer(queue full?)");
-                                            DROPS.fetch_add(res as usize, Ordering::Relaxed);
-                                        })
-                                        .unwrap_or(());
-                                    chunks = task_queue_size as isize;
-                                }
-                            } else {
-                                let errno = unsafe { *__errno_location() };
-                                if errno == EAGAIN {
-                                } else {
-                                    warn!(log, "UDP receive error";
-                                          "code"=> format!("{}",res),
-                                          "error"=>format!("{}", io::Error::last_os_error())
-                                         )
-                                }
-                            }
-                        }
-                    }
-                })
-                .expect("starting multimsg thread");
-        }
-    } else {
-        info!(log, "multimessage is disabled, starting in async UDP mode");
-        // Create a pool of listener sockets
-        let mut sockets = Vec::new();
-        for _ in 0..snum {
-            let socket = UdpBuilder::new_v4().unwrap();
-            socket.reuse_address(true).unwrap();
-            socket.reuse_port(true).unwrap();
-            let socket = socket.bind(&listen).unwrap();
-            sockets.push(socket);
-        }
-
-        for i in 0..n_threads {
-            // Each thread gets the clone of a socket pool
-            let sockets = sockets
-                .iter()
-                .map(|s| s.try_clone().unwrap())
-                .collect::<Vec<_>>();
-
-            let chans = chans.clone();
-            thread::Builder::new()
-                .name(format!("bioyino_udp{}", i).into())
-                .spawn(move || {
-                    // each thread runs it's own runtime
-                    let mut runtime = Runtime::new().expect("creating runtime for counting worker");
-
-                    // Inside each green thread
-                    for _ in 0..greens {
-                        // start a listener for all sockets
-                        for socket in sockets.iter() {
-                            let buf = BytesMut::with_capacity(task_queue_size * bufsize);
-
-                            let mut readbuf = BytesMut::with_capacity(bufsize);
-                            unsafe { readbuf.set_len(bufsize) }
-                            let chans = chans.clone();
-                            // create UDP listener
-                            let socket = socket.try_clone().expect("cloning socket");
-                            let socket =
-                                UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
-                                    .expect("adding socket to event loop");
-
-                            let server = StatsdServer::new(
-                                socket,
-                                chans.clone(),
-                                buf,
-                                task_queue_size,
-                                bufsize,
-                                i,
-                                readbuf,
-                                task_queue_size * bufsize,
-                            );
-
-                            runtime.spawn(server.into_future());
-                        }
-                    }
-
-                    runtime
-                        .block_on(empty::<(), ()>())
-                        .expect("starting runtime for async UDP");
-                })
-                .expect("creating UDP reader thread");
+    // For each thread we create
+    let mut flush_flags = Arc::new(Vec::new());
+    if let Some(flags) = Arc::get_mut(&mut flush_flags) {
+        for _ in 0..n_threads {
+            flags.push(AtomicBool::new(false));
         }
     }
 
-    runtime
-        .block_on(empty::<(), ()>())
-        .expect("running runtime in main thread");
+    if buffer_flush > 0 {
+        let dur = Duration::from_millis(buffer_flush);
+        let flush_timer = Interval::new(Instant::now() + dur, dur);
+
+        let tlog = rlog.clone();
+        let flags = flush_flags.clone();
+        let flush_timer = flush_timer.map_err(|e| GeneralError::Timer(e)).for_each(
+            move |_tick| {
+                debug!(tlog, "buffer flush requested");
+                flags.iter().map(|flag| flag.swap(true, Ordering::SeqCst)).last();
+                Ok(())
+            });
+        let tlog = rlog.clone();
+        runtime.spawn(flush_timer.map_err(move |e| {
+            warn!(tlog, "error running buffer flush timer"; "error"=>e.to_string());
+        }));
+    }
+
+    if multimessage {
+        start_sync_udp(log, listen, &chans, n_threads, bufsize, mm_packets, mm_async, task_queue_size, buffer_flush, flush_flags.clone());
+    } else {
+        start_async_udp(log, listen, &chans, n_threads, greens, async_sockets, bufsize, task_queue_size, flush_flags.clone());
+    }
+
+    runtime.block_on(empty::<(), ()>()).expect(
+        "running runtime in main thread",
+        );
 }

@@ -27,25 +27,23 @@ impl CarbonBackend {
         let ts: Bytes = ts.as_secs().to_string().into();
 
         let buf = BytesMut::with_capacity(metrics.len() * 200); // 200 is an approximate for full metric name + value
-        let (metrics, _) = metrics.iter().fold(
-            (Vec::new(), buf),
-            |(mut acc, mut buf), (name, metric)| {
-                let mut wr = buf.writer();
-                let buf = match ftoa::write(&mut wr, *metric) {
-                    Ok(()) => {
+        let (metrics, _) = metrics.iter().fold((Vec::new(), buf), |(mut acc, mut buf),
+         (name, metric)| {
+            let mut wr = buf.writer();
+            let buf = match ftoa::write(&mut wr, *metric) {
+                Ok(()) => {
                         buf = wr.into_inner();
                         let metric = buf.take().freeze();
                         acc.push((name.clone(), metric, ts.clone()));
                         buf
                     }
-                    Err(_) => {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                        wr.into_inner()
-                    }
-                };
-                (acc, buf)
-            },
-        );
+                Err(_) => {
+                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    wr.into_inner()
+                }
+            };
+            (acc, buf)
+        });
         let metrics = Arc::new(metrics);
         let self_ = Self { addr, metrics };
         self_

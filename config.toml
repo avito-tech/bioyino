@@ -23,6 +23,9 @@ stats-interval = 10000
 # Prefix for sending own stats
 stats-prefix = "resources.monitoring.bioyino"
 
+# What consensus to use: "consul", "internal" or "none"
+consensus = "internal"
+
 [metrics]
 # Should we provide metrics that update more than update-counter-threshold times diring aggregation interval
 count-updates = true
@@ -76,19 +79,46 @@ bufsize = 1500
 multimessage = false
 
 # Number of multimessage packets to receive at once if in multimessage mode
+# Note that this setting is per thread, so in reality one can only see metrics
+# after receiving at least mm-packets*n_threads datagrams
 mm-packets = 100
+
+# Do multimessage operations in async mode.
+# This means recvmmsg will receive 0..mm-packets datagrams instead of waiting for mm-packets
+mm-async = false
+
+# To avoid packets staying in queue forever, this option can be used to flush
+# incoming data buffer forcing it to be sent even if it's not full
+buffer-flush = 0
 
 # Nmber of green threads for single-message mode
 greens = 4
 
 # Socket pool size for single-message mode
-snum = 4
+async-sockets = 4
 
 # List of nodes to replicate metrics to
 nodes = []
 
 # Interval to send snapshots to nodes, ms
 snapshot-interval = 1000
+
+# Settings for internal Raft
+[raft]
+# Timeouts tuned according to the Raft paper and typical network latency.
+# Better not to change if unsure
+heartbeat-timeout = 250
+election-timeout-min = 500
+election-timeout-max = 750
+
+# The name of the current node is taken from hostname by default
+# After that all hostnames are resolved using DNS. If node name cannot
+# be resolved through DNS for some reason, it can be specified in this-node
+# parameter in a format similar to one in node list.
+# this-node = <empty>
+
+# A list of other raft nodes in form of hostname:port or IP:port
+nodes = []
 
 [consul]
 # Start in disabled leader finding mode

@@ -13,26 +13,9 @@ use metric::MetricType;
 
 // to make his zero-copy and get better errors, parser only recognizes parts
 // of the metric: (name, value, type, sampling)
-pub fn metric_parser<'a, F>(
-) -> impl Parser<Output = (&'a [u8], F, MetricType<F>, Option<f32>), Input = &'a [u8]>
+pub fn metric_parser<'a, F>() -> impl Parser<Output = (&'a [u8], F, MetricType<F>, Option<f32>), Input = &'a [u8]>
 where
-    F: FromStr
-        + Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Div<Output = F>
-        + Mul<Output = F>
-        + Neg<Output = F>
-        + PartialOrd
-        + Into<f64>
-        + From<f64>
-        + Debug
-        + Default
-        + Clone
-        + Copy
-        + PartialEq
-        + Sync,
+F: FromStr + Add<Output = F> + AddAssign + Sub<Output = F> + SubAssign + Div<Output = F> + Mul<Output = F> + Neg<Output = F> + PartialOrd + Into<f64> + From<f64> + Debug + Default + Clone + Copy + PartialEq + Sync,
 {
     // This will parse metric name and separator
     let name = take_while1(|c: u8| c != b':' && c != b'\n').skip(byte(b':'));
@@ -60,7 +43,9 @@ where
     let sampling = (bytes(b"|@"), take_while(|c: u8| c != b'\n')).and_then(|(_, value)| {
         from_utf8(value)
             .map_err(|_e| UnexpectedParse::Unexpected)
-            .map(|v| v.parse::<f32>().map_err(|_e| UnexpectedParse::Unexpected))?
+            .map(|v| {
+                v.parse::<f32>().map_err(|_e| UnexpectedParse::Unexpected)
+            })?
     });
     (
         name,
@@ -69,7 +54,7 @@ where
         mtype,
         optional(sampling),
         skip_many(newline()).or(eof()),
-    ).and_then(|(name, sign, mut value, mtype, sampling, _)| {
+        ).and_then(|(name, sign, mut value, mtype, sampling, _)| {
         let mtype = if let MetricType::Gauge(_) = mtype {
             MetricType::Gauge(sign)
         } else {
@@ -86,7 +71,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    // WARNING: these tests most probably don't work as of now
     use super::*;
 
     // TODO: Questioned cases:

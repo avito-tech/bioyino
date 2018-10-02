@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use futures::future::{err, loop_fn, ok, Either, Future, IntoFuture, Loop};
@@ -11,8 +10,9 @@ use mime::WWW_FORM_URLENCODED;
 use serde_json::{self, from_slice};
 use slog::Logger;
 use tokio::timer::{self, Delay, Interval};
+use util::switch_leader;
 
-use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
+use {ConsensusState, CONSENSUS_STATE};
 
 #[derive(Fail, Debug)]
 pub enum ConsulError {
@@ -26,12 +26,21 @@ pub enum ConsulError {
     ConnectionTimeout,
 
     #[fail(display = "Http error: {}", _0)]
-    Http(#[cause] hyper::Error),
+    Http(
+        #[cause]
+        hyper::Error
+    ),
 
     #[fail(display = "Parsing response: {}", _0)]
-    Parsing(#[cause] serde_json::Error),
+    Parsing(
+        #[cause]
+        serde_json::Error
+    ),
     #[fail(display = "I/O error {}", _0)]
-    Io(#[cause] ::std::io::Error),
+    Io(
+        #[cause]
+        ::std::io::Error
+    ),
 
     #[fail(display = "{}", _0)]
     Renew(String),
@@ -110,15 +119,15 @@ impl IntoFuture for ConsulConsensus {
 
             let renewlog = log.clone();
             /*
-            let session_retrier = BackoffRetryBuilder {
-                delay: 1000,
-                delay_mul: 1f32,
-                delay_max: 1000,
-                retries: ::std::usize::MAX,
-            };
+               let session_retrier = BackoffRetryBuilder {
+               delay: 1000,
+               delay_mul: 1f32,
+               delay_max: 1000,
+               retries: ::std::usize::MAX,
+               };
 
-            let session = session_retrier.spawn(session);
-            */
+               let session = session_retrier.spawn(session);
+               */
             // this tries to reconnect to consul infinitely
             let loop_session = loop_fn(session, move |session| {
                 let log = log.clone();
@@ -136,10 +145,10 @@ impl IntoFuture for ConsulConsensus {
                             let new_session = new_session.clone();
                             Box::new(
                                 Delay::new(Instant::now() + error_pause)
-                                    .then(move |_| Ok(Loop::Continue(new_session))),
-                            )
+                                .then(move |_| Ok(Loop::Continue(new_session))),
+                                )
                                 as Box<Future<Item = Loop<_, _>, Error = _>>
-                            //ok(Loop::Continue(new_session))
+                                //ok(Loop::Continue(new_session))
                         }
                         Ok(None) => {
                             warn!(log, "timed out getting consul session");
@@ -150,8 +159,8 @@ impl IntoFuture for ConsulConsensus {
                 } else {
                     Either::B(
                         Delay::new(Instant::now() + error_pause)
-                            .then(move |_| Ok(Loop::Continue(new_session))),
-                    )
+                        .then(move |_| Ok(Loop::Continue(new_session))),
+                        )
                 }
             });
 
@@ -234,7 +243,8 @@ impl IntoFuture for ConsulSession {
         let ttl_ns = ttl.as_secs() * 1_000_000_000u64 + ttl.subsec_nanos() as u64;
         let b = format!(
             "{{\"TTL\": \"{}ns\", \"LockDelay\": \"{}ns\"}}",
-            ttl_ns, ttl_ns
+            ttl_ns,
+            ttl_ns
         );
         let bodylen = b.len() as u64;
         *session_req.body_mut() = hyper::Body::from(b);
@@ -242,11 +252,11 @@ impl IntoFuture for ConsulSession {
         session_req.headers_mut().insert(
             CONTENT_LENGTH,
             HeaderValue::from_str(&format!("{}", bodylen)).unwrap(),
-        );
+            );
         session_req.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap(),
-        );
+            );
 
         let c_session = client
             .request(session_req)
@@ -258,8 +268,7 @@ impl IntoFuture for ConsulSession {
                         .concat2()
                         .map_err(|e| ConsulError::Http(e))
                         .and_then(move |body| {
-                            let resp: ConsulSessionResponse =
-                                try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                            let resp: ConsulSessionResponse = try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
                             debug!(log, "new session"; "id"=>format!("{}", resp.id));
                             Ok(Some(resp.id))
                         });
@@ -267,13 +276,12 @@ impl IntoFuture for ConsulSession {
                 } else {
                     let body = resp.into_body().concat2().map_err(|e| ConsulError::Http(e));
                     // TODO make this into option
-                    let sleep = Delay::new(Instant::now() + Duration::from_millis(1000))
-                        .map_err(|e| ConsulError::Timer(e));
+                    let sleep = Delay::new(Instant::now() + Duration::from_millis(1000)).map_err(|e| ConsulError::Timer(e));
                     let future = sleep.join(body).then(move |res| match res {
                         Ok((_, body)) => Err::<Option<String>, _>(ConsulError::HttpStatus(
-                            status,
-                            format!("{:?}", String::from_utf8(body.to_vec())),
-                        )),
+                                status,
+                                format!("{:?}", String::from_utf8(body.to_vec())),
+                                )),
                         Err(e) => Err(e),
                     });
                     Box::new(future)
@@ -318,11 +326,11 @@ impl IntoFuture for ConsulRenew {
         renew_req.headers_mut().insert(
             CONTENT_LENGTH,
             HeaderValue::from_str(&format!("{}", bodylen)).unwrap(),
-        );
+            );
         renew_req.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap(),
-        );
+            );
 
         let renew_client = hyper::Client::new();
         let future = renew_client.request(renew_req).then(move |res| match res {
@@ -388,21 +396,21 @@ impl IntoFuture for ConsulAcquire {
                     .concat2()
                     .map_err(|e| ConsulError::Http(e))
                     .and_then(move |body| {
-                        let acquired: bool =
-                            try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                        let acquired: bool = try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
 
-                        let should_set = {
-                            let state = &*CONSENSUS_STATE.lock().unwrap();
-                            // only set leader when consensus is enabled
-                            state == &ConsensusState::Enabled
-                        };
-                        if should_set {
-                            let is_leader = IS_LEADER.load(Ordering::SeqCst);
-                            if is_leader != acquired {
-                                warn!(log, "leader state change: {} -> {}", is_leader, acquired);
-                            }
-                            IS_LEADER.store(acquired, Ordering::SeqCst);
-                        }
+                        switch_leader(acquired, &log);
+                        // let should_set = {
+                        //let state = &*CONSENSUS_STATE.lock().unwrap();
+                        //// only set leader when consensus is enabled
+                        //state == &ConsensusState::Enabled
+                        //};
+                        //if should_set {
+                        //let is_leader = IS_LEADER.load(Ordering::SeqCst);
+                        //if is_leader != acquired {
+                        //warn!(log, "leader state change: {} -> {}", is_leader, acquired);
+                        //}
+                        //IS_LEADER.store(acquired, Ordering::SeqCst);
+                        //}
                         Ok(())
                     })
             });
