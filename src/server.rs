@@ -1,4 +1,4 @@
-use std::sync::atomic::{Ordering, AtomicBool};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use {DROPS, INGRESS};
@@ -26,17 +26,18 @@ pub struct StatsdServer {
 }
 
 impl StatsdServer {
-    pub fn new(socket: UdpSocket,
-               chans: Vec<mpsc::Sender<Task>>,
-               buf: BytesMut,
-               buf_queue_size: usize,
-               bufsize: usize,
-               next: usize,
-               readbuf: BytesMut,
-               chunks: usize,
-               flush_flags: Arc<Vec<AtomicBool>>,
-               thread_idx: usize,
-               ) -> Self {
+    pub fn new(
+        socket: UdpSocket,
+        chans: Vec<mpsc::Sender<Task>>,
+        buf: BytesMut,
+        buf_queue_size: usize,
+        bufsize: usize,
+        next: usize,
+        readbuf: BytesMut,
+        chunks: usize,
+        flush_flags: Arc<Vec<AtomicBool>>,
+        thread_idx: usize,
+    ) -> Self {
         Self {
             socket,
             chans,
@@ -47,7 +48,7 @@ impl StatsdServer {
             readbuf,
             chunks,
             flush_flags,
-            thread_idx
+            thread_idx,
         }
     }
 }
@@ -68,7 +69,7 @@ impl IntoFuture for StatsdServer {
             readbuf,
             chunks,
             flush_flags,
-            thread_idx
+            thread_idx,
         } = self;
 
         let future = socket
@@ -82,8 +83,10 @@ impl IntoFuture for StatsdServer {
 
                 buf.put(&received[0..size]);
 
-
-                let flush = flush_flags.get(thread_idx).unwrap().swap(false, Ordering::SeqCst);
+                let flush = flush_flags
+                    .get(thread_idx)
+                    .unwrap()
+                    .swap(false, Ordering::SeqCst);
                 if buf.remaining_mut() < bufsize || chunks == 0 || flush {
                     let (chan, next) = if next >= chans.len() {
                         (chans[0].clone(), 1)
@@ -94,22 +97,23 @@ impl IntoFuture for StatsdServer {
 
                     spawn(
                         chan.send(Task::Parse(buf.freeze()))
-                        .map_err(|_| { DROPS.fetch_add(1, Ordering::Relaxed); })
-                        .and_then(move |_| {
-                            StatsdServer::new(
-                                socket,
-                                chans,
-                                newbuf,
-                                buf_queue_size,
-                                bufsize,
-                                next,
-                                received,
-                                buf_queue_size * bufsize,
-                                flush_flags,
-                                thread_idx
-                            ).into_future()
-                        }),
-                        );
+                            .map_err(|_| {
+                                DROPS.fetch_add(1, Ordering::Relaxed);
+                            }).and_then(move |_| {
+                                StatsdServer::new(
+                                    socket,
+                                    chans,
+                                    newbuf,
+                                    buf_queue_size,
+                                    bufsize,
+                                    next,
+                                    received,
+                                    buf_queue_size * bufsize,
+                                    flush_flags,
+                                    thread_idx,
+                                ).into_future()
+                            }),
+                    );
                 } else {
                     spawn(
                         StatsdServer::new(
@@ -122,9 +126,9 @@ impl IntoFuture for StatsdServer {
                             received,
                             chunks - 1,
                             flush_flags,
-                            thread_idx
+                            thread_idx,
                         ).into_future(),
-                        );
+                    );
                 }
                 Ok(())
             });

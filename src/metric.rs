@@ -82,9 +82,27 @@ where
 
 impl<F> Metric<F>
 where
-    F: Add<Output = F> + AddAssign + Sub<Output = F> + SubAssign + Clone + Div<Output = F> + Mul<Output = F> + PartialOrd + PartialEq + Into<Float> + From<Float> + Copy + Debug + Sync,
+    F: Add<Output = F>
+        + AddAssign
+        + Sub<Output = F>
+        + SubAssign
+        + Clone
+        + Div<Output = F>
+        + Mul<Output = F>
+        + PartialOrd
+        + PartialEq
+        + Into<Float>
+        + From<Float>
+        + Copy
+        + Debug
+        + Sync,
 {
-    pub fn new(value: F, mtype: MetricType<F>, timestamp: Option<u64>, sampling: Option<f32>) -> Result<Self, MetricError> {
+    pub fn new(
+        value: F,
+        mtype: MetricType<F>,
+        timestamp: Option<u64>,
+        sampling: Option<f32>,
+    ) -> Result<Self, MetricError> {
         let mut metric = Metric {
             value,
             mtype,
@@ -147,7 +165,9 @@ where
         Ok(())
     }
 
-    pub fn from_capnp<'a>(reader: cmetric::Reader<'a>) -> Result<(Bytes, Metric<Float>), MetricError> {
+    pub fn from_capnp<'a>(
+        reader: cmetric::Reader<'a>,
+    ) -> Result<(Bytes, Metric<Float>), MetricError> {
         let name = reader.get_name().map_err(MetricError::Capnp)?.into();
         let value = reader.get_value();
 
@@ -182,9 +202,10 @@ where
         let (sampling, up_counter) = match reader.get_meta() {
             Ok(reader) => (
                 if reader.has_sampling() {
-                    reader.get_sampling().ok().map(
-                        |reader| reader.get_sampling(),
-                    )
+                    reader
+                        .get_sampling()
+                        .ok()
+                        .map(|reader| reader.get_sampling())
                 } else {
                     None
                 },
@@ -226,8 +247,7 @@ where
                         .map(|(idx, value)| {
                             let value: f64 = (*value).into();
                             timer_builder.set(idx as u32, value);
-                        })
-                        .last();
+                        }).last();
                 }
             }
         }
@@ -270,7 +290,18 @@ where
 
 impl<F> IntoIterator for Metric<F>
 where
-    F: Debug + Add<Output = F> + AddAssign + Sub<Output = F> + SubAssign + Div<Output = F> + Mul<Output = F> + Clone + Copy + PartialOrd + PartialEq + Into<f64>,
+    F: Debug
+        + Add<Output = F>
+        + AddAssign
+        + Sub<Output = F>
+        + SubAssign
+        + Div<Output = F>
+        + Mul<Output = F>
+        + Clone
+        + Copy
+        + PartialOrd
+        + PartialEq
+        + Into<f64>,
 {
     type Item = (&'static str, Float);
     type IntoIter = MetricIter<F>;
@@ -281,7 +312,18 @@ where
 
 pub struct MetricIter<F>
 where
-    F: Debug + Add<Output = F> + AddAssign + Sub<Output = F> + SubAssign + Div<Output = F> + Mul<Output = F> + Clone + Copy + PartialOrd + PartialEq + Into<f64>,
+    F: Debug
+        + Add<Output = F>
+        + AddAssign
+        + Sub<Output = F>
+        + SubAssign
+        + Div<Output = F>
+        + Mul<Output = F>
+        + Clone
+        + Copy
+        + PartialOrd
+        + PartialEq
+        + Into<f64>,
 {
     m: Metric<F>,
     count: usize,
@@ -291,7 +333,18 @@ where
 
 impl<F> MetricIter<F>
 where
-    F: Debug + Add<Output = F> + AddAssign + Sub<Output = F> + SubAssign + Div<Output = F> + Mul<Output = F> + Clone + Copy + PartialOrd + PartialEq + Into<f64>,
+    F: Debug
+        + Add<Output = F>
+        + AddAssign
+        + Sub<Output = F>
+        + SubAssign
+        + Div<Output = F>
+        + Mul<Output = F>
+        + Clone
+        + Copy
+        + PartialOrd
+        + PartialEq
+        + Into<f64>,
 {
     fn new(mut metric: Metric<F>) -> Self {
         let sum = if let MetricType::Timer(ref mut agg) = metric.mtype {
@@ -311,7 +364,18 @@ where
 
 impl<F> Iterator for MetricIter<F>
 where
-    F: Debug + Add<Output = F> + AddAssign + Sub<Output = F> + SubAssign + Div<Output = F> + Mul<Output = F> + Clone + Copy + PartialOrd + PartialEq + Into<Float>,
+    F: Debug
+        + Add<Output = F>
+        + AddAssign
+        + Sub<Output = F>
+        + SubAssign
+        + Div<Output = F>
+        + Mul<Output = F>
+        + Clone
+        + Copy
+        + PartialOrd
+        + PartialEq
+        + Into<Float>,
 {
     type Item = (&'static str, Float);
 

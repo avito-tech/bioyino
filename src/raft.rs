@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use rand::random;
+use std::collections::HashMap;
 
 //use slog::{Drain, Level, Logger};
-use slog::{Logger};
+use slog::Logger;
 
 use futures::future::lazy;
 use tokio::runtime::current_thread::Runtime;
@@ -13,10 +13,10 @@ use raft_tokio::raft_consensus::state_machine::null::NullStateMachine;
 //use raft_tokio::raft_consensus::ServerId;
 
 ////use raft_tokio::raft::RaftPeerProtocol;
-use raft_tokio::start_raft_tcp;
-use raft_tokio::{Notifier};
-use util::{switch_leader, try_resolve, get_hostname};
 use config::Raft;
+use raft_tokio::start_raft_tcp;
+use raft_tokio::Notifier;
+use util::{get_hostname, switch_leader, try_resolve};
 
 pub struct LeaderNotifier(Logger);
 
@@ -42,18 +42,24 @@ pub(crate) fn start_internal_raft(options: Raft, runtime: &mut Runtime, logger: 
 
     let mut this_id = None;
     if options.nodes.len() < 3 {
-        warn!(logger, "raft requires at least 3 nodes, this may work not as intended");
+        warn!(
+            logger,
+            "raft requires at least 3 nodes, this may work not as intended"
+        );
     }
 
     // resolve nodes and generate random ServerId
-    let mut nodes =  options.nodes.iter().map(|node| {
-        let id = random::<u64>().into();
-        let addr = try_resolve(node);
-        if addr == this {
-            this_id = Some(id)
-        }
-        (id, addr)
-    }).collect::<HashMap<_, _>>();
+    let mut nodes = options
+        .nodes
+        .iter()
+        .map(|node| {
+            let id = random::<u64>().into();
+            let addr = try_resolve(node);
+            if addr == this {
+                this_id = Some(id)
+            }
+            (id, addr)
+        }).collect::<HashMap<_, _>>();
 
     //let id = this_id/.expect("list of nodes must contain own hostname");
     use raft_tokio::raft_consensus::ServerId;
@@ -69,8 +75,10 @@ pub(crate) fn start_internal_raft(options: Raft, runtime: &mut Runtime, logger: 
     let options = options.get_raft_options();
 
     // Create the runtime
-    let raft = lazy(move || {start_raft_tcp(id, nodes, raft_log, sm, notifier, options, logger); Ok(())});
+    let raft = lazy(move || {
+        start_raft_tcp(id, nodes, raft_log, sm, notifier, options, logger);
+        Ok(())
+    });
 
     runtime.spawn(raft);
-
 }

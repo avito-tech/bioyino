@@ -1,38 +1,38 @@
-use std::net::SocketAddr;
 use std::io;
-use std::thread;
-use std::sync::atomic::{Ordering, AtomicBool};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 
 use std::ptr::null_mut;
 
-use {INGRESS, DROPS};
-use task::Task;
 use server::StatsdServer;
+use task::Task;
+use {DROPS, INGRESS};
 
-use tokio::net::UdpSocket;
-use std::os::unix::io::AsRawFd;
-use tokio::runtime::current_thread::Runtime;
-use bytes::{BytesMut, BufMut};
-use futures::IntoFuture;
+use bytes::{BufMut, BytesMut};
 use futures::future::empty;
 use futures::sync::mpsc::Sender;
+use futures::IntoFuture;
 use net2::unix::UnixUdpBuilderExt;
 use net2::UdpBuilder;
 use slog::Logger;
+use std::os::unix::io::AsRawFd;
+use tokio::net::UdpSocket;
+use tokio::runtime::current_thread::Runtime;
 
-
-pub(crate) fn start_sync_udp(log: Logger,
-                             listen: SocketAddr,
-                             chans: &Vec<Sender<Task>>,
-                             n_threads: usize,
-                             bufsize: usize,
-                             mm_packets: usize,
-                             mm_async: bool,
-                             task_queue_size: usize,
-                             buffer_flush: u64,
-                             flush_flags: Arc<Vec<AtomicBool>>)
-{
+pub(crate) fn start_sync_udp(
+    log: Logger,
+    listen: SocketAddr,
+    chans: &Vec<Sender<Task>>,
+    n_threads: usize,
+    bufsize: usize,
+    mm_packets: usize,
+    mm_async: bool,
+    task_queue_size: usize,
+    buffer_flush: u64,
+    flush_flags: Arc<Vec<AtomicBool>>,
+) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -78,7 +78,7 @@ pub(crate) fn start_sync_udp(log: Logger,
                                 iov_base: buf.as_mut_ptr() as *mut c_void,
                                 iov_len: bufsize as size_t,
                             },
-                            );
+                        );
                         let m = mmsghdr {
                             msg_hdr: msghdr {
                                 msg_name: null_mut(),
@@ -111,22 +111,19 @@ pub(crate) fn start_sync_udp(log: Logger,
                     // So we set our chunk size ourselves and send buffer when this value
                     // exhausted, but we only allocate when buffer becomes empty
                     let mut chunks = task_queue_size as isize;
-                    let flags = if mm_async {
-                        MSG_WAITFORONE
-                    } else {
-                        0
-                    };
+                    let flags = if mm_async { MSG_WAITFORONE } else { 0 };
                     loop {
                         let timeout = if buffer_flush > 0 {
                             &mut timespec {
-                                tv_sec:  buffer_flush as i64 / 1000,
-                                tv_nsec: (buffer_flush as i64 % 1000) * 1000000,
+                                tv_sec: buffer_flush as i64 / 1000,
+                                tv_nsec: (buffer_flush as i64 % 1000) * 1_000_000,
                             }
                         } else {
                             null_mut()
                         };
 
-                        let res = unsafe { recvmmsg(fd as c_int, vp, vlen as c_uint, flags, timeout) };
+                        let res =
+                            unsafe { recvmmsg(fd as c_int, vp, vlen as c_uint, flags, timeout) };
 
                         if res >= 0 {
                             let end = res as usize;
@@ -161,8 +158,7 @@ pub(crate) fn start_sync_udp(log: Logger,
                                     .map_err(|_| {
                                         warn!(log, "error sending buffer(queue full?)");
                                         DROPS.fetch_add(res as usize, Ordering::Relaxed);
-                                    })
-                                .unwrap_or(());
+                                    }).unwrap_or(());
                                 chunks = task_queue_size as isize;
                             }
                         } else {
@@ -177,20 +173,21 @@ pub(crate) fn start_sync_udp(log: Logger,
                         }
                     }
                 }
-            })
-        .expect("starting multimsg thread");
+            }).expect("starting multimsg thread");
     }
 }
 
-pub(crate) fn start_async_udp(log: Logger,
-                              listen: SocketAddr,
-                              chans: &Vec<Sender<Task>>,
-                              n_threads: usize,
-                              greens: usize,
-                              async_sockets: usize,
-                              bufsize: usize,
-                              task_queue_size: usize,
-                              flush_flags: Arc<Vec<AtomicBool>>) {
+pub(crate) fn start_async_udp(
+    log: Logger,
+    listen: SocketAddr,
+    chans: &Vec<Sender<Task>>,
+    n_threads: usize,
+    greens: usize,
+    async_sockets: usize,
+    bufsize: usize,
+    task_queue_size: usize,
+    flush_flags: Arc<Vec<AtomicBool>>,
+) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
     // Create a pool of listener sockets
     let mut sockets = Vec::new();
@@ -228,7 +225,9 @@ pub(crate) fn start_async_udp(log: Logger,
                         let chans = chans.clone();
                         // create UDP listener
                         let socket = socket.try_clone().expect("cloning socket");
-                        let socket = UdpSocket::from_std(socket, &::tokio::reactor::Handle::current()).expect("adding socket to event loop");
+                        let socket =
+                            UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
+                                .expect("adding socket to event loop");
 
                         let server = StatsdServer::new(
                             socket,
@@ -240,17 +239,16 @@ pub(crate) fn start_async_udp(log: Logger,
                             readbuf,
                             task_queue_size * bufsize,
                             flush_flags.clone(),
-                            i
+                            i,
                         );
 
                         runtime.spawn(server.into_future());
                     }
                 }
 
-                runtime.block_on(empty::<(), ()>()).expect(
-                    "starting runtime for async UDP",
-                    );
-            })
-        .expect("creating UDP reader thread");
+                runtime
+                    .block_on(empty::<(), ()>())
+                    .expect("starting runtime for async UDP");
+            }).expect("creating UDP reader thread");
     }
 }

@@ -72,7 +72,7 @@ struct Gauge {
 struct MetricMeta {
     sampling @0 :Sampling;
     updateCounter @1 :UInt32;
-    tags @2 :List(Tag);
+#    tags @2 :List(Tag);
 }
 
 struct Sampling  {

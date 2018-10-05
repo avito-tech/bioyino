@@ -6,10 +6,10 @@ extern crate failure;
 extern crate failure_derive;
 #[macro_use]
 extern crate slog;
+extern crate rand;
 extern crate slog_async;
 extern crate slog_scope;
 extern crate slog_term;
-extern crate rand;
 
 // Options
 #[macro_use]
@@ -51,11 +51,11 @@ pub mod management;
 pub mod metric;
 pub mod parser;
 pub mod peer;
-pub mod server;
-pub mod udp;
-pub mod task;
-pub mod util;
 pub mod raft;
+pub mod server;
+pub mod task;
+pub mod udp;
+pub mod util;
 
 pub mod protocol_capnp {
     include!(concat!(env!("OUT_DIR"), "/schema/protocol_capnp.rs"));
@@ -71,7 +71,7 @@ use std::time::{self, Duration, Instant, SystemTime};
 
 use slog::{Drain, Level};
 
-use bytes::{Bytes};
+use bytes::Bytes;
 use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
@@ -79,7 +79,7 @@ use futures::{Future, IntoFuture, Stream};
 use tokio::runtime::current_thread::Runtime;
 use tokio::timer::Interval;
 
-use udp::{start_sync_udp, start_async_udp};
+use udp::{start_async_udp, start_sync_udp};
 
 use carbon::CarbonBackend;
 use config::{Command, Consul, Metrics, Network, System};
@@ -88,9 +88,11 @@ use errors::GeneralError;
 use management::{MgmtClient, MgmtServer};
 use metric::Metric;
 use peer::{NativeProtocolServer, NativeProtocolSnapshot};
-use task::Task;
-use util::{AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions, try_resolve};
 use raft::start_internal_raft;
+use task::Task;
+use util::{
+    try_resolve, AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions,
+};
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
 // precision
@@ -142,7 +144,7 @@ pub enum ConsensusKind {
 
 lazy_static! {
     pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
-    { Mutex::new(ConsensusState::Disabled) };
+        { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
@@ -152,35 +154,38 @@ fn main() {
 
     let System {
         verbosity,
-        network: Network {
-            listen,
-            peer_listen,
-            mgmt_listen,
-            bufsize,
-            multimessage,
-            mm_packets,
-            mm_async,
-            buffer_flush,
-            greens,
-            async_sockets,
-            nodes,
-            snapshot_interval,
-        },
+        network:
+            Network {
+                listen,
+                peer_listen,
+                mgmt_listen,
+                bufsize,
+                multimessage,
+                mm_packets,
+                mm_async,
+                buffer_flush,
+                greens,
+                async_sockets,
+                nodes,
+                snapshot_interval,
+            },
         raft,
-        consul: Consul {
-            start_as: consul_start_as,
-            agent,
-            session_ttl: consul_session_ttl,
-            renew_time: consul_renew_time,
-            key_name: consul_key,
-        },
-        metrics: Metrics {
-            //           max_metrics,
-            mut count_updates,
-            update_counter_prefix,
-            update_counter_suffix,
-            update_counter_threshold,
-        },
+        consul:
+            Consul {
+                start_as: consul_start_as,
+                agent,
+                session_ttl: consul_session_ttl,
+                renew_time: consul_renew_time,
+                key_name: consul_key,
+            },
+        metrics:
+            Metrics {
+                //           max_metrics,
+                mut count_updates,
+                update_counter_prefix,
+                update_counter_suffix,
+                update_counter_threshold,
+            },
         carbon,
         n_threads,
         w_threads,
@@ -247,8 +252,7 @@ fn main() {
                 let mut runtime = Runtime::new().expect("creating runtime for counting worker");
                 let future = rx.for_each(move |task: Task| ok(task.run()));
                 runtime.block_on(future).expect("worker thread failed");
-            })
-        .expect("starting counting worker thread");
+            }).expect("starting counting worker thread");
     }
 
     let stats_prefix = stats_prefix.trim_right_matches(".").to_string();
@@ -268,11 +272,11 @@ fn main() {
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
-        ).into_future()
-        .map_err(move |e| {
-            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-            info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
-        });
+    ).into_future()
+    .map_err(move |e| {
+        PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+        info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
+    });
     runtime.spawn(snapshot);
 
     // settings safe for asap restart
@@ -295,7 +299,6 @@ fn main() {
     // Init leader state before starting backend
     IS_LEADER.store(start_as_leader, Ordering::SeqCst);
 
-
     let consensus_log = rlog.clone();
 
     match consensus {
@@ -314,19 +317,19 @@ fn main() {
             consensus.set_renew_time(Duration::from_millis(consul_renew_time as u64));
             runtime.spawn(consensus.into_future().map_err(|_| ())); // TODO errors
         }
-        ConsensusKind::None => {IS_LEADER.store(true, Ordering::SeqCst);},
+        ConsensusKind::None => {
+            IS_LEADER.store(true, Ordering::SeqCst);
+        }
     }
 
     info!(log, "starting management server");
     let m_serv_log = rlog.clone();
     let m_serv_err_log = rlog.clone();
     let m_server = hyper::Server::bind(&mgmt_listen)
-        .serve(move || {
-            ok::<_, hyper::Error>(MgmtServer::new(m_serv_log.clone(), &mgmt_listen))
-        })
-    .map_err(move |e| {
-        warn!(m_serv_err_log, "management server gone with error: {:?}", e);
-    });
+        .serve(move || ok::<_, hyper::Error>(MgmtServer::new(m_serv_log.clone(), &mgmt_listen)))
+        .map_err(move |e| {
+            warn!(m_serv_err_log, "management server gone with error: {:?}", e);
+        });
 
     runtime.spawn(m_server);
 
@@ -439,10 +442,14 @@ fn main() {
 
         let tlog = rlog.clone();
         let flags = flush_flags.clone();
-        let flush_timer = flush_timer.map_err(|e| GeneralError::Timer(e)).for_each(
-            move |_tick| {
+        let flush_timer = flush_timer
+            .map_err(|e| GeneralError::Timer(e))
+            .for_each(move |_tick| {
                 debug!(tlog, "buffer flush requested");
-                flags.iter().map(|flag| flag.swap(true, Ordering::SeqCst)).last();
+                flags
+                    .iter()
+                    .map(|flag| flag.swap(true, Ordering::SeqCst))
+                    .last();
                 Ok(())
             });
         let tlog = rlog.clone();
@@ -452,12 +459,33 @@ fn main() {
     }
 
     if multimessage {
-        start_sync_udp(log, listen, &chans, n_threads, bufsize, mm_packets, mm_async, task_queue_size, buffer_flush, flush_flags.clone());
+        start_sync_udp(
+            log,
+            listen,
+            &chans,
+            n_threads,
+            bufsize,
+            mm_packets,
+            mm_async,
+            task_queue_size,
+            buffer_flush,
+            flush_flags.clone(),
+        );
     } else {
-        start_async_udp(log, listen, &chans, n_threads, greens, async_sockets, bufsize, task_queue_size, flush_flags.clone());
+        start_async_udp(
+            log,
+            listen,
+            &chans,
+            n_threads,
+            greens,
+            async_sockets,
+            bufsize,
+            task_queue_size,
+            flush_flags.clone(),
+        );
     }
 
-    runtime.block_on(empty::<(), ()>()).expect(
-        "running runtime in main thread",
-        );
+    runtime
+        .block_on(empty::<(), ()>())
+        .expect("running runtime in main thread");
 }

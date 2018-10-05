@@ -1,9 +1,9 @@
+use libc;
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
 use std::ffi::CStr;
 use std::net::SocketAddr;
-use libc;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::future::Either;
@@ -32,14 +32,14 @@ pub fn try_resolve(s: &str) -> SocketAddr {
         let port = port.parse().expect("bad port value");
 
         let first_ip = resolver::resolve_host(host)
-            .expect("failed resolving backend name")
+            .expect(&format!("failed resolving {:}", &host))
             .next()
             .expect("at least one IP address required");
         SocketAddr::new(first_ip, port)
     })
 }
 
-/// Get hostname. Copypyasted from some crate
+/// Get hostname. Copypasted from some crate
 pub fn get_hostname() -> Option<String> {
     let len = 255;
     let mut buf = Vec::<u8>::with_capacity(len);
@@ -103,7 +103,8 @@ impl OwnStats {
                     let name = buf.take().freeze();
                     let metric = Metric::new($value, MetricType::Counter, None, None).unwrap();
                     let log = self.log.clone();
-                    let sender = self.chan
+                    let sender = self
+                        .chan
                         .clone()
                         .send(Task::AddMetric(name, metric))
                         .map(|_| ())
@@ -179,7 +180,11 @@ pub struct Aggregator {
 }
 
 impl Aggregator {
-    pub fn new(options: AggregateOptions, chans: Vec<Sender<Task>>, tx: UnboundedSender<(Bytes, Float)>) -> Self {
+    pub fn new(
+        options: AggregateOptions,
+        chans: Vec<Sender<Task>>,
+        tx: UnboundedSender<(Bytes, Float)>,
+    ) -> Self {
         Self { options, chans, tx }
     }
 }
@@ -196,9 +201,9 @@ impl IntoFuture for Aggregator {
             // TODO: change oneshots to single channel
             // to do that, task must run in new tokio, then we will not have to pass handle to it
             //handle.spawn(chan.send(Task::Rotate(tx)).then(|_| Ok(())));
-            chan.send(Task::Rotate(tx)).map_err(|_| ()).and_then(|_| {
-                rx.and_then(|m| Ok(m)).map_err(|_| ())
-            })
+            chan.send(Task::Rotate(tx))
+                .map_err(|_| ())
+                .and_then(|_| rx.and_then(|m| Ok(m)).map_err(|_| ()))
         });
 
         if options.is_leader {
@@ -219,7 +224,7 @@ impl IntoFuture for Aggregator {
                         // })
         });
 
-        let aggregate = accumulate.and_then(move |accumulated| {
+            let aggregate = accumulate.and_then(move |accumulated| {
             accumulated
                 .into_iter()
                 .inspect(|_| { EGRESS.fetch_add(1, Ordering::Relaxed); })
@@ -245,7 +250,7 @@ impl IntoFuture for Aggregator {
             .last();
             Ok(())
         });
-        Box::new(aggregate)
+            Box::new(aggregate)
         } else {
             // only get metrics from threads
             let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
@@ -275,16 +280,16 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-        where
+    where
         F: IntoFuture + Clone,
-        {
-            let inner = Either::A(action.clone().into_future());
-            BackoffRetry {
-                action,
-                inner: inner,
-                options: self,
-            }
+    {
+        let inner = Either::A(action.clone().into_future());
+        BackoffRetry {
+            action,
+            inner: inner,
+            options: self,
         }
+    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -296,7 +301,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-F: IntoFuture + Clone,
+    F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;
@@ -305,21 +310,19 @@ F: IntoFuture + Clone,
         loop {
             let (rotate_f, rotate_t) = match self.inner {
                 // we are polling a future currently
-                Either::A(ref mut future) => {
-                    match future.poll() {
-                        Ok(Async::Ready(item)) => {
-                            return Ok(Async::Ready(item));
-                        }
-                        Ok(Async::NotReady) => return Ok(Async::NotReady),
-                        Err(e) => {
-                            if self.options.retries == 0 {
-                                return Err(Some(e));
-                            } else {
-                                (true, false)
-                            }
+                Either::A(ref mut future) => match future.poll() {
+                    Ok(Async::Ready(item)) => {
+                        return Ok(Async::Ready(item));
+                    }
+                    Ok(Async::NotReady) => return Ok(Async::NotReady),
+                    Err(e) => {
+                        if self.options.retries == 0 {
+                            return Err(Some(e));
+                        } else {
+                            (true, false)
                         }
                     }
-                }
+                },
                 Either::B(ref mut timer) => {
                     match timer.poll() {
                         // we are waiting for the delay

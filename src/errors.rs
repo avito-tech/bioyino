@@ -3,22 +3,13 @@ use std::net::SocketAddr;
 #[derive(Fail, Debug)]
 pub enum GeneralError {
     #[fail(display = "I/O error")]
-    Io(
-        #[cause]
-        ::std::io::Error
-    ),
+    Io(#[cause] ::std::io::Error),
 
     #[fail(display = "Error when creating timer: {}", _0)]
-    Timer(
-        #[cause]
-        ::tokio::timer::Error
-    ),
+    Timer(#[cause] ::tokio::timer::Error),
 
     #[fail(display = "getting system time")]
-    Time(
-        #[cause]
-        ::std::time::SystemTimeError
-    ),
+    Time(#[cause] ::std::time::SystemTimeError),
 
     #[fail(display = "Gave up connecting to {}", _0)]
     TcpOutOfTries(SocketAddr),

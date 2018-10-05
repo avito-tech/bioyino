@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
-use std::time::Duration;
 use std::ops::Range;
+use std::time::Duration;
 
 use clap::{Arg, SubCommand};
 use toml;
@@ -10,7 +10,7 @@ use toml;
 use management::{ConsensusAction, LeaderAction, MgmtCommand};
 
 use raft_tokio::RaftOptions;
-use {ConsensusState, ConsensusKind};
+use {ConsensusKind, ConsensusState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -272,8 +272,10 @@ impl Raft {
     pub fn get_raft_options(&self) -> RaftOptions {
         RaftOptions {
             heartbeat_timeout: Duration::from_millis(self.heartbeat_timeout),
-            election_timeout: Range{start: Duration::from_millis(self.election_timeout_min), end: Duration::from_millis(self.election_timeout_max)},
-
+            election_timeout: Range {
+                start: Duration::from_millis(self.election_timeout_min),
+                end: Duration::from_millis(self.election_timeout_max),
+            },
         }
     }
 }
@@ -290,42 +292,41 @@ impl System {
         let app = app_from_crate!()
             .arg(
                 Arg::with_name("config")
-                .help("configuration file path")
-                .long("config")
-                .short("c")
-                .required(true)
-                .takes_value(true)
-                .default_value("/etc/bioyino/bioyino.toml"),
-                )
-            .arg(
+                    .help("configuration file path")
+                    .long("config")
+                    .short("c")
+                    .required(true)
+                    .takes_value(true)
+                    .default_value("/etc/bioyino/bioyino.toml"),
+            ).arg(
                 Arg::with_name("verbosity")
-                .short("v")
-                .help("logging level")
-                .takes_value(true),
-                )
-            .subcommand(
+                    .short("v")
+                    .help("logging level")
+                    .takes_value(true),
+            ).subcommand(
                 SubCommand::with_name("query")
-                .about("send a management command to running bioyino server")
-                .arg(Arg::with_name("host").short("h").default_value(
-                        "127.0.0.1:8137",
-                        ))
-                .subcommand(SubCommand::with_name("status").about("get server state"))
-                .subcommand(
-                    SubCommand::with_name("consensus")
-                    .arg(Arg::with_name("action").index(1))
-                    .arg(Arg::with_name("leader_action").index(2).default_value(
-                            "unchanged",
-                            )),
+                    .about("send a management command to running bioyino server")
+                    .arg(
+                        Arg::with_name("host")
+                            .short("h")
+                            .default_value("127.0.0.1:8137"),
+                    ).subcommand(SubCommand::with_name("status").about("get server state"))
+                    .subcommand(
+                        SubCommand::with_name("consensus")
+                            .arg(Arg::with_name("action").index(1))
+                            .arg(
+                                Arg::with_name("leader_action")
+                                    .index(2)
+                                    .default_value("unchanged"),
                             ),
-                            )
-            .get_matches();
+                    ),
+            ).get_matches();
 
         let config = value_t!(app.value_of("config"), String).expect("config file must be string");
         let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
         let mut config_str = String::new();
-        file.read_to_string(&mut config_str).expect(
-            "reading config file",
-            );
+        file.read_to_string(&mut config_str)
+            .expect("reading config file");
         let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
 
         if let Some(v) = app.value_of("verbosity") {
@@ -337,12 +338,14 @@ impl System {
             if let Some(_) = query.subcommand_matches("status") {
                 (system, Command::Query(MgmtCommand::Status, server))
             } else if let Some(args) = query.subcommand_matches("consensus") {
-                let c_action = value_t!(args.value_of("action"), ConsensusAction).expect("bad consensus action");
-                let l_action = value_t!(args.value_of("leader_action"), LeaderAction).expect("bad leader action");
+                let c_action = value_t!(args.value_of("action"), ConsensusAction)
+                    .expect("bad consensus action");
+                let l_action = value_t!(args.value_of("leader_action"), LeaderAction)
+                    .expect("bad leader action");
                 (
                     system,
                     Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server),
-                    )
+                )
             } else {
                 // shold be unreachable
                 unreachable!("clap bug?")
