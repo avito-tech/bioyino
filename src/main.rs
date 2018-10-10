@@ -277,7 +277,7 @@ fn main() {
             })
         .expect("starting thread for running consul");
     } else {
-        info!(log, "consul is diabled, starting as leader");
+        info!(log, "consul is disabled, starting as leader");
         IS_LEADER.store(true, Ordering::SeqCst);
         CAN_LEADER.store(false, Ordering::SeqCst);
     }
@@ -571,7 +571,7 @@ fn main() {
                                 bufsize,
                                 i,
                                 readbuf,
-                                task_queue_size * bufsize,
+                                task_queue_size,
                                 );
 
                             runtime.spawn(server.into_future());
