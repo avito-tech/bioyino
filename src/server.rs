@@ -96,7 +96,7 @@ impl IntoFuture for StatsdServer {
                                     bufsize,
                                     next,
                                     received,
-                                    buf_queue_size * bufsize,
+                                    buf_queue_size,
                                 ).into_future()
                             }),
                     );
