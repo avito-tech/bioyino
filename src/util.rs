@@ -123,7 +123,7 @@ impl OwnStats {
         add_metric!(PEER_ERRORS, peer_errors, "peer-error");
         add_metric!(DROPS, drops, "drop");
         if self.interval > 0 {
-            let s_interval = self.interval as f64;
+            let s_interval = self.interval as f64 / 1000f64;
 
             info!(self.log, "stats";
                   "egress" => format!("{:2}", egress / s_interval),
