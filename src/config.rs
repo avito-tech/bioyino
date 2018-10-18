@@ -93,6 +93,10 @@ pub(crate) struct Metrics {
 
     /// Minimal update count to be reported
     pub update_counter_threshold: u32,
+
+    /// Aggregate faster at the price or probably loosing some incoming metrics
+    pub fast_aggregation: bool,
+
     // TODO
     //    /// Whether we should spam parsing errors in logs
     //    pub log_parse_errors: bool,
@@ -106,6 +110,7 @@ impl Default for Metrics {
             update_counter_prefix: "resources.monitoring.bioyino.updates".to_string(),
             update_counter_suffix: String::new(),
             update_counter_threshold: 200,
+            fast_aggregation: true,
         }
     }
 }

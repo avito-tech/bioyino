@@ -5,7 +5,7 @@ authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 
 [dependencies]
-lazy_static="^1.0"
+lazy_static="^1.1"
 clap="^2.31"
 failure="^0.1"
 failure_derive="^0.1"

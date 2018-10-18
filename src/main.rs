@@ -104,6 +104,9 @@ pub type Cache = HashMap<Bytes, Metric<Float>>;
 thread_local!(static LONG_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 thread_local!(static SHORT_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 
+// options
+//pub static SHOW_PARSE_ERRORS: AtomicBool = ATOMIC_BOOL_INIT;
+
 // statistic counters
 pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
 pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -187,6 +190,7 @@ fn main() {
                 update_counter_prefix,
                 update_counter_suffix,
                 update_counter_threshold,
+                fast_aggregation,
             },
         carbon,
         n_threads,
@@ -241,6 +245,8 @@ fn main() {
     let update_counter_prefix: Bytes = update_counter_prefix.into();
     let update_counter_suffix: Bytes = update_counter_suffix.into();
     let log = rlog.new(o!("thread" => "main"));
+
+    // Init task options before initializing task threads
 
     // Start counting threads
     info!(log, "starting counting threads");
@@ -402,6 +408,7 @@ fn main() {
                         } else {
                             None
                         },
+                        fast_aggregation,
                     };
 
                     if is_leader {
