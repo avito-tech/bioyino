@@ -1,4 +1,6 @@
-# This is an example config showing all the options, filled with default values
+# This is an example config showing all the possible options
+# Required options are filled with default values
+# Non-required options are commented with defaul values in comments
 
 verbosity = "warn"
 
@@ -24,7 +26,7 @@ stats-interval = 10000
 stats-prefix = "resources.monitoring.bioyino"
 
 # What consensus to use: "consul", "internal" or "none"
-consensus = "internal"
+consensus = "none"
 
 [metrics]
 # Should we provide metrics that update more than update-counter-threshold times diring aggregation interval
@@ -87,9 +89,22 @@ mm-packets = 100
 # This means recvmmsg will receive 0..mm-packets datagrams instead of waiting for mm-packets
 mm-async = false
 
+# Multimessage mode assumes early return by timeout, but ONLY when received
+# a packet after timeout expiration.
+# Basically this should be changed in very rare and specific cases.
+# 0 means this value will be equal to buffer-flush-time
+# mm-timeout = 0
+
 # To avoid packets staying in queue forever, this option can be used to flush
 # incoming data buffer forcing it to be sent even if it's not full
-buffer-flush = 0
+buffer-flush-time = 0
+
+# Same as buffer-flush-time, but riggers on buffer length. Please, notice that multimessage
+# mode can only consider timer, so this check is only possible every mm-packets packets.
+# zero value means automatic management depending on memory allocator internal logic,
+# which on tests was found to reach 30Mb
+# if in multimessage mode this value is lower that mm-packets*bufsize, it will be set to this value
+buffer-flush-length = 65536
 
 # Nmber of green threads for single-message mode
 greens = 4
@@ -105,11 +120,16 @@ snapshot-interval = 1000
 
 # Settings for internal Raft
 [raft]
+# NOT IMPLEMENTD YET Defer start of raft consensus to avoid node becoming leader too early
+# Such situation is very likely possible when restarting current leader node
+# and leads to losing metrics
+#start-delay = 29000
+
 # Timeouts tuned according to the Raft paper and typical network latency.
 # Better not to change if unsure
-heartbeat-timeout = 250
-election-timeout-min = 500
-election-timeout-max = 750
+#heartbeat-timeout = 250
+#election-timeout-min = 500
+#election-timeout-max = 750
 
 # The name of the current node is taken from hostname by default
 # After that all hostnames are resolved using DNS. If node name cannot
@@ -117,8 +137,9 @@ election-timeout-max = 750
 # parameter in a format similar to one in node list.
 # this-node = <empty>
 
-# A list of other raft nodes in form of hostname:port or IP:port
-nodes = []
+# A map of other raft nodes. Keys are in form of hostname:port or IP:port
+# values are integers
+nodes = {}
 
 [consul]
 # Start in disabled leader finding mode

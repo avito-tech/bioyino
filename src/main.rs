@@ -163,7 +163,9 @@ fn main() {
                 multimessage,
                 mm_packets,
                 mm_async,
-                buffer_flush,
+                mm_timeout,
+                buffer_flush_time,
+                buffer_flush_length,
                 greens,
                 async_sockets,
                 nodes,
@@ -303,6 +305,9 @@ fn main() {
 
     match consensus {
         ConsensusKind::Internal => {
+            let mut con_state = CONSENSUS_STATE.lock().unwrap();
+            info!(log, "starting internal consensus"; "initial_state"=>format!("{:?}", con_state));
+            *con_state = ConsensusState::Enabled;
             start_internal_raft(raft, &mut runtime, consensus_log);
         }
         ConsensusKind::Consul => {
@@ -436,8 +441,16 @@ fn main() {
         }
     }
 
-    if buffer_flush > 0 {
-        let dur = Duration::from_millis(buffer_flush);
+    let reserve_min = bufsize * mm_packets;
+    let buffer_flush_length = if buffer_flush_length < reserve_min {
+        debug!(log, "buffer-flush-len is lower than mm-packets*bufsize"; "new-value"=>reserve_min, "old-value"=>buffer_flush_length);
+        reserve_min
+    } else {
+        buffer_flush_length
+    };
+
+    if buffer_flush_time > 0 {
+        let dur = Duration::from_millis(buffer_flush_time);
         let flush_timer = Interval::new(Instant::now() + dur, dur);
 
         let tlog = rlog.clone();
@@ -467,8 +480,9 @@ fn main() {
             bufsize,
             mm_packets,
             mm_async,
-            task_queue_size,
-            buffer_flush,
+            mm_timeout,
+            buffer_flush_time,
+            buffer_flush_length,
             flush_flags.clone(),
         );
     } else {
@@ -480,7 +494,7 @@ fn main() {
             greens,
             async_sockets,
             bufsize,
-            task_queue_size,
+            buffer_flush_length,
             flush_flags.clone(),
         );
     }

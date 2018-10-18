@@ -1,10 +1,9 @@
 use std::io;
 use std::net::SocketAddr;
+use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-
-use std::ptr::null_mut;
 
 use server::StatsdServer;
 use task::Task;
@@ -29,8 +28,9 @@ pub(crate) fn start_sync_udp(
     bufsize: usize,
     mm_packets: usize,
     mm_async: bool,
-    task_queue_size: usize,
-    buffer_flush: u64,
+    mm_timeout: u64,
+    buffer_flush_time: u64,
+    buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
 ) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>mm_async, "packets"=>mm_packets);
@@ -43,6 +43,12 @@ pub(crate) fn start_sync_udp(
     socket.reuse_port(true).unwrap();
     let sck = socket.bind(listen).unwrap();
     sck.set_nonblocking(mm_async).unwrap();
+
+    let mm_timeout = if mm_timeout == 0 {
+        buffer_flush_time
+    } else {
+        mm_timeout
+    };
 
     for i in 0..n_threads {
         let chans = chans.clone();
@@ -99,76 +105,71 @@ pub(crate) fn start_sync_udp(
                     let vp = v.as_mut_ptr();
                     let vlen = v.len();
 
-                    // This is the buffer we fill with metrics and periodically send to
-                    // tasks
-                    // To avoid allocations we make it bigger than multimsg message count
-                    // Also, it can be the huge value already allocated here, so for even less
+                    // This is the buffer we fill with metrics and periodically send to tasks
+                    // Due to implementation of BytesMut it's real size is bigger, so for even less
                     // allocations, we split the filled part and leave the rest for future bytes
-                    let mut b = BytesMut::with_capacity(bufsize * mm_packets * task_queue_size);
+                    let mut b = BytesMut::with_capacity(buffer_flush_length);
 
-                    // We cannot count on allocator to allocate a value close to capacity
-                    // it can be much more than that and stall our buffer for too long
-                    // So we set our chunk size ourselves and send buffer when this value
-                    // exhausted, but we only allocate when buffer becomes empty
-                    let mut chunks = task_queue_size as isize;
                     let flags = if mm_async { MSG_WAITFORONE } else { 0 };
+
                     loop {
-                        let timeout = if buffer_flush > 0 {
-                            &mut timespec {
-                                tv_sec: buffer_flush as i64 / 1000,
-                                tv_nsec: (buffer_flush as i64 % 1000) * 1_000_000,
+                        // timeout is mutable and changed by every recvmmsg call, so it MUST be inside loop
+                        // creating timeout as &mut fails because it's supposedly not dropped
+                        let mut timeout = if mm_timeout > 0 {
+                            timespec {
+                                tv_sec: (mm_timeout / 1000u64) as i64,
+                                tv_nsec: ((mm_timeout % 1000u64) * 1_000_000u64) as i64,
                             }
                         } else {
-                            null_mut()
+                            timespec {
+                                tv_sec: 0,
+                                tv_nsec: 0,
+                            }
                         };
 
                         let res =
-                            unsafe { recvmmsg(fd as c_int, vp, vlen as c_uint, flags, timeout) };
+                            unsafe { recvmmsg(fd as c_int, vp, vlen as c_uint, flags, if mm_timeout > 0 {&mut timeout} else {null_mut()}) };
 
-                        if res >= 0 {
-                            let end = res as usize;
-
+                        if res == 0 {
+                            // skip this shit
+                        } else if res > 0 {
+                            let messages = res as usize;
                             // Check if we can fit all packets into buffer
                             let mut total_bytes = 0;
-                            for i in 0..end {
+                            for i in 0..messages {
                                 total_bytes += v[i].msg_len as usize;
                             }
-                            // newlines
-                            total_bytes += end - 1;
 
                             // if we cannot, allocate more
                             if b.remaining_mut() < total_bytes {
-                                b.reserve(bufsize * mm_packets * task_queue_size)
+                                b.reserve(buffer_flush_length)
                             }
 
                             // put packets into buffer
-                            for i in 0..end {
+                            for i in 0..messages {
                                 let len = v[i].msg_len as usize;
-
                                 b.put(&message_vec[i][0..len]);
-                                chunks -= end as isize;
                             }
 
                             // when it's time to send bytes, send them
                             let flush = flush_flags.get(i).unwrap().swap(false, Ordering::SeqCst);
-                            if chunks <= 0 || flush {
+                            if flush || b.len() >= buffer_flush_length {
                                 let mut chan = ichans.next().unwrap().clone();
-                                INGRESS.fetch_add(res as usize, Ordering::Relaxed);
+                                INGRESS.fetch_add(messages as usize, Ordering::Relaxed);
                                 chan.try_send(Task::Parse(b.take().freeze()))
                                     .map_err(|_| {
                                         warn!(log, "error sending buffer(queue full?)");
-                                        DROPS.fetch_add(res as usize, Ordering::Relaxed);
+                                        DROPS.fetch_add(messages as usize, Ordering::Relaxed);
                                     }).unwrap_or(());
-                                chunks = task_queue_size as isize;
                             }
                         } else {
                             let errno = unsafe { *__errno_location() };
                             if errno == EAGAIN {
                             } else {
                                 warn!(log, "UDP receive error";
-                                      "code"=> format!("{}",res),
+                                      "code"=> format!("{}", res),
                                       "error"=>format!("{}", io::Error::last_os_error())
-                                )
+                                );
                             }
                         }
                     }
@@ -185,10 +186,11 @@ pub(crate) fn start_async_udp(
     greens: usize,
     async_sockets: usize,
     bufsize: usize,
-    task_queue_size: usize,
+    buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
 ) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
+
     // Create a pool of listener sockets
     let mut sockets = Vec::new();
     for _ in 0..async_sockets {
@@ -218,7 +220,7 @@ pub(crate) fn start_async_udp(
                 for _ in 0..greens {
                     // start a listener for all sockets
                     for socket in sockets.iter() {
-                        let buf = BytesMut::with_capacity(task_queue_size * bufsize);
+                        let buf = BytesMut::with_capacity(buffer_flush_length);
 
                         let mut readbuf = BytesMut::with_capacity(bufsize);
                         unsafe { readbuf.set_len(bufsize) }
@@ -233,11 +235,10 @@ pub(crate) fn start_async_udp(
                             socket,
                             chans.clone(),
                             buf,
-                            task_queue_size,
+                            buffer_flush_length,
                             bufsize,
                             i,
                             readbuf,
-                            task_queue_size * bufsize,
                             flush_flags.clone(),
                             i,
                         );

@@ -1,7 +1,7 @@
-use rand::random;
 use std::collections::HashMap;
 
-//use slog::{Drain, Level, Logger};
+use rand::random;
+
 use slog::Logger;
 
 use futures::future::lazy;
@@ -10,14 +10,16 @@ use tokio::runtime::current_thread::Runtime;
 use raft_tokio::raft_consensus::persistent_log::mem::MemLog;
 use raft_tokio::raft_consensus::state::ConsensusState;
 use raft_tokio::raft_consensus::state_machine::null::NullStateMachine;
-//use raft_tokio::raft_consensus::ServerId;
+use raft_tokio::raft_consensus::ServerId;
 
 ////use raft_tokio::raft::RaftPeerProtocol;
 use config::Raft;
+use raft_tokio::raft::{BiggerIdSolver, ConnectionSolver};
 use raft_tokio::start_raft_tcp;
 use raft_tokio::Notifier;
 use util::{get_hostname, switch_leader, try_resolve};
 
+#[derive(Clone)]
 pub struct LeaderNotifier(Logger);
 
 impl Notifier for LeaderNotifier {
@@ -29,6 +31,13 @@ impl Notifier for LeaderNotifier {
                 switch_leader(false, &self.0)
             }
         }
+    }
+}
+
+// we reuse the type to avoid creating a new one
+impl ConnectionSolver for LeaderNotifier {
+    fn solve(&self, is_client: bool, local_id: ServerId, remote_id: ServerId) -> bool {
+        return BiggerIdSolver.solve(is_client, local_id, remote_id);
     }
 }
 
@@ -52,13 +61,12 @@ pub(crate) fn start_internal_raft(options: Raft, runtime: &mut Runtime, logger: 
     let mut nodes = options
         .nodes
         .iter()
-        .map(|node| {
-            let id = random::<u64>().into();
+        .map(|(node, id)| {
             let addr = try_resolve(node);
             if addr == this {
-                this_id = Some(id)
+                this_id = Some(ServerId::from(*id))
             }
-            (id, addr)
+            (ServerId::from(*id), addr)
         }).collect::<HashMap<_, _>>();
 
     //let id = this_id/.expect("list of nodes must contain own hostname");
@@ -72,11 +80,12 @@ pub(crate) fn start_internal_raft(options: Raft, runtime: &mut Runtime, logger: 
     let raft_log = MemLog::new();
     let sm = NullStateMachine;
     let notifier = LeaderNotifier(logger.clone());
+    let solver = notifier.clone();
     let options = options.get_raft_options();
 
     // Create the runtime
     let raft = lazy(move || {
-        start_raft_tcp(id, nodes, raft_log, sm, notifier, options, logger);
+        start_raft_tcp(id, nodes, raft_log, sm, notifier, options, logger, solver);
         Ok(())
     });
 
