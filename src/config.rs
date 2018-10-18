@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -92,6 +93,9 @@ pub(crate) struct Metrics {
 
     /// Minimal update count to be reported
     pub update_counter_threshold: u32,
+    // TODO
+    //    /// Whether we should spam parsing errors in logs
+    //    pub log_parse_errors: bool,
 }
 
 impl Default for Metrics {
@@ -171,8 +175,14 @@ pub(crate) struct Network {
     /// Number of multimessage packets to receive at once if in multimessage mode
     pub mm_async: bool,
 
+    /// A timeout to return from multimessage mode syscall
+    pub mm_timeout: u64,
+
     /// A timer to flush incoming buffer making sure metrics are not stuck there
-    pub buffer_flush: u64,
+    pub buffer_flush_time: u64,
+
+    /// A length of incoming buffer to flush it making sure metrics are not stuck there
+    pub buffer_flush_length: usize,
 
     /// Nmber of green threads for single-message mode
     pub greens: usize,
@@ -197,7 +207,9 @@ impl Default for Network {
             multimessage: false,
             mm_packets: 100,
             mm_async: false,
-            buffer_flush: 3000,
+            mm_timeout: 0,
+            buffer_flush_length: 0,
+            buffer_flush_time: 0,
             greens: 4,
             async_sockets: 4,
             nodes: Vec::new(),
@@ -240,6 +252,8 @@ impl Default for Consul {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Raft {
+    //    /// Delay raft after start (ms)
+    //    pub start_delay: u64,
     /// Raft heartbeat timeout (ms)
     pub heartbeat_timeout: u64,
 
@@ -253,7 +267,7 @@ pub(crate) struct Raft {
     pub this_node: Option<String>,
 
     /// List of Raft nodes, may include this_node
-    pub nodes: Vec<String>,
+    pub nodes: HashMap<String, u64>,
 }
 
 impl Default for Raft {
@@ -263,7 +277,7 @@ impl Default for Raft {
             election_timeout_min: 500,
             election_timeout_max: 750,
             this_node: None,
-            nodes: Vec::new(),
+            nodes: HashMap::new(),
         }
     }
 }

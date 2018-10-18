@@ -16,11 +16,10 @@ pub struct StatsdServer {
     socket: UdpSocket,
     chans: Vec<mpsc::Sender<Task>>,
     buf: BytesMut,
-    buf_queue_size: usize,
+    buffer_flush_length: usize,
     bufsize: usize,
     next: usize,
     readbuf: BytesMut,
-    chunks: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
     thread_idx: usize,
 }
@@ -30,11 +29,10 @@ impl StatsdServer {
         socket: UdpSocket,
         chans: Vec<mpsc::Sender<Task>>,
         buf: BytesMut,
-        buf_queue_size: usize,
+        buffer_flush_length: usize,
         bufsize: usize,
         next: usize,
         readbuf: BytesMut,
-        chunks: usize,
         flush_flags: Arc<Vec<AtomicBool>>,
         thread_idx: usize,
     ) -> Self {
@@ -42,11 +40,10 @@ impl StatsdServer {
             socket,
             chans,
             buf,
-            buf_queue_size,
+            buffer_flush_length,
             bufsize,
             next,
             readbuf,
-            chunks,
             flush_flags,
             thread_idx,
         }
@@ -63,11 +60,10 @@ impl IntoFuture for StatsdServer {
             socket,
             chans,
             mut buf,
-            buf_queue_size,
+            buffer_flush_length,
             bufsize,
             next,
             readbuf,
-            chunks,
             flush_flags,
             thread_idx,
         } = self;
@@ -87,13 +83,13 @@ impl IntoFuture for StatsdServer {
                     .get(thread_idx)
                     .unwrap()
                     .swap(false, Ordering::SeqCst);
-                if buf.remaining_mut() < bufsize || chunks == 0 || flush {
+                if buf.remaining_mut() < bufsize || buf.len() >= buffer_flush_length || flush {
                     let (chan, next) = if next >= chans.len() {
                         (chans[0].clone(), 1)
                     } else {
                         (chans[next].clone(), next + 1)
                     };
-                    let newbuf = BytesMut::with_capacity(buf_queue_size * bufsize);
+                    let newbuf = BytesMut::with_capacity(buffer_flush_length);
 
                     spawn(
                         chan.send(Task::Parse(buf.freeze()))
@@ -104,11 +100,10 @@ impl IntoFuture for StatsdServer {
                                     socket,
                                     chans,
                                     newbuf,
-                                    buf_queue_size,
+                                    buffer_flush_length,
                                     bufsize,
                                     next,
                                     received,
-                                    buf_queue_size * bufsize,
                                     flush_flags,
                                     thread_idx,
                                 ).into_future()
@@ -120,11 +115,10 @@ impl IntoFuture for StatsdServer {
                             socket,
                             chans,
                             buf,
-                            buf_queue_size,
+                            buffer_flush_length,
                             bufsize,
                             next,
                             received,
-                            chunks - 1,
                             flush_flags,
                             thread_idx,
                         ).into_future(),
