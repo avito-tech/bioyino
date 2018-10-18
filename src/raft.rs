@@ -5,7 +5,7 @@ use rand::random;
 use slog::Logger;
 
 use futures::future::lazy;
-use tokio::runtime::current_thread::Runtime;
+use tokio::runtime::current_thread::spawn;
 
 use raft_tokio::raft_consensus::persistent_log::mem::MemLog;
 use raft_tokio::raft_consensus::state::ConsensusState;
@@ -41,7 +41,7 @@ impl ConnectionSolver for LeaderNotifier {
     }
 }
 
-pub(crate) fn start_internal_raft(options: Raft, runtime: &mut Runtime, logger: Logger) {
+pub(crate) fn start_internal_raft(options: Raft, logger: Logger) {
     let this = if let Some(name) = options.this_node.clone() {
         try_resolve(&name)
     } else {
@@ -83,11 +83,11 @@ pub(crate) fn start_internal_raft(options: Raft, runtime: &mut Runtime, logger: 
     let solver = notifier.clone();
     let options = options.get_raft_options();
 
-    // Create the runtime
+    // Create the raft runtime
     let raft = lazy(move || {
         start_raft_tcp(id, nodes, raft_log, sm, notifier, options, logger, solver);
         Ok(())
     });
 
-    runtime.spawn(raft);
+    spawn(raft);
 }

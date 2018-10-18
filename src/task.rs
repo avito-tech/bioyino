@@ -111,6 +111,7 @@ impl Task {
                 options,
                 mut response,
             }) => {
+                //println!("AGGG {:?} {:?}", buf, name);
                 let upd = if let Some(options) = options.update_counter {
                     if metric.update_counter > options.threshold {
                         // + 2 is for dots

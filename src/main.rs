@@ -77,7 +77,7 @@ use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
 
 use tokio::runtime::current_thread::Runtime;
-use tokio::timer::Interval;
+use tokio::timer::{Delay, Interval};
 
 use udp::{start_async_udp, start_sync_udp};
 
@@ -305,12 +305,27 @@ fn main() {
 
     match consensus {
         ConsensusKind::Internal => {
-            let mut con_state = CONSENSUS_STATE.lock().unwrap();
-            info!(log, "starting internal consensus"; "initial_state"=>format!("{:?}", con_state));
-            *con_state = ConsensusState::Enabled;
-            start_internal_raft(raft, &mut runtime, consensus_log);
+            if start_as_leader {
+                warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
+            }
+            let d = Delay::new(Instant::now() + Duration::from_millis(raft.start_delay));
+            let log = log.clone();
+            let delayed = d
+                .map_err(|_| ())
+                .and_then(move |_|  {
+                    let mut con_state = CONSENSUS_STATE.lock().unwrap();
+                    info!(log, "starting internal consensus"; "initial_state"=>format!("{:?}", con_state));
+                    *con_state = ConsensusState::Enabled;
+                    start_internal_raft(raft, consensus_log);
+                    Ok(())
+            });
+
+            runtime.spawn(delayed);
         }
         ConsensusKind::Consul => {
+            if start_as_leader {
+                warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
+            }
             {
                 let mut con_state = CONSENSUS_STATE.lock().unwrap();
                 info!(log, "starting consul consensus"; "initial_state"=>format!("{:?}", con_state));
@@ -323,7 +338,11 @@ fn main() {
             runtime.spawn(consensus.into_future().map_err(|_| ())); // TODO errors
         }
         ConsensusKind::None => {
-            IS_LEADER.store(true, Ordering::SeqCst);
+            if !start_as_leader {
+                // starting as non-leader in this mode can be useful for agent mode
+                // so we don't disorient user with warnings
+                info!(log, "Starting as non-leader with disabled consensus. No metrics will be sent until leader is switched on by command");
+            }
         }
     }
 
