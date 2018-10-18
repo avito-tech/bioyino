@@ -10,13 +10,11 @@ n-threads = 4
 # Number of aggregating and counting threads, use 0(not recommended) to use all CPU cores
 w-threads = 4
 
-# Queue size for single counting thread before packet is dropped
+# Queue size for single counting thread before task is dropped
 task-queue-size = 1024
 
-# if server should start in leader enabled state
-# NOTE: this is importnt to set this value to true, when working in standalone mode
-# since leader state only changes on command
-start-as-leader = false
+# If server should become leader from it's very start
+start-as-leader = true
 
 # How often to gather own stats, in ms. Use 0 to disable (stats are still gathered and printed to log,
 # but not included in metric dump
@@ -120,10 +118,10 @@ snapshot-interval = 1000
 
 # Settings for internal Raft
 [raft]
-# NOT IMPLEMENTD YET Defer start of raft consensus to avoid node becoming leader too early
-# Such situation is very likely possible when restarting current leader node
-# and leads to losing metrics
-#start-delay = 29000
+# Defer start of raft consensus to avoid node becoming leader too early
+# Such situation is very likely when restarting current leader node
+# and means losing metrics in most cases
+#start-delay = 0
 
 # Timeouts tuned according to the Raft paper and typical network latency.
 # Better not to change if unsure
@@ -142,7 +140,8 @@ snapshot-interval = 1000
 nodes = {}
 
 [consul]
-# Start in disabled leader finding mode
+# Start in disabled leader finding mode. This only works while consul is bootstrapping.
+# Can be helpful when there is a danger of agent being inaccessible.
 start-as = "disabled"
 
 # Consul agent address

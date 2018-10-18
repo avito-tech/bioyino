@@ -252,8 +252,9 @@ impl Default for Consul {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub(crate) struct Raft {
-    //    /// Delay raft after start (ms)
-    //    pub start_delay: u64,
+    /// Delay raft after start (ms)
+    pub start_delay: u64,
+
     /// Raft heartbeat timeout (ms)
     pub heartbeat_timeout: u64,
 
@@ -273,6 +274,7 @@ pub(crate) struct Raft {
 impl Default for Raft {
     fn default() -> Self {
         Self {
+            start_delay: 0,
             heartbeat_timeout: 250,
             election_timeout_min: 500,
             election_timeout_max: 750,
