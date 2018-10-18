@@ -167,6 +167,7 @@ pub struct UpdateCounterOptions {
 pub struct AggregateOptions {
     pub is_leader: bool,
     pub update_counter: Option<UpdateCounterOptions>,
+    pub fast_aggregation: bool,
 }
 
 pub struct Aggregator {
@@ -196,7 +197,7 @@ impl IntoFuture for Aggregator {
 
     fn into_future(self) -> Self::Future {
         let Self { options, chans, tx } = self;
-        let metrics = chans.into_iter().map(|chan| {
+        let metrics = chans.clone().into_iter().map(|chan| {
             let (tx, rx) = oneshot::channel();
             // TODO: change oneshots to single channel
             // to do that, task must run in new tokio, then we will not have to pass handle to it
@@ -225,31 +226,36 @@ impl IntoFuture for Aggregator {
         });
 
             let aggregate = accumulate.and_then(move |accumulated| {
-            accumulated
-                .into_iter()
-                .inspect(|_| { EGRESS.fetch_add(1, Ordering::Relaxed); })
-                .map(move |(name, metric)| {
-                    let buf = BytesMut::with_capacity(1024);
-                    let task = Task::Aggregate(AggregateData {
-                        buf,
-                        name: Bytes::from(name),
-                        metric,
-                        options: options.clone(),
-                        response: tx.clone(),
-                    });
-                    // as of now we just run each task in the current thread
-                    // there is a reason we should not in general run the task in the counting workers:
-                    // workers will block on heavy computation and may cause metrics goind to them over
-                    // network to be dropped because of backpressure
-                    // at the same time counting aggregation is not urgent because of current backend(carbon/graphite)
-                    // nature where one can send metrics with any timestamp
-                    // TODO: at some day counting workers will probably work in work-stealing mode,
-                    // after that we probably will be able to run task in common mode
-                    task.run();
-                })
-            .last();
-            Ok(())
-        });
+                accumulated
+                    .into_iter()
+                    .inspect(|_| {
+                        EGRESS.fetch_add(1, Ordering::Relaxed);
+                    }).enumerate()
+                    .map(move |(num, (name, metric))| {
+                        let buf = BytesMut::with_capacity(1024);
+                        let task = Task::Aggregate(AggregateData {
+                            buf,
+                            name: Bytes::from(name),
+                            metric,
+                            options: options.clone(),
+                            response: tx.clone(),
+                        });
+                        if options.fast_aggregation {
+                            spawn(
+                                chans[num % chans.len()]
+                                    .clone()
+                                    .send(task)
+                                    .map(|_| ())
+                                    .map_err(|_| {
+                                        DROPS.fetch_add(1, Ordering::Relaxed);
+                                    }),
+                            );
+                        } else {
+                            task.run();
+                        }
+                    }).last();
+                Ok(())
+            });
             Box::new(aggregate)
         } else {
             // only get metrics from threads
