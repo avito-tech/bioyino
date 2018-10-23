@@ -39,14 +39,12 @@ impl Task {
         match self {
             Task::Parse(buf) => {
                 let mut input: &[u8] = &buf;
-                let mut size_left = buf.len();
                 let mut parser = metric_parser::<Float>();
                 loop {
                     match parser.parse_stream_consumed(&mut input) {
                         FastResult::ConsumedOk(((name, metric), rest)) => {
                             INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
-                            size_left -= rest.len();
-                            if size_left == 0 {
+                            if rest.len() == 0 {
                                 break;
                             }
                             input = rest;
