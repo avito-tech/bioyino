@@ -13,9 +13,10 @@ use tokio;
 use tokio::executor::current_thread::spawn;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::timer::Interval;
-use tokio_io::codec::length_delimited;
-use tokio_io::codec::length_delimited::Framed;
-use tokio_io::{AsyncRead, AsyncWrite};
+use tokio::codec::length_delimited;
+use tokio::codec::length_delimited::LengthDelimitedCodec;
+use tokio::codec::Framed;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use task::Task;
 use {Cache, CAN_LEADER, FORCE_LEADER, IS_LEADER, PEER_ERRORS};
@@ -84,7 +85,7 @@ pub enum PeerMessage {
 }
 
 pub struct PeerCodec<T> {
-    inner: Framed<T, Vec<u8>>,
+    inner: Framed<T, LengthDelimitedCodec>,
 }
 
 impl<T> PeerCodec<T>
@@ -133,7 +134,7 @@ where
         match item {
             Some(item) => {
                 let message = bincode::serialize(&item).map_err(|e| PeerError::Decode(e))?;
-                match self.inner.start_send(message) {
+                match self.inner.start_send(message.into()) {
                     Ok(AsyncSink::NotReady(_)) => Ok(AsyncSink::NotReady(Some(item))),
                     Ok(AsyncSink::Ready) => Ok(AsyncSink::Ready),
                     Err(e) => Err(PeerError::Io(e)),

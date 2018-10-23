@@ -24,7 +24,6 @@ extern crate num_cpus;
 extern crate resolve;
 extern crate tokio;
 extern crate tokio_core;
-extern crate tokio_io;
 
 // Other
 extern crate bincode;
