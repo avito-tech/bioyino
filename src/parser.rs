@@ -4,10 +4,11 @@ use std::str::from_utf8;
 use std::str::FromStr;
 
 use combine::byte::{byte, bytes, newline};
+use combine::parser::byte::digit;
 use combine::combinator::{eof, skip_many};
 use combine::error::UnexpectedParse;
-use combine::parser::range::{take_while, take_while1};
-use combine::{optional, Parser};
+use combine::parser::range::{take_while1, recognize};
+use combine::{optional, Parser, skip_many1};
 
 use metric::MetricType;
 
@@ -16,23 +17,23 @@ use metric::MetricType;
 pub fn metric_parser<'a, F>(
 ) -> impl Parser<Output = (&'a [u8], F, MetricType<F>, Option<f32>), Input = &'a [u8]>
 where
-    F: FromStr
-        + Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Div<Output = F>
-        + Mul<Output = F>
-        + Neg<Output = F>
-        + PartialOrd
-        + Into<f64>
-        + From<f64>
-        + Debug
-        + Default
-        + Clone
-        + Copy
-        + PartialEq
-        + Sync,
+F: FromStr
++ Add<Output = F>
++ AddAssign
++ Sub<Output = F>
++ SubAssign
++ Div<Output = F>
++ Mul<Output = F>
++ Neg<Output = F>
++ PartialOrd
++ Into<f64>
++ From<f64>
++ Debug
++ Default
++ Clone
++ Copy
++ PartialEq
++ Sync,
 {
     // This will parse metric name and separator
     let name = take_while1(|c: u8| c != b':' && c != b'\n').skip(byte(b':'));
@@ -57,7 +58,15 @@ where
         // we can add more types  here
         //        .or(byte(b'h').map(|_| MetricType::Histrogram))
         ;
-    let sampling = (bytes(b"|@"), take_while(|c: u8| c != b'\n')).and_then(|(_, value)| {
+
+    let unsigned_float = skip_many1(digit()).and(optional(
+            (byte(b'.'), skip_many1(digit()))
+    )).and(optional(
+            (byte(b'e'), optional(byte(b'+').or(byte(b'-'))), skip_many1(digit()))
+    ));
+
+    let sampling = (bytes(b"|@"), recognize(unsigned_float)).and_then(|(_, value)| {
+        // TODO replace from_utf8 with handmade parser removing recognize
         from_utf8(value)
             .map_err(|_e| UnexpectedParse::Unexpected)
             .map(|v| v.parse::<f32>().map_err(|_e| UnexpectedParse::Unexpected))?
@@ -69,7 +78,7 @@ where
         mtype,
         optional(sampling),
         skip_many(newline()).or(eof()),
-    )
+        )
         .and_then(|(name, sign, mut value, mtype, sampling, _)| {
             let mtype = if let MetricType::Gauge(_) = mtype {
                 MetricType::Gauge(sign)
@@ -141,6 +150,24 @@ mod tests {
         assert_eq!(v.1, 1e10f64);
         assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
         assert_eq!(rest.len(), 0);
+    }
+
+    #[test]
+    fn parse_metric_without_newline_sampling() {
+        let data = b"gorets:+1000|g|@0.4e-3gorets:-1000|g|@0.5";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1000f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(1i8)));
+        assert_eq!(v.3, Some(0.0004f32));
+        //assert_neq!(rest.len(), 0)
+        let (v, rest) = parser.parse(rest).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1000f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        assert_eq!(v.3, Some(0.5f32));
+        assert_eq!(rest.len(), 0)
     }
 
     #[test]

@@ -18,7 +18,7 @@ tokio-codec="^0.1"
 bytes = { version = "^0.4", features = [ "serde" ] }
 resolve="^0.1"
 net2="^0.2"
-combine="^3.3"
+combine="^3.6"
 hyper="^0.12"
 mime="^0.3"
 serde="^1.0"

@@ -147,12 +147,38 @@ pub enum ConsensusKind {
 
 lazy_static! {
     pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
-        { Mutex::new(ConsensusState::Disabled) };
+    { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
 
 fn main() {
+    {
+        use std::io;
+        use std::ffi::CString;
+        use std::ptr::{null_mut, null};
+        use libc::*;
+
+        let domain = CString::new("ya.ru").unwrap().into_raw();
+        let mut result: *mut addrinfo = null_mut();
+
+        unsafe {
+            getaddrinfo(domain, null_mut(), null(), &mut result);
+        }
+
+        //let errno = unsafe { *__errno_location() };
+        println!("{:?}", io::Error::last_os_error());
+        let mut cur = result;
+        while cur != null_mut() {
+            unsafe{
+                println!("LEN {:?}", (*result).ai_addrlen);
+                println!("DATA {:?}", (*(*result).ai_addr).sa_data);
+                cur = (*result).ai_next;
+            }
+        }
+
+    }
+
     let (system, command) = System::load();
 
     let System {
@@ -174,32 +200,32 @@ fn main() {
                 nodes,
                 snapshot_interval,
             },
-        raft,
-        consul:
-            Consul {
-                start_as: consul_start_as,
-                agent,
-                session_ttl: consul_session_ttl,
-                renew_time: consul_renew_time,
-                key_name: consul_key,
-            },
-        metrics:
-            Metrics {
-                //           max_metrics,
-                mut count_updates,
-                update_counter_prefix,
-                update_counter_suffix,
-                update_counter_threshold,
-                fast_aggregation,
-            },
-        carbon,
-        n_threads,
-        w_threads,
-        stats_interval: s_interval,
-        task_queue_size,
-        start_as_leader,
-        stats_prefix,
-        consensus,
+            raft,
+            consul:
+                Consul {
+                    start_as: consul_start_as,
+                    agent,
+                    session_ttl: consul_session_ttl,
+                    renew_time: consul_renew_time,
+                    key_name: consul_key,
+                },
+                metrics:
+                    Metrics {
+                        //           max_metrics,
+                        mut count_updates,
+                        update_counter_prefix,
+                        update_counter_suffix,
+                        update_counter_threshold,
+                        fast_aggregation,
+                    },
+                    carbon,
+                    n_threads,
+                    w_threads,
+                    stats_interval: s_interval,
+                    task_queue_size,
+                    start_as_leader,
+                    stats_prefix,
+                    consensus,
     } = system.clone();
 
     let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
@@ -280,11 +306,11 @@ fn main() {
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
-    ).into_future()
-    .map_err(move |e| {
-        PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-        info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
-    });
+        ).into_future()
+        .map_err(move |e| {
+            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+            info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
+        });
     runtime.spawn(snapshot);
 
     // settings safe for asap restart
@@ -324,7 +350,7 @@ fn main() {
                     *con_state = ConsensusState::Enabled;
                     start_internal_raft(raft, consensus_log);
                     Ok(())
-            });
+                });
 
             runtime.spawn(delayed);
         }
@@ -510,7 +536,7 @@ fn main() {
             buffer_flush_time,
             buffer_flush_length,
             flush_flags.clone(),
-        );
+            );
     } else {
         start_async_udp(
             log,
@@ -522,7 +548,7 @@ fn main() {
             bufsize,
             buffer_flush_length,
             flush_flags.clone(),
-        );
+            );
     }
 
     runtime
