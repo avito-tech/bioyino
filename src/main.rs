@@ -153,31 +153,31 @@ lazy_static! {
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
 
 fn main() {
-    {
-        use std::io;
-        use std::ffi::CString;
-        use std::ptr::{null_mut, null};
-        use libc::*;
+   // {
+        //use std::io;
+        //use std::ffi::CString;
+        //use std::ptr::{null_mut, null};
+        //use libc::*;
 
-        let domain = CString::new("ya.ru").unwrap().into_raw();
-        let mut result: *mut addrinfo = null_mut();
+        //let domain = CString::new("ya.ru").unwrap().into_raw();
+        //let mut result: *mut addrinfo = null_mut();
 
-        unsafe {
-            getaddrinfo(domain, null_mut(), null(), &mut result);
-        }
+        //unsafe {
+            //getaddrinfo(domain, null_mut(), null(), &mut result);
+        //}
 
-        //let errno = unsafe { *__errno_location() };
-        println!("{:?}", io::Error::last_os_error());
-        let mut cur = result;
-        while cur != null_mut() {
-            unsafe{
-                println!("LEN {:?}", (*result).ai_addrlen);
-                println!("DATA {:?}", (*(*result).ai_addr).sa_data);
-                cur = (*result).ai_next;
-            }
-        }
+        ////let errno = unsafe { *__errno_location() };
+        //println!("{:?}", io::Error::last_os_error());
+        //let mut cur = result;
+        //while cur != null_mut() {
+            //unsafe{
+                //println!("LEN {:?}", (*result).ai_addrlen);
+                //println!("DATA {:?}", (*(*result).ai_addr).sa_data);
+                //cur = (*result).ai_next;
+            //}
+        //}
 
-    }
+    //}
 
     let (system, command) = System::load();
 
