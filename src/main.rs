@@ -337,22 +337,32 @@ fn main() {
 
     match consensus {
         ConsensusKind::Internal => {
-            if start_as_leader {
-                warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
-            }
-            let d = Delay::new(Instant::now() + Duration::from_millis(raft.start_delay));
             let log = log.clone();
-            let delayed = d
-                .map_err(|_| ())
-                .and_then(move |_|  {
-                    let mut con_state = CONSENSUS_STATE.lock().unwrap();
-                    info!(log, "starting internal consensus"; "initial_state"=>format!("{:?}", con_state));
-                    *con_state = ConsensusState::Enabled;
-                    start_internal_raft(raft, consensus_log);
-                    Ok(())
+            let flog = log.clone();
+            thread::Builder::new()
+            .name("bioyino_raft".into())
+            .spawn(move || {
+                let mut runtime = Runtime::new().expect("creating runtime for raft thread");
+                if start_as_leader {
+                    warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
+                }
+                let d = Delay::new(Instant::now() + Duration::from_millis(raft.start_delay));
+                let log = log.clone();
+                let delayed = d
+                    .map_err(|_| ())
+                    .and_then(move |_|  {
+                        let mut con_state = CONSENSUS_STATE.lock().unwrap();
+                        *con_state = ConsensusState::Enabled;
+                        info!(log, "starting internal consensus"; "initial_state"=>format!("{:?}", *con_state));
+                        start_internal_raft(raft, consensus_log);
+                        Ok(())
                 });
 
-            runtime.spawn(delayed);
+                runtime.spawn(delayed);
+                runtime.block_on(empty::<(), ()>()).expect("raft thread failed");
+
+               info!(flog, "consensus thread stopped");
+            }).expect("starting counting worker thread");
         }
         ConsensusKind::Consul => {
             if start_as_leader {
@@ -440,7 +450,7 @@ fn main() {
                     if is_leader {
                         info!(carbon_log, "leader sending metrics");
                         let (backend_tx, backend_rx) = mpsc::unbounded();
-                        let aggregator = Aggregator::new(options, tchans, backend_tx).into_future();
+                        let aggregator = Aggregator::new(options, tchans, backend_tx, carbon_log.clone()).into_future();
 
                         runtime.spawn(aggregator);
 
@@ -448,7 +458,7 @@ fn main() {
                             .inspect(|_| { EGRESS.fetch_add(1, Ordering::Relaxed); })
                             .collect()
                             .and_then(|metrics| {
-                                let backend = CarbonBackend::new(backend_addr, ts, Arc::new(metrics));
+                                let backend = CarbonBackend::new(backend_addr, ts, Arc::new(metrics), carbon_log.clone());
 
                                 let retrier = BackoffRetryBuilder {
                                     delay: backend_opts.connect_delay,
@@ -467,7 +477,7 @@ fn main() {
                     } else {
                         info!(carbon_log, "not leader, removing metrics");
                         let (backend_tx, _) = mpsc::unbounded();
-                        let aggregator = Aggregator::new(options, tchans, backend_tx).into_future();
+                        let aggregator = Aggregator::new(options, tchans, backend_tx, carbon_log.clone()).into_future();
                         runtime
                             .block_on(aggregator.then(|_| Ok::<(), ()>(())))
                             .unwrap_or_else(|e| {
@@ -510,7 +520,7 @@ fn main() {
         let flush_timer = flush_timer
             .map_err(|e| GeneralError::Timer(e))
             .for_each(move |_tick| {
-                debug!(tlog, "buffer flush requested");
+                info!(tlog, "buffer flush requested");
                 flags
                     .iter()
                     .map(|flag| flag.swap(true, Ordering::SeqCst))

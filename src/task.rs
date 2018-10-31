@@ -5,7 +5,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 use combine::Parser;
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::oneshot;
-use futures::Sink;
+use futures::{Future, Sink};
+use tokio::runtime::current_thread::spawn;
 
 use metric::Metric;
 use parser::metric_parser;
@@ -109,7 +110,7 @@ impl Task {
                 name,
                 metric,
                 options,
-                mut response,
+                response,
             }) => {
                 let upd = if let Some(options) = options.update_counter {
                     if metric.update_counter > options.threshold {
@@ -145,19 +146,15 @@ impl Task {
                         (name, value)
                     }).chain(upd)
                     .map(|data| {
-                        response
-                            .start_send(data)
-                            .map_err(|_| {
-                                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                            }).map(|_| ())
-                            .unwrap_or(());
+                        spawn(
+                            response
+                                .clone()
+                                .send(data)
+                                .map_err(|_| {
+                                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                }).map(|_| ()),
+                        );
                     }).last();
-                response
-                    .poll_complete()
-                    .map_err(|_| {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    }).map(|_| ())
-                    .unwrap_or_else(|_| ());
             }
         }
     }

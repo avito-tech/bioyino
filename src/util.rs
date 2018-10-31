@@ -108,9 +108,7 @@ impl OwnStats {
                         .clone()
                         .send(Task::AddMetric(name, metric))
                         .map(|_| ())
-                        .map_err(move |_| {
-                            warn!(log, "stats future could not send metric to task")
-                        });
+                        .map_err(move |_| warn!(log, "stats future could not send metric to task"));
                     spawn(sender);
                 }
             };
@@ -178,6 +176,7 @@ pub struct Aggregator {
     // a channel(supposedly from a backend) where we pass aggregated metrics to
     // TODO this probably needs to be generic stream
     tx: UnboundedSender<(Bytes, Float)>,
+    log: Logger,
 }
 
 impl Aggregator {
@@ -185,8 +184,14 @@ impl Aggregator {
         options: AggregateOptions,
         chans: Vec<Sender<Task>>,
         tx: UnboundedSender<(Bytes, Float)>,
+        log: Logger,
     ) -> Self {
-        Self { options, chans, tx }
+        Self {
+            options,
+            chans,
+            tx,
+            log,
+        }
     }
 }
 
@@ -196,7 +201,13 @@ impl IntoFuture for Aggregator {
     type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { options, chans, tx } = self;
+        let Self {
+            options,
+            chans,
+            tx,
+            log,
+        } = self;
+        info!(log, "leader accumulating metrics");
         let metrics = chans.clone().into_iter().map(|chan| {
             let (tx, rx) = oneshot::channel();
             // TODO: change oneshots to single channel
@@ -208,24 +219,27 @@ impl IntoFuture for Aggregator {
         });
 
         if options.is_leader {
-            let accumulate = futures_unordered(metrics)//.for_each(|| {
-                .fold(HashMap::new(), move |mut acc: Cache, metrics| {
+            let accumulate =
+                futures_unordered(metrics).fold(HashMap::new(), move |mut acc: Cache, metrics| {
                     metrics
                         .into_iter()
                         .map(|(name, metric)| {
                             if acc.contains_key(&name) {
-                                acc.get_mut(&name).unwrap()
-                                    .aggregate(metric).unwrap_or_else(|_| {AGG_ERRORS.fetch_add(1, Ordering::Relaxed);});
+                                acc.get_mut(&name)
+                                    .unwrap()
+                                    .aggregate(metric)
+                                    .unwrap_or_else(|_| {
+                                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                    });
                             } else {
                                 acc.insert(name, metric);
                             }
-                        })
-                    .last();
+                        }).last();
                     Ok(acc)
-                        // })
-        });
+                });
 
             let aggregate = accumulate.and_then(move |accumulated| {
+                debug!(log, "leader aggregating metrics");
                 accumulated
                     .into_iter()
                     .inspect(|_| {
@@ -255,7 +269,40 @@ impl IntoFuture for Aggregator {
                         }
                     }).last();
                 Ok(())
-            });
+                //});
+            /*
+             * TODO: this was an expermient for multithreade aggregation in separate threadpol with rayon
+             * it worked, but needs more work to be in prod
+            let aggregate = accumulate.and_then(move |accumulated| {
+                info!(log, "leader aggregating metrics");
+                use rayon::iter::IntoParallelIterator;
+                use rayon::iter::ParallelIterator;
+                use rayon::ThreadPoolBuilder;
+
+                let pool = ThreadPoolBuilder::new()
+                    .thread_name(|i| format!("bioyino_crb{}", i).into())
+                    .num_threads(8)
+                    .build()
+                    .unwrap();
+                pool.install(|| {
+                    accumulated
+                        .into_par_iter()
+                        .inspect(|_| {
+                            EGRESS.fetch_add(1, Ordering::Relaxed);
+                        }).for_each(move |(name, metric)| {
+                            let buf = BytesMut::with_capacity(1024);
+                            let task = Task::Aggregate(AggregateData {
+                                buf,
+                                name: Bytes::from(name),
+                                metric,
+                                options: options.clone(),
+                                response: tx.clone(),
+                            });
+                            task.run();
+                        }); //.last();
+                });
+                Ok(())
+                */            });
             Box::new(aggregate)
         } else {
             // only get metrics from threads

@@ -96,7 +96,6 @@ pub(crate) struct Metrics {
 
     /// Aggregate faster at the price or probably loosing some incoming metrics
     pub fast_aggregation: bool,
-
     // TODO
     //    /// Whether we should spam parsing errors in logs
     //    pub log_parse_errors: bool,
