@@ -3,6 +3,7 @@ use std::sync::atomic::Ordering;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use combine::Parser;
+use combine::error::UnexpectedParse;
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::oneshot;
 use futures::{Future, Sink};
@@ -28,7 +29,7 @@ pub struct AggregateData {
 
 #[derive(Debug)]
 pub enum Task {
-    Parse(Bytes),
+    Parse(u64, Bytes),
     AddMetric(Bytes, Metric<Float>),
     AddMetrics(Vec<(Bytes, Metric<Float>)>),
     AddSnapshot(Vec<(Bytes, Metric<Float>)>),
@@ -53,7 +54,7 @@ fn update_metric(cache: &mut Cache, name: Bytes, metric: Metric<Float>) {
 impl Task {
     pub fn run(self) {
         match self {
-            Task::Parse(buf) => parse_and_insert(buf),
+            Task::Parse(addr, buf) => parse_and_insert(addr, buf),
             Task::AddMetric(name, metric) => SHORT_CACHE.with(move |c| {
                 let mut short = c.borrow_mut();
                 update_metric(&mut short, name, metric);
@@ -145,16 +146,16 @@ impl Task {
                         let name = buf.take().freeze();
                         (name, value)
                     }).chain(upd)
-                    .map(|data| {
-                        spawn(
-                            response
-                                .clone()
-                                .send(data)
-                                .map_err(|_| {
-                                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                }).map(|_| ()),
+                .map(|data| {
+                    spawn(
+                        response
+                        .clone()
+                        .send(data)
+                        .map_err(|_| {
+                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        }).map(|_| ()),
                         );
-                    }).last();
+                }).last();
             }
         }
     }
@@ -172,7 +173,7 @@ fn cut_bad(buf: &mut Bytes) -> Option<usize> {
     }
 }
 
-fn parse_and_insert(mut buf: Bytes) {
+fn parse_and_insert(_addr: u64, mut buf: Bytes) {
     // Cloned buf is shallow copy, so input and buf are the same bytes.
     // We are going to parse the whole slice, so for parser we use input as readonly
     // while buf follows the parser progress and is cut to get only names
@@ -219,6 +220,9 @@ fn parse_and_insert(mut buf: Bytes) {
                     break;
                 }
             }
+            Err(UnexpectedParse::Eoi) => {
+                break;
+            }
             Err(_e) => {
                 if let Some(pos) = cut_bad(&mut buf) {
                     input = input.split_at(pos + 1).1;
@@ -241,7 +245,7 @@ mod tests {
         let mut data = Bytes::new();
         data.extend_from_slice(
             b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000|g|@0.5\nMORETrasH\nFUUU",
-        );
+            );
 
         parse_and_insert(data);
 

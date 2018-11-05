@@ -185,7 +185,7 @@ impl Aggregator {
         chans: Vec<Sender<Task>>,
         tx: UnboundedSender<(Bytes, Float)>,
         log: Logger,
-    ) -> Self {
+        ) -> Self {
         Self {
             options,
             chans,
@@ -207,7 +207,6 @@ impl IntoFuture for Aggregator {
             tx,
             log,
         } = self;
-        info!(log, "leader accumulating metrics");
         let metrics = chans.clone().into_iter().map(|chan| {
             let (tx, rx) = oneshot::channel();
             // TODO: change oneshots to single channel
@@ -219,6 +218,7 @@ impl IntoFuture for Aggregator {
         });
 
         if options.is_leader {
+            info!(log, "leader accumulating metrics");
             let accumulate =
                 futures_unordered(metrics).fold(HashMap::new(), move |mut acc: Cache, metrics| {
                     metrics
@@ -245,65 +245,65 @@ impl IntoFuture for Aggregator {
                     .inspect(|_| {
                         EGRESS.fetch_add(1, Ordering::Relaxed);
                     }).enumerate()
-                    .map(move |(num, (name, metric))| {
-                        let buf = BytesMut::with_capacity(1024);
-                        let task = Task::Aggregate(AggregateData {
-                            buf,
-                            name: Bytes::from(name),
-                            metric,
-                            options: options.clone(),
-                            response: tx.clone(),
-                        });
-                        if options.fast_aggregation {
-                            spawn(
-                                chans[num % chans.len()]
-                                    .clone()
-                                    .send(task)
-                                    .map(|_| ())
-                                    .map_err(|_| {
-                                        DROPS.fetch_add(1, Ordering::Relaxed);
-                                    }),
+                .map(move |(num, (name, metric))| {
+                    let buf = BytesMut::with_capacity(1024);
+                    let task = Task::Aggregate(AggregateData {
+                        buf,
+                        name: Bytes::from(name),
+                        metric,
+                        options: options.clone(),
+                        response: tx.clone(),
+                    });
+                    if options.fast_aggregation {
+                        spawn(
+                            chans[num % chans.len()]
+                            .clone()
+                            .send(task)
+                            .map(|_| ())
+                            .map_err(|_| {
+                                DROPS.fetch_add(1, Ordering::Relaxed);
+                            }),
                             );
-                        } else {
-                            task.run();
-                        }
-                    }).last();
+                    } else {
+                        task.run();
+                    }
+                }).last();
                 Ok(())
-                //});
-            /*
-             * TODO: this was an expermient for multithreade aggregation in separate threadpol with rayon
-             * it worked, but needs more work to be in prod
-            let aggregate = accumulate.and_then(move |accumulated| {
-                info!(log, "leader aggregating metrics");
-                use rayon::iter::IntoParallelIterator;
-                use rayon::iter::ParallelIterator;
-                use rayon::ThreadPoolBuilder;
+                    //});
+                    /*
+                     * TODO: this was an expermient for multithreade aggregation in separate threadpol with rayon
+                     * it worked, but needs more work to be in prod
+                     let aggregate = accumulate.and_then(move |accumulated| {
+                     info!(log, "leader aggregating metrics");
+                     use rayon::iter::IntoParallelIterator;
+                     use rayon::iter::ParallelIterator;
+                     use rayon::ThreadPoolBuilder;
 
-                let pool = ThreadPoolBuilder::new()
-                    .thread_name(|i| format!("bioyino_crb{}", i).into())
-                    .num_threads(8)
-                    .build()
-                    .unwrap();
-                pool.install(|| {
-                    accumulated
-                        .into_par_iter()
-                        .inspect(|_| {
-                            EGRESS.fetch_add(1, Ordering::Relaxed);
-                        }).for_each(move |(name, metric)| {
-                            let buf = BytesMut::with_capacity(1024);
-                            let task = Task::Aggregate(AggregateData {
-                                buf,
-                                name: Bytes::from(name),
-                                metric,
-                                options: options.clone(),
-                                response: tx.clone(),
-                            });
-                            task.run();
-                        }); //.last();
-                });
-                Ok(())
-                */            });
-            Box::new(aggregate)
+                     let pool = ThreadPoolBuilder::new()
+                     .thread_name(|i| format!("bioyino_crb{}", i).into())
+                     .num_threads(8)
+                     .build()
+                     .unwrap();
+                     pool.install(|| {
+                     accumulated
+                     .into_par_iter()
+                     .inspect(|_| {
+                     EGRESS.fetch_add(1, Ordering::Relaxed);
+                     }).for_each(move |(name, metric)| {
+                     let buf = BytesMut::with_capacity(1024);
+                     let task = Task::Aggregate(AggregateData {
+                     buf,
+                     name: Bytes::from(name),
+                     metric,
+                     options: options.clone(),
+                     response: tx.clone(),
+                     });
+                     task.run();
+                     }); //.last();
+                     });
+                     Ok(())
+                     */            });
+                    Box::new(aggregate)
         } else {
             // only get metrics from threads
             let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
@@ -333,16 +333,16 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-    where
+        where
         F: IntoFuture + Clone,
-    {
-        let inner = Either::A(action.clone().into_future());
-        BackoffRetry {
-            action,
-            inner: inner,
-            options: self,
+        {
+            let inner = Either::A(action.clone().into_future());
+            BackoffRetry {
+                action,
+                inner: inner,
+                options: self,
+            }
         }
-    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -354,7 +354,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-    F: IntoFuture + Clone,
+F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;

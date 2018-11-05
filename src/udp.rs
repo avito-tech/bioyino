@@ -4,6 +4,9 @@ use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 
 use server::StatsdServer;
 use task::Task;
@@ -32,8 +35,8 @@ pub(crate) fn start_sync_udp(
     buffer_flush_time: u64,
     buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-) {
-    info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>mm_async, "packets"=>mm_packets);
+    ) {
+    info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
     // to avoid drops because at lease two threads have to work on socket
@@ -61,58 +64,82 @@ pub(crate) fn start_sync_udp(
             .spawn(move || {
                 let fd = sck.as_raw_fd();
                 {
-                    // <--- this limits `use::libc::*` scope
+                    // <--- this limits the use of `use::libc::*` scope
                     use libc::*;
 
+                    let chlen = chans.len();
                     let mut ichans = chans.iter().cycle();
 
-                    // a vector to avoid dropping iovec structures
-                    let mut iovecs = Vec::with_capacity(mm_packets);
+                    // store mmsghdr array so Rust won't free it's memory
+                    let mut mheaders: Vec<mmsghdr> = Vec::with_capacity(mm_packets);
 
-                    // a vector to avoid dropping message buffers
-                    let mut message_vec = Vec::new();
+                    // allocate space for address information
+                    // addr len is 16 bytes for ipv6 address + 4 bytes for port totalling 20 bytes
+                    // the structure is only used for advanced information and not copied anywhere
+                    // so it can be initialized before main cycle
+                    let mut addrs: Vec<[u8;20]> = Vec::with_capacity(mm_packets);
+                    addrs.resize(mm_packets, [0; 20]);
 
-                    let mut v: Vec<mmsghdr> = Vec::with_capacity(mm_packets);
-                    for _ in 0..mm_packets {
-                        let mut buf = Vec::with_capacity(bufsize);
-                        buf.resize(bufsize, 0);
-
-                        let mut iov = Vec::with_capacity(1);
-                        iov.resize(
-                            1,
-                            iovec {
-                                iov_base: buf.as_mut_ptr() as *mut c_void,
-                                iov_len: bufsize as size_t,
-                            },
-                        );
+                    for i in 0..mm_packets {
                         let m = mmsghdr {
                             msg_hdr: msghdr {
-                                msg_name: null_mut(),
-                                msg_namelen: 0 as socklen_t,
-                                msg_iov: iov.as_mut_ptr(),
-                                msg_iovlen: iov.len() as size_t,
-                                msg_control: null_mut(),
-                                msg_controllen: 0,
-                                msg_flags: 0,
+                                msg_name: addrs[i].as_mut_ptr() as *mut c_void,
+                                msg_namelen: 20 as socklen_t,
+                                msg_iov: null_mut(),            // this will change later
+                                msg_iovlen: 0,                  // this will change later
+                                msg_control: null_mut(),        // we won't need this
+                                msg_controllen: 0,              // and this
+                                msg_flags: 0,                   // and of couse this
                             },
                             msg_len: 0,
                         };
-                        v.push(m);
-                        iovecs.push(iov);
-                        message_vec.push(buf);
+                        mheaders.push(m);
                     }
 
-                    let vp = v.as_mut_ptr();
-                    let vlen = v.len();
-
-                    // This is the buffer we fill with metrics and periodically send to tasks
-                    // Due to implementation of BytesMut it's real size is bigger, so for even less
-                    // allocations, we split the filled part and leave the rest for future bytes
-                    let mut b = BytesMut::with_capacity(buffer_flush_length);
+                    let mhptr = mheaders.as_mut_ptr();
+                    let mhlen = mheaders.len();
 
                     let flags = if mm_async { MSG_WAITFORONE } else { 0 };
 
+                    // this will store resulting per-source buffers
+                    let mut bufmap = HashMap::new();
+                    let mut total_received = 0;
+                    let min_bytes = mm_packets*mm_packets*bufsize;
+                    let rowsize = bufsize*mm_packets;
+
+                    let mut recv_buffer = Vec::new();
+                    recv_buffer.reserve_exact(min_bytes);
+
+                    // prepare scatter-gather buffers (iovecs)
+                    // We allocate (mm_packets x mm_packets*bufsize) matrix to guarantee fitting of all
+                    // the messages into memory. For doing this se have to consider 2 edge cases here.
+                    // We know that recvmmsg places all messages from a single source to
+                    // the same iovecs bucket. That is the first case is when all data come from
+                    // single address, so we will have row filled with bytes. The second case is when
+                    // all data come from different addresses, so buffers are filled in
+                    // columns. The default value - 1500 does not consider IP fragmentation here, so the ideal
+                    // value would be maximum IP packet size (~ 65535 - 8 = 65507), but this is the
+                    // rare case in modern networks, at least at datacenters, which are our
+                    // main use case.
+
+                    recv_buffer.resize(min_bytes, 0);
+                    // we don't want rust to forget about intermediate iovecs so we put them into
+                    // separate vector
+                    let mut chunks = Vec::with_capacity(mm_packets);
+
+                    for i in 0..mm_packets {
+                        let mut chunk = iovec {
+                            iov_base: recv_buffer[i*rowsize..i*rowsize+rowsize].as_mut_ptr() as *mut c_void,
+                            iov_len: rowsize
+                        };
+                        chunks.push(chunk);
+                        // put the result to mheaders
+                        mheaders[i].msg_hdr.msg_iov = &mut chunks[i];
+                        mheaders[i].msg_hdr.msg_iovlen = 1;
+                    }
+
                     loop {
+                        debug!(log, "recvmsg start");
                         // timeout is mutable and changed by every recvmmsg call, so it MUST be inside loop
                         // creating timeout as &mut fails because it's supposedly not dropped
                         let mut timeout = if mm_timeout > 0 {
@@ -128,39 +155,52 @@ pub(crate) fn start_sync_udp(
                         };
 
                         let res =
-                            unsafe { recvmmsg(fd as c_int, vp, vlen as c_uint, flags, if mm_timeout > 0 {&mut timeout} else {null_mut()}) };
+                            unsafe { recvmmsg(fd as c_int, mhptr, mhlen as c_uint, flags, if mm_timeout > 0 {&mut timeout} else {null_mut()}) };
 
                         if res == 0 {
                             // skip this shit
                         } else if res > 0 {
                             let messages = res as usize;
-                            // Check if we can fit all packets into buffer
-                            let mut total_bytes = 0;
+                            // we've received some messages
                             for i in 0..messages {
-                                total_bytes += v[i].msg_len as usize;
+                                let mlen =  mheaders[i].msg_len as usize;
+                                total_received += mlen;
+
+                                // create address entry in messagemap
+                                let mut entry = bufmap.entry(addrs[i]).or_insert(BytesMut::with_capacity(buffer_flush_length));
+                                // and put it's buffer there
+                                entry.put(&recv_buffer[i*rowsize..i*rowsize+mlen]);
+
+                                // reset addres to be used in next cycle
+                                addrs[i] = [0; 20];
+                                mheaders[i].msg_hdr.msg_namelen = 20;
                             }
 
-                            // if we cannot, allocate more
-                            if b.remaining_mut() < total_bytes {
-                                b.reserve(buffer_flush_length)
-                            }
+                            INGRESS.fetch_add(total_received, Ordering::Relaxed);
 
-                            // put packets into buffer
-                            for i in 0..messages {
-                                let len = v[i].msg_len as usize;
-                                b.put(&message_vec[i][0..len]);
-                            }
-
+                            let consistent_parsing = true;
                             // when it's time to send bytes, send them
                             let flush = flush_flags.get(i).unwrap().swap(false, Ordering::SeqCst);
-                            if flush || b.len() >= buffer_flush_length {
-                                let mut chan = ichans.next().unwrap().clone();
-                                INGRESS.fetch_add(messages as usize, Ordering::Relaxed);
-                                chan.try_send(Task::Parse(b.take().freeze()))
-                                    .map_err(|_| {
-                                        warn!(log, "error sending buffer(queue full?)");
-                                        DROPS.fetch_add(messages as usize, Ordering::Relaxed);
-                                    }).unwrap_or(());
+                            if flush || total_received >= buffer_flush_length {
+                                total_received = 0;
+                                bufmap.drain().map(|(addr, mut buf)|{
+                                    // in some ideal world we want all values from the same host to be parsed by the
+                                    // same thread, but this could cause load unbalancing between
+                                    // threads TODO: make it an option in config
+                                    let mut hasher = DefaultHasher::new();
+                                    hasher.write(&addr);
+                                    let ahash = hasher.finish();
+                                    let mut chan = if consistent_parsing {
+                                        chans[ahash as usize % chlen].clone()
+                                    } else {
+                                        ichans.next().unwrap().clone()
+                                    };
+                                    chan.try_send(Task::Parse(ahash, buf.take().freeze()))
+                                        .map_err(|_| {
+                                            warn!(log, "error sending buffer(queue full?)");
+                                            DROPS.fetch_add(messages as usize, Ordering::Relaxed);
+                                        }).unwrap_or(());
+                                }).last();
                             }
                         } else {
                             let errno = unsafe { *__errno_location() };
@@ -188,7 +228,7 @@ pub(crate) fn start_async_udp(
     bufsize: usize,
     buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-) {
+    ) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
 
     // Create a pool of listener sockets
@@ -220,7 +260,6 @@ pub(crate) fn start_async_udp(
                 for _ in 0..greens {
                     // start a listener for all sockets
                     for socket in sockets.iter() {
-                        let buf = BytesMut::with_capacity(buffer_flush_length);
 
                         let mut readbuf = BytesMut::with_capacity(bufsize);
                         unsafe { readbuf.set_len(bufsize) }
@@ -229,19 +268,20 @@ pub(crate) fn start_async_udp(
                         let socket = socket.try_clone().expect("cloning socket");
                         let socket =
                             UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
-                                .expect("adding socket to event loop");
+                            .expect("adding socket to event loop");
 
                         let server = StatsdServer::new(
                             socket,
                             chans.clone(),
-                            buf,
+                            HashMap::new(),
                             buffer_flush_length,
                             bufsize,
+                            0,
                             i,
                             readbuf,
                             flush_flags.clone(),
                             i,
-                        );
+                            );
 
                         runtime.spawn(server.into_future());
                     }
