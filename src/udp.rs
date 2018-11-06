@@ -1,12 +1,12 @@
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::Hasher;
 use std::io;
 use std::net::SocketAddr;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::Hasher;
 
 use server::StatsdServer;
 use task::Task;
@@ -35,7 +35,7 @@ pub(crate) fn start_sync_udp(
     buffer_flush_time: u64,
     buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -77,7 +77,7 @@ pub(crate) fn start_sync_udp(
                     // addr len is 16 bytes for ipv6 address + 4 bytes for port totalling 20 bytes
                     // the structure is only used for advanced information and not copied anywhere
                     // so it can be initialized before main cycle
-                    let mut addrs: Vec<[u8;20]> = Vec::with_capacity(mm_packets);
+                    let mut addrs: Vec<[u8; 20]> = Vec::with_capacity(mm_packets);
                     addrs.resize(mm_packets, [0; 20]);
 
                     for i in 0..mm_packets {
@@ -85,11 +85,11 @@ pub(crate) fn start_sync_udp(
                             msg_hdr: msghdr {
                                 msg_name: addrs[i].as_mut_ptr() as *mut c_void,
                                 msg_namelen: 20 as socklen_t,
-                                msg_iov: null_mut(),            // this will change later
-                                msg_iovlen: 0,                  // this will change later
-                                msg_control: null_mut(),        // we won't need this
-                                msg_controllen: 0,              // and this
-                                msg_flags: 0,                   // and of couse this
+                                msg_iov: null_mut(),     // this will change later
+                                msg_iovlen: 0,           // this will change later
+                                msg_control: null_mut(), // we won't need this
+                                msg_controllen: 0,       // and this
+                                msg_flags: 0,            // and of couse this
                             },
                             msg_len: 0,
                         };
@@ -104,8 +104,8 @@ pub(crate) fn start_sync_udp(
                     // this will store resulting per-source buffers
                     let mut bufmap = HashMap::new();
                     let mut total_received = 0;
-                    let min_bytes = mm_packets*mm_packets*bufsize;
-                    let rowsize = bufsize*mm_packets;
+                    let min_bytes = mm_packets * mm_packets * bufsize;
+                    let rowsize = bufsize * mm_packets;
 
                     let mut recv_buffer = Vec::new();
                     recv_buffer.reserve_exact(min_bytes);
@@ -129,8 +129,9 @@ pub(crate) fn start_sync_udp(
 
                     for i in 0..mm_packets {
                         let mut chunk = iovec {
-                            iov_base: recv_buffer[i*rowsize..i*rowsize+rowsize].as_mut_ptr() as *mut c_void,
-                            iov_len: rowsize
+                            iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr()
+                                as *mut c_void,
+                            iov_len: rowsize,
                         };
                         chunks.push(chunk);
                         // put the result to mheaders
@@ -154,8 +155,19 @@ pub(crate) fn start_sync_udp(
                             }
                         };
 
-                        let res =
-                            unsafe { recvmmsg(fd as c_int, mhptr, mhlen as c_uint, flags, if mm_timeout > 0 {&mut timeout} else {null_mut()}) };
+                        let res = unsafe {
+                            recvmmsg(
+                                fd as c_int,
+                                mhptr,
+                                mhlen as c_uint,
+                                flags,
+                                if mm_timeout > 0 {
+                                    &mut timeout
+                                } else {
+                                    null_mut()
+                                },
+                            )
+                        };
 
                         if res == 0 {
                             // skip this shit
@@ -163,44 +175,51 @@ pub(crate) fn start_sync_udp(
                             let messages = res as usize;
                             // we've received some messages
                             for i in 0..messages {
-                                let mlen =  mheaders[i].msg_len as usize;
+                                let mlen = mheaders[i].msg_len as usize;
                                 total_received += mlen;
 
+                                INGRESS.fetch_add(mlen, Ordering::Relaxed);
+
                                 // create address entry in messagemap
-                                let mut entry = bufmap.entry(addrs[i]).or_insert(BytesMut::with_capacity(buffer_flush_length));
+                                let mut entry = bufmap
+                                    .entry(addrs[i])
+                                    .or_insert(BytesMut::with_capacity(buffer_flush_length));
                                 // and put it's buffer there
-                                entry.put(&recv_buffer[i*rowsize..i*rowsize+mlen]);
+                                entry.put(&recv_buffer[i * rowsize..i * rowsize + mlen]);
 
                                 // reset addres to be used in next cycle
                                 addrs[i] = [0; 20];
                                 mheaders[i].msg_hdr.msg_namelen = 20;
                             }
 
-                            INGRESS.fetch_add(total_received, Ordering::Relaxed);
-
                             let consistent_parsing = true;
                             // when it's time to send bytes, send them
                             let flush = flush_flags.get(i).unwrap().swap(false, Ordering::SeqCst);
                             if flush || total_received >= buffer_flush_length {
                                 total_received = 0;
-                                bufmap.drain().map(|(addr, mut buf)|{
-                                    // in some ideal world we want all values from the same host to be parsed by the
-                                    // same thread, but this could cause load unbalancing between
-                                    // threads TODO: make it an option in config
-                                    let mut hasher = DefaultHasher::new();
-                                    hasher.write(&addr);
-                                    let ahash = hasher.finish();
-                                    let mut chan = if consistent_parsing {
-                                        chans[ahash as usize % chlen].clone()
-                                    } else {
-                                        ichans.next().unwrap().clone()
-                                    };
-                                    chan.try_send(Task::Parse(ahash, buf.take().freeze()))
-                                        .map_err(|_| {
-                                            warn!(log, "error sending buffer(queue full?)");
-                                            DROPS.fetch_add(messages as usize, Ordering::Relaxed);
-                                        }).unwrap_or(());
-                                }).last();
+                                bufmap
+                                    .drain()
+                                    .map(|(addr, mut buf)| {
+                                        // in some ideal world we want all values from the same host to be parsed by the
+                                        // same thread, but this could cause load unbalancing between
+                                        // threads TODO: make it an option in config
+                                        let mut hasher = DefaultHasher::new();
+                                        hasher.write(&addr);
+                                        let ahash = hasher.finish();
+                                        let mut chan = if consistent_parsing {
+                                            chans[ahash as usize % chlen].clone()
+                                        } else {
+                                            ichans.next().unwrap().clone()
+                                        };
+                                        chan.try_send(Task::Parse(ahash, buf.take().freeze()))
+                                            .map_err(|_| {
+                                                warn!(log, "error sending buffer(queue full?)");
+                                                DROPS.fetch_add(
+                                                    messages as usize,
+                                                    Ordering::Relaxed,
+                                                );
+                                            }).unwrap_or(());
+                                    }).last();
                             }
                         } else {
                             let errno = unsafe { *__errno_location() };
@@ -228,7 +247,7 @@ pub(crate) fn start_async_udp(
     bufsize: usize,
     buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
 
     // Create a pool of listener sockets
@@ -260,7 +279,6 @@ pub(crate) fn start_async_udp(
                 for _ in 0..greens {
                     // start a listener for all sockets
                     for socket in sockets.iter() {
-
                         let mut readbuf = BytesMut::with_capacity(bufsize);
                         unsafe { readbuf.set_len(bufsize) }
                         let chans = chans.clone();
@@ -268,7 +286,7 @@ pub(crate) fn start_async_udp(
                         let socket = socket.try_clone().expect("cloning socket");
                         let socket =
                             UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
-                            .expect("adding socket to event loop");
+                                .expect("adding socket to event loop");
 
                         let server = StatsdServer::new(
                             socket,
@@ -281,7 +299,7 @@ pub(crate) fn start_async_udp(
                             readbuf,
                             flush_flags.clone(),
                             i,
-                            );
+                        );
 
                         runtime.spawn(server.into_future());
                     }

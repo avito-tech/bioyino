@@ -1,9 +1,9 @@
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hasher, Hash};
-use std::net::SocketAddr;
 
 use {DROPS, INGRESS};
 
@@ -41,7 +41,7 @@ impl StatsdServer {
         readbuf: BytesMut,
         flush_flags: Arc<Vec<AtomicBool>>,
         thread_idx: usize,
-        ) -> Self {
+    ) -> Self {
         Self {
             socket,
             chans,
@@ -70,7 +70,7 @@ impl IntoFuture for StatsdServer {
             buffer_flush_length,
             bufsize,
             mut recv_counter,
-            next,
+            mut next,
             readbuf,
             flush_flags,
             thread_idx,
@@ -86,7 +86,9 @@ impl IntoFuture for StatsdServer {
                 }
 
                 {
-                    let buf = bufmap.entry(addr).or_insert(BytesMut::with_capacity(buffer_flush_length));
+                    let buf = bufmap
+                        .entry(addr)
+                        .or_insert(BytesMut::with_capacity(buffer_flush_length));
                     recv_counter += size;
                     buf.put(&received[0..size]);
                 }
@@ -95,26 +97,39 @@ impl IntoFuture for StatsdServer {
                     .get(thread_idx)
                     .unwrap()
                     .swap(false, Ordering::SeqCst);
+
+                // TODO make it a config option
+                let consistent_parsing = true;
                 if recv_counter >= buffer_flush_length || flush {
+                    bufmap
+                        .drain()
+                        .map(|(addr, buf)| {
+                            let mut hasher = DefaultHasher::new();
+                            addr.hash(&mut hasher);
+                            let ahash = hasher.finish();
+                            let chan = if consistent_parsing {
+                                let chlen = chans.len();
+                                chans[ahash as usize % chlen].clone()
+                            } else {
+                                if next >= chans.len() {
+                                    next = 1;
+                                    chans[0].clone()
+                                } else {
+                                    next = next + 1;
+                                    chans[next].clone()
+                                }
+                            };
 
-                    bufmap.drain().map(|(addr, buf)|{
-                        let mut hasher = DefaultHasher::new();
-                        addr.hash(&mut hasher);
-                        let ahash = hasher.finish();
-                        let (chan, next) = if next >= chans.len() {
-                            (chans[0].clone(), 1)
-                        } else {
-                            (chans[next].clone(), next + 1)
-                        };
+                            spawn(
+                                chan.send(Task::Parse(ahash, buf.freeze()))
+                                    .map_err(|_| {
+                                        DROPS.fetch_add(1, Ordering::Relaxed);
+                                    }).map(|_| ()),
+                            )
+                        }).last();
 
-                        spawn(
-                            chan.send(Task::Parse(ahash, buf.freeze()))
-                            .map_err(|_| {
-                                DROPS.fetch_add(1, Ordering::Relaxed);
-                            }).map(|_|()))
-                    }).last();
-
-                    spawn(StatsdServer::new(
+                    spawn(
+                        StatsdServer::new(
                             socket,
                             chans,
                             bufmap,
@@ -125,7 +140,7 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                            ).into_future()
+                        ).into_future(),
                     );
                 } else {
                     spawn(
@@ -140,8 +155,8 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                            ).into_future(),
-                            );
+                        ).into_future(),
+                    );
                 }
                 Ok(())
             });
