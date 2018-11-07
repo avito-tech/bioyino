@@ -71,7 +71,7 @@ use std::time::{self, Duration, Instant, SystemTime};
 
 use slog::{Drain, Level};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
@@ -103,6 +103,7 @@ pub type Float = f64;
 pub type Cache = HashMap<Bytes, Metric<Float>>;
 thread_local!(static LONG_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
 thread_local!(static SHORT_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
+thread_local!(static BUFFER_CACHE: RefCell<HashMap<u64, (usize, BytesMut)>> = RefCell::new(HashMap::with_capacity(8192)));
 
 // options
 //pub static SHOW_PARSE_ERRORS: AtomicBool = ATOMIC_BOOL_INIT;
@@ -146,41 +147,16 @@ pub enum ConsensusKind {
 }
 
 lazy_static! {
-    pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
-    { Mutex::new(ConsensusState::Disabled) };
+    pub static ref CONSENSUS_STATE: Mutex<ConsensusState> = { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
 
 fn main() {
-   // {
-        //use std::io;
-        //use std::ffi::CString;
-        //use std::ptr::{null_mut, null};
-        //use libc::*;
-
-        //let domain = CString::new("ya.ru").unwrap().into_raw();
-        //let mut result: *mut addrinfo = null_mut();
-
-        //unsafe {
-            //getaddrinfo(domain, null_mut(), null(), &mut result);
-        //}
-
-        ////let errno = unsafe { *__errno_location() };
-        //println!("{:?}", io::Error::last_os_error());
-        //let mut cur = result;
-        //while cur != null_mut() {
-            //unsafe{
-                //println!("LEN {:?}", (*result).ai_addrlen);
-                //println!("DATA {:?}", (*(*result).ai_addr).sa_data);
-                //cur = (*result).ai_next;
-            //}
-        //}
-
-    //}
 
     let (system, command) = System::load();
 
+    let mut config = system.clone();
     let System {
         verbosity,
         network:
@@ -194,7 +170,7 @@ fn main() {
                 mm_async,
                 mm_timeout,
                 buffer_flush_time,
-                buffer_flush_length,
+                buffer_flush_length :_,
                 greens,
                 async_sockets,
                 nodes,
@@ -226,7 +202,8 @@ fn main() {
                     start_as_leader,
                     stats_prefix,
                     consensus,
-    } = system.clone();
+                    consistent_parsing: _,
+    } = system;
 
     let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
 
@@ -270,6 +247,17 @@ fn main() {
 
     let update_counter_prefix: Bytes = update_counter_prefix.into();
     let update_counter_suffix: Bytes = update_counter_suffix.into();
+
+    let reserve_min = bufsize * mm_packets * mm_packets;
+
+    config.network.buffer_flush_length = if config.network.buffer_flush_length < reserve_min {
+        debug!(rlog, "buffer-flush-len is lower than mm-packets*mm-packets*bufsize"; "new-value"=>reserve_min, "old-value"=>config.network.buffer_flush_length);
+        reserve_min
+    } else {
+        config.network.buffer_flush_length
+    };
+
+    let config = Arc::new(config);
     let log = rlog.new(o!("thread" => "main"));
 
     // Init task options before initializing task threads
@@ -340,29 +328,29 @@ fn main() {
             let log = log.clone();
             let flog = log.clone();
             thread::Builder::new()
-            .name("bioyino_raft".into())
-            .spawn(move || {
-                let mut runtime = Runtime::new().expect("creating runtime for raft thread");
-                if start_as_leader {
-                    warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
-                }
-                let d = Delay::new(Instant::now() + Duration::from_millis(raft.start_delay));
-                let log = log.clone();
-                let delayed = d
-                    .map_err(|_| ())
-                    .and_then(move |_|  {
-                        let mut con_state = CONSENSUS_STATE.lock().unwrap();
-                        *con_state = ConsensusState::Enabled;
-                        info!(log, "starting internal consensus"; "initial_state"=>format!("{:?}", *con_state));
-                        start_internal_raft(raft, consensus_log);
-                        Ok(())
-                });
+                .name("bioyino_raft".into())
+                .spawn(move || {
+                    let mut runtime = Runtime::new().expect("creating runtime for raft thread");
+                    if start_as_leader {
+                        warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
+                    }
+                    let d = Delay::new(Instant::now() + Duration::from_millis(raft.start_delay));
+                    let log = log.clone();
+                    let delayed = d
+                        .map_err(|_| ())
+                        .and_then(move |_|  {
+                            let mut con_state = CONSENSUS_STATE.lock().unwrap();
+                            *con_state = ConsensusState::Enabled;
+                            info!(log, "starting internal consensus"; "initial_state"=>format!("{:?}", *con_state));
+                            start_internal_raft(raft, consensus_log);
+                            Ok(())
+                        });
 
-                runtime.spawn(delayed);
-                runtime.block_on(empty::<(), ()>()).expect("raft thread failed");
+                    runtime.spawn(delayed);
+                    runtime.block_on(empty::<(), ()>()).expect("raft thread failed");
 
-               info!(flog, "consensus thread stopped");
-            }).expect("starting counting worker thread");
+                    info!(flog, "consensus thread stopped");
+                }).expect("starting counting worker thread");
         }
         ConsensusKind::Consul => {
             if start_as_leader {
@@ -405,6 +393,7 @@ fn main() {
 
     let dur = Duration::from_millis(carbon.interval);
     let carbon_timer = Interval::new(Instant::now() + dur, dur);
+    let carbon_config = config.carbon.clone();
     let carbon_timer = carbon_timer.map_err(|e| GeneralError::Timer(e)).for_each(
         move |_tick| {
             let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(
@@ -419,7 +408,7 @@ fn main() {
 
             let update_counter_prefix = update_counter_prefix.clone();
             let update_counter_suffix = update_counter_suffix.clone();
-            let backend_opts = system.carbon.clone();
+            let backend_opts = carbon_config.clone();
             thread::Builder::new()
                 .name("bioyino_carbon".into())
                 .spawn(move || {
@@ -503,13 +492,6 @@ fn main() {
         }
     }
 
-    let reserve_min = bufsize * mm_packets;
-    let buffer_flush_length = if buffer_flush_length < reserve_min {
-        debug!(log, "buffer-flush-len is lower than mm-packets*bufsize"; "new-value"=>reserve_min, "old-value"=>buffer_flush_length);
-        reserve_min
-    } else {
-        buffer_flush_length
-    };
 
     if buffer_flush_time > 0 {
         let dur = Duration::from_millis(buffer_flush_time);
@@ -538,13 +520,12 @@ fn main() {
             log,
             listen,
             &chans,
+            config.clone(),
             n_threads,
             bufsize,
             mm_packets,
             mm_async,
             mm_timeout,
-            buffer_flush_time,
-            buffer_flush_length,
             flush_flags.clone(),
             );
     } else {
@@ -552,11 +533,11 @@ fn main() {
             log,
             listen,
             &chans,
+            config.clone(),
             n_threads,
             greens,
             async_sockets,
             bufsize,
-            buffer_flush_length,
             flush_flags.clone(),
             );
     }

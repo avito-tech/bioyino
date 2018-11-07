@@ -39,6 +39,38 @@ pub fn try_resolve(s: &str) -> SocketAddr {
     })
 }
 
+// TODO impl this correctly and use instead of try_resolve
+// PROFIT: gives libnss-aware behaviour
+/*
+   fn _try_resolve_nss(name: &str) {
+   use std::io;
+   use std::ffi::CString;
+   use std::ptr::{null_mut, null};
+   use libc::*;
+
+   let domain= CString::new(Vec::from(name)).unwrap().into_raw();
+   let mut result: *mut addrinfo = null_mut();
+
+   let success = unsafe {
+   getaddrinfo(domain, null_mut(), null(), &mut result)
+   };
+
+   if success != 0 {
+//        let errno = unsafe { *__errno_location() };
+println!("{:?}", io::Error::last_os_error());
+} else {
+let mut cur = result;
+while cur != null_mut() {
+unsafe{
+println!("LEN {:?}", (*result).ai_addrlen);
+println!("DATA {:?}", (*(*result).ai_addr).sa_data);
+cur = (*result).ai_next;
+}
+}
+}
+}
+*/
+
 /// Get hostname. Copypasted from some crate
 pub fn get_hostname() -> Option<String> {
     let len = 255;

@@ -14,13 +14,14 @@ use tokio::executor::current_thread::spawn;
 use tokio::net::UdpSocket;
 
 use task::Task;
+use config::System;
 
 #[derive(Debug)]
 pub struct StatsdServer {
     socket: UdpSocket,
     chans: Vec<mpsc::Sender<Task>>,
     bufmap: HashMap<SocketAddr, BytesMut>,
-    buffer_flush_length: usize,
+    config: Arc<System>,
     bufsize: usize,
     recv_counter: usize,
     next: usize,
@@ -30,23 +31,23 @@ pub struct StatsdServer {
 }
 
 impl StatsdServer {
-    pub fn new(
+    pub(crate) fn new(
         socket: UdpSocket,
         chans: Vec<mpsc::Sender<Task>>,
         bufmap: HashMap<SocketAddr, BytesMut>,
-        buffer_flush_length: usize,
+        config: Arc<System>,
         bufsize: usize,
         recv_counter: usize,
         next: usize,
         readbuf: BytesMut,
         flush_flags: Arc<Vec<AtomicBool>>,
         thread_idx: usize,
-    ) -> Self {
+        ) -> Self {
         Self {
             socket,
             chans,
             bufmap,
-            buffer_flush_length,
+            config,
             bufsize,
             recv_counter,
             next,
@@ -67,7 +68,7 @@ impl IntoFuture for StatsdServer {
             socket,
             chans,
             mut bufmap,
-            buffer_flush_length,
+            config,
             bufsize,
             mut recv_counter,
             mut next,
@@ -88,7 +89,7 @@ impl IntoFuture for StatsdServer {
                 {
                     let buf = bufmap
                         .entry(addr)
-                        .or_insert(BytesMut::with_capacity(buffer_flush_length));
+                        .or_insert(BytesMut::with_capacity(config.network.buffer_flush_length));
                     recv_counter += size;
                     buf.put(&received[0..size]);
                 }
@@ -98,16 +99,14 @@ impl IntoFuture for StatsdServer {
                     .unwrap()
                     .swap(false, Ordering::SeqCst);
 
-                // TODO make it a config option
-                let consistent_parsing = true;
-                if recv_counter >= buffer_flush_length || flush {
+                if recv_counter >= config.network.buffer_flush_length || flush {
                     bufmap
                         .drain()
                         .map(|(addr, buf)| {
                             let mut hasher = DefaultHasher::new();
                             addr.hash(&mut hasher);
                             let ahash = hasher.finish();
-                            let chan = if consistent_parsing {
+                            let chan = if config.consistent_parsing {
                                 let chlen = chans.len();
                                 chans[ahash as usize % chlen].clone()
                             } else {
@@ -122,10 +121,10 @@ impl IntoFuture for StatsdServer {
 
                             spawn(
                                 chan.send(Task::Parse(ahash, buf.freeze()))
-                                    .map_err(|_| {
-                                        DROPS.fetch_add(1, Ordering::Relaxed);
-                                    }).map(|_| ()),
-                            )
+                                .map_err(|_| {
+                                    DROPS.fetch_add(1, Ordering::Relaxed);
+                                }).map(|_| ()),
+                                )
                         }).last();
 
                     spawn(
@@ -133,30 +132,30 @@ impl IntoFuture for StatsdServer {
                             socket,
                             chans,
                             bufmap,
-                            buffer_flush_length,
+                            config,
                             bufsize,
                             0,
                             next,
                             received,
                             flush_flags,
                             thread_idx,
-                        ).into_future(),
-                    );
+                            ).into_future(),
+                            );
                 } else {
                     spawn(
                         StatsdServer::new(
                             socket,
                             chans,
                             bufmap,
-                            buffer_flush_length,
+                            config,
                             bufsize,
                             recv_counter,
                             next,
                             received,
                             flush_flags,
                             thread_idx,
-                        ).into_future(),
-                    );
+                            ).into_future(),
+                            );
                 }
                 Ok(())
             });

@@ -10,6 +10,7 @@ use std::thread;
 
 use server::StatsdServer;
 use task::Task;
+use config::System;
 use {DROPS, INGRESS};
 
 use bytes::{BufMut, BytesMut};
@@ -27,15 +28,14 @@ pub(crate) fn start_sync_udp(
     log: Logger,
     listen: SocketAddr,
     chans: &Vec<Sender<Task>>,
+    config: Arc<System>,
     n_threads: usize,
     bufsize: usize,
     mm_packets: usize,
     mm_async: bool,
     mm_timeout: u64,
-    buffer_flush_time: u64,
-    buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-) {
+    ) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -48,7 +48,7 @@ pub(crate) fn start_sync_udp(
     sck.set_nonblocking(mm_async).unwrap();
 
     let mm_timeout = if mm_timeout == 0 {
-        buffer_flush_time
+        config.network.buffer_flush_time
     } else {
         mm_timeout
     };
@@ -59,6 +59,7 @@ pub(crate) fn start_sync_udp(
 
         let sck = sck.try_clone().unwrap();
         let flush_flags = flush_flags.clone();
+        let config = config.clone();
         thread::Builder::new()
             .name(format!("bioyino_mudp{}", i).into())
             .spawn(move || {
@@ -131,7 +132,7 @@ pub(crate) fn start_sync_udp(
                         let mut chunk = iovec {
                             iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr()
                                 as *mut c_void,
-                            iov_len: rowsize,
+                                iov_len: rowsize,
                         };
                         chunks.push(chunk);
                         // put the result to mheaders
@@ -166,7 +167,7 @@ pub(crate) fn start_sync_udp(
                                 } else {
                                     null_mut()
                                 },
-                            )
+                                )
                         };
 
                         if res == 0 {
@@ -183,7 +184,7 @@ pub(crate) fn start_sync_udp(
                                 // create address entry in messagemap
                                 let mut entry = bufmap
                                     .entry(addrs[i])
-                                    .or_insert(BytesMut::with_capacity(buffer_flush_length));
+                                    .or_insert(BytesMut::with_capacity(config.network.buffer_flush_length));
                                 // and put it's buffer there
                                 entry.put(&recv_buffer[i * rowsize..i * rowsize + mlen]);
 
@@ -192,10 +193,9 @@ pub(crate) fn start_sync_udp(
                                 mheaders[i].msg_hdr.msg_namelen = 20;
                             }
 
-                            let consistent_parsing = true;
                             // when it's time to send bytes, send them
                             let flush = flush_flags.get(i).unwrap().swap(false, Ordering::SeqCst);
-                            if flush || total_received >= buffer_flush_length {
+                            if flush || total_received >= config.network.buffer_flush_length {
                                 total_received = 0;
                                 bufmap
                                     .drain()
@@ -206,7 +206,7 @@ pub(crate) fn start_sync_udp(
                                         let mut hasher = DefaultHasher::new();
                                         hasher.write(&addr);
                                         let ahash = hasher.finish();
-                                        let mut chan = if consistent_parsing {
+                                        let mut chan = if config.consistent_parsing {
                                             chans[ahash as usize % chlen].clone()
                                         } else {
                                             ichans.next().unwrap().clone()
@@ -217,7 +217,7 @@ pub(crate) fn start_sync_udp(
                                                 DROPS.fetch_add(
                                                     messages as usize,
                                                     Ordering::Relaxed,
-                                                );
+                                                    );
                                             }).unwrap_or(());
                                     }).last();
                             }
@@ -241,13 +241,13 @@ pub(crate) fn start_async_udp(
     log: Logger,
     listen: SocketAddr,
     chans: &Vec<Sender<Task>>,
+    config: Arc<System>,
     n_threads: usize,
     greens: usize,
     async_sockets: usize,
     bufsize: usize,
-    buffer_flush_length: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-) {
+    ) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
 
     // Create a pool of listener sockets
@@ -269,6 +269,7 @@ pub(crate) fn start_async_udp(
 
         let chans = chans.clone();
         let flush_flags = flush_flags.clone();
+        let config = config.clone();
         thread::Builder::new()
             .name(format!("bioyino_udp{}", i).into())
             .spawn(move || {
@@ -286,20 +287,20 @@ pub(crate) fn start_async_udp(
                         let socket = socket.try_clone().expect("cloning socket");
                         let socket =
                             UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
-                                .expect("adding socket to event loop");
+                            .expect("adding socket to event loop");
 
                         let server = StatsdServer::new(
                             socket,
                             chans.clone(),
                             HashMap::new(),
-                            buffer_flush_length,
+                            config.clone(),
                             bufsize,
                             0,
                             i,
                             readbuf,
                             flush_flags.clone(),
                             i,
-                        );
+                            );
 
                         runtime.spawn(server.into_future());
                     }

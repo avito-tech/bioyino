@@ -47,6 +47,11 @@ update-counter-threshold = 200
 # any heavy counting would potentially block task and make some unparsed buffers to be skipped
 # fast-aggregation = true
 
+# Process buffers from different hosts separately, this gives more guarantee to parse
+# metrics from different hosts correctly. Can play bad if lots of metrics is received from a single host, set
+# it to false if you have such use case
+# consistent-parsing = true
+
 [carbon]
 
 # IP and port of the carbon-protocol backend to send aggregated data to

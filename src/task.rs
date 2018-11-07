@@ -15,7 +15,7 @@ use util::AggregateOptions;
 
 use {
     Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, LONG_CACHE, PARSE_ERRORS, PEER_ERRORS,
-    SHORT_CACHE,
+    SHORT_CACHE, BUFFER_CACHE,
 };
 
 #[derive(Debug)]
@@ -174,6 +174,9 @@ fn cut_bad(buf: &mut Bytes) -> Option<usize> {
 }
 
 fn parse_and_insert(_addr: u64, mut buf: Bytes) {
+    //let prev_buf = BUFFER_CACHE.with(|c| {
+    //    c.get_mut
+    //});
     // Cloned buf is shallow copy, so input and buf are the same bytes.
     // We are going to parse the whole slice, so for parser we use input as readonly
     // while buf follows the parser progress and is cut to get only names
