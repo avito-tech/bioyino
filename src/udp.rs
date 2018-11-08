@@ -211,7 +211,7 @@ pub(crate) fn start_sync_udp(
                                         } else {
                                             ichans.next().unwrap().clone()
                                         };
-                                        chan.try_send(Task::Parse(ahash, buf.take().freeze()))
+                                        chan.try_send(Task::Parse(ahash, buf.take()))
                                             .map_err(|_| {
                                                 warn!(log, "error sending buffer(queue full?)");
                                                 DROPS.fetch_add(

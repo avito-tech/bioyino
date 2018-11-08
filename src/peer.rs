@@ -116,7 +116,7 @@ fn parse_and_send(
     reader: cmsg::Reader,
     next_chan: Sender<Task>,
     log: Logger,
-) -> Result<(), MetricError> {
+    ) -> Result<(), MetricError> {
     match reader.which().map_err(MetricError::CapnpSchema)? {
         cmsg::Single(reader) => {
             let reader = reader.map_err(MetricError::Capnp)?;
@@ -185,7 +185,7 @@ impl NativeProtocolSnapshot {
         nodes: Vec<SocketAddr>,
         interval: Duration,
         chans: &Vec<Sender<Task>>,
-    ) -> Self {
+        ) -> Self {
         Self {
             log: log.new(o!("source"=>"peer-client")),
             nodes,
@@ -220,17 +220,17 @@ impl IntoFuture for NativeProtocolSnapshot {
                     spawn(chan.send(Task::TakeSnapshot(tx)).then(|_| Ok(())));
                     rx
                 })
-                .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
             let get_metrics = join_all(metrics)
                 .map_err(|_| {
                     PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
                     PeerError::TaskSend
                 })
-                .and_then(move |mut metrics| {
-                    metrics.retain(|m| m.len() > 0);
-                    Ok(metrics)
-                });
+            .and_then(move |mut metrics| {
+                metrics.retain(|m| m.len() > 0);
+                Ok(metrics)
+            });
 
             // All nodes have to receive the same metrics
             // so we don't parallel connections and metrics fetching
@@ -268,20 +268,20 @@ impl IntoFuture for NativeProtocolSnapshot {
                                             c_metric.set_name(name);
                                             metric.fill_capnp(&mut c_metric);
                                         })
-                                        .last();
+                                    .last();
                                 }
                                 codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
                                     debug!(elog, "codec error"; "error"=>e.to_string());
                                     PeerError::Capnp(e)
                                 })
                             })
-                            .map_err(move |e| {
-                                PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                debug!(dlog, "error sending snapshot: {}", e)
-                            })
-                            .then(|_| Ok(())) // we don't want to faill the whole timer cycle because of one send error
+                        .map_err(move |e| {
+                            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            debug!(dlog, "error sending snapshot: {}", e)
+                        })
+                        .then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
                     })
-                    .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
                 join_all(clients).map(|_| ())
             })
         });
@@ -293,34 +293,24 @@ impl IntoFuture for NativeProtocolSnapshot {
 mod test {
 
     use std::net::SocketAddr;
-    use {slog, slog_async, slog_term};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::Arc;
 
     use bytes::Bytes;
     use capnp::message::Builder;
-    use futures::future::ok;
     use futures::sync::mpsc::{self, Receiver};
-    use metric::{Metric, MetricType};
-    use slog::Drain;
     use slog::Logger;
-    use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 
-    use {LONG_CACHE, SHORT_CACHE};
+    use util::prepare_log;
+    use metric::{Metric, MetricType};
+    use task::TaskRunner;
+    use config::System;
 
     use super::*;
-    fn prepare_log() -> Logger {
-        // Set logging
-        let decorator = slog_term::TermDecorator::new().build();
-        let drain = slog_term::FullFormat::new(decorator).build().fuse();
-        let filter = slog::LevelFilter::new(drain, slog::Level::Trace).fuse();
-        let drain = slog_async::Async::new(filter).build().fuse();
-        let rlog = slog::Logger::root(drain, o!("program"=>"test"));
-        return rlog;
-    }
 
-    fn prepare_runtime_with_server() -> (Runtime, Receiver<Task>, Logger, SocketAddr) {
-        let rlog = prepare_log();
+    fn prepare_runtime_with_server(log: Logger) -> (Runtime, Receiver<Task>, SocketAddr) {
         let mut chans = Vec::new();
         let (tx, rx) = mpsc::channel(5);
         chans.push(tx);
@@ -329,32 +319,47 @@ mod test {
         let mut runtime = Runtime::new().expect("creating runtime for main thread");
 
         let c_peer_listen = address.clone();
-        let c_serv_log = rlog.clone();
-        let peer_server = NativeProtocolServer::new(rlog.clone(), c_peer_listen, chans)
+        let c_serv_log = log.clone();
+        let peer_server = NativeProtocolServer::new(log.clone(), c_peer_listen, chans)
             .into_future()
             .map_err(move |e| {
                 warn!(c_serv_log, "shot server gone with error: {:?}", e);
             });
         runtime.spawn(peer_server);
 
-        (runtime, rx, rlog, address)
+        (runtime, rx, address)
     }
 
     #[test]
     fn test_peer_protocol_capnp() {
         let test_timeout = Instant::now() + Duration::from_secs(3);
-        let (mut runtime, rx, rlog, address) = prepare_runtime_with_server();
 
-        let future = rx.for_each(move |task: Task| ok(task.run()).and_then(|_| Ok(())));
-        runtime.spawn(future);
+        let log = prepare_log("test_peer_capnp");
+
+        let mut config = System::default();
+        config.metrics.log_parse_errors = true;
+        let runner = TaskRunner::new(log.clone(), Arc::new(config), 16);
 
         let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let ts = ts.as_secs() as u64;
 
         let outmetric = Metric::new(42f64, MetricType::Gauge(None), ts.into(), None).unwrap();
-        let log = rlog.clone();
 
         let metric = outmetric.clone();
+        let (mut runtime, rx, address) = prepare_runtime_with_server(log.clone());
+
+        let future = rx.fold(runner, move |mut runner, task: Task| {runner.run(task); Ok(runner)}).and_then(move |runner| {
+            let single_name: Bytes = "complex.test.bioyino_single".into();
+            let multi_name: Bytes = "complex.test.bioyino_multi".into();
+            let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
+            assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
+            assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
+            assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
+
+            Ok(())
+        }).map_err(|_|panic!("error in the future"));
+        runtime.spawn(future);
+
         let sender = TcpStream::connect(&address)
             .map_err(|e| {
                 println!("connection err: {:?}", e);
@@ -395,7 +400,7 @@ mod test {
                             .send(multi_message)
                             .and_then(|codec| codec.send(snapshot_message))
                     }).map(|_| ())
-                    .map_err(|e| println!("codec error: {:?}", e))
+                .map_err(|e| println!("codec error: {:?}", e))
             }).map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
 
         let d = Delay::new(Instant::now() + Duration::from_secs(1));
@@ -404,16 +409,5 @@ mod test {
 
         let test_delay = Delay::new(test_timeout);
         runtime.block_on(test_delay).expect("runtime");
-
-        let single_name: Bytes = "complex.test.bioyino_single".into();
-        let multi_name: Bytes = "complex.test.bioyino_multi".into();
-        let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
-        LONG_CACHE.with(|c| {
-            assert_eq!(c.borrow().get(&shot_name), Some(&outmetric));
-        });
-        SHORT_CACHE.with(|c| {
-            assert_eq!(c.borrow().get(&single_name), Some(&outmetric));
-            assert_eq!(c.borrow().get(&multi_name), Some(&outmetric));
-        });
     }
 }

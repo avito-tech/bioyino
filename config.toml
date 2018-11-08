@@ -52,6 +52,9 @@ update-counter-threshold = 200
 # it to false if you have such use case
 # consistent-parsing = true
 
+# Log all buffers being dropped due to parsing errors. Can be very spammy.
+# log-parse-errors = false
+
 [carbon]
 
 # IP and port of the carbon-protocol backend to send aggregated data to

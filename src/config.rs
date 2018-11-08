@@ -15,7 +15,7 @@ use {ConsensusKind, ConsensusState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub(crate) struct System {
+pub struct System {
     /// Logging level
     pub verbosity: String,
 
@@ -83,7 +83,7 @@ impl Default for System {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub(crate) struct Metrics {
+pub struct Metrics {
     // TODO: Maximum metric array size, 0 for unlimited
     //  max_metrics: usize,
     /// Should we provide metrics with top update numbers
@@ -100,9 +100,9 @@ pub(crate) struct Metrics {
 
     /// Aggregate faster at the price or probably loosing some incoming metrics
     pub fast_aggregation: bool,
-    // TODO
-    //    /// Whether we should spam parsing errors in logs
-    //    pub log_parse_errors: bool,
+
+    /// Whether we should spam parsing errors in logs
+    pub log_parse_errors: bool,
 }
 
 impl Default for Metrics {
@@ -114,13 +114,14 @@ impl Default for Metrics {
             update_counter_suffix: String::new(),
             update_counter_threshold: 200,
             fast_aggregation: true,
+            log_parse_errors: false,
         }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub(crate) struct Carbon {
+pub struct Carbon {
     // TODO: will be used when multiple backends support is implemented
     ///// Enable sending to carbon protocol backend
     //pub enabled: bool,
@@ -160,7 +161,7 @@ impl Default for Carbon {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub(crate) struct Network {
+pub struct Network {
     /// Address and UDP port to listen for statsd metrics on
     pub listen: SocketAddr,
 
@@ -228,7 +229,7 @@ impl Default for Network {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub(crate) struct Consul {
+pub struct Consul {
     /// Start in disabled leader finding mode
     pub start_as: ConsensusState,
 
@@ -259,7 +260,7 @@ impl Default for Consul {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub(crate) struct Raft {
+pub struct Raft {
     /// Delay raft after start (ms)
     pub start_delay: u64,
 

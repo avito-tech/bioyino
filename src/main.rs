@@ -61,7 +61,6 @@ pub mod protocol_capnp {
     include!(concat!(env!("OUT_DIR"), "/schema/protocol_capnp.rs"));
 }
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
@@ -71,7 +70,7 @@ use std::time::{self, Duration, Instant, SystemTime};
 
 use slog::{Drain, Level};
 
-use bytes::{Bytes, BytesMut};
+use bytes::{Bytes};
 use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
@@ -89,7 +88,7 @@ use management::{MgmtClient, MgmtServer};
 use metric::Metric;
 use peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use raft::start_internal_raft;
-use task::Task;
+use task::{Task, TaskRunner};
 use util::{
     try_resolve, AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions,
 };
@@ -101,12 +100,6 @@ pub type Float = f64;
 
 // a type to store pre-aggregated data
 pub type Cache = HashMap<Bytes, Metric<Float>>;
-thread_local!(static LONG_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
-thread_local!(static SHORT_CACHE: RefCell<HashMap<Bytes, Metric<Float>>> = RefCell::new(HashMap::with_capacity(8192)));
-thread_local!(static BUFFER_CACHE: RefCell<HashMap<u64, (usize, BytesMut)>> = RefCell::new(HashMap::with_capacity(8192)));
-
-// options
-//pub static SHOW_PARSE_ERRORS: AtomicBool = ATOMIC_BOOL_INIT;
 
 // statistic counters
 pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -193,6 +186,7 @@ fn main() {
                         update_counter_suffix,
                         update_counter_threshold,
                         fast_aggregation,
+                        log_parse_errors: _,
                     },
                     carbon,
                     n_threads,
@@ -268,11 +262,15 @@ fn main() {
     for i in 0..w_threads {
         let (tx, rx) = mpsc::channel(task_queue_size);
         chans.push(tx);
+        let tlog = log.clone();
+        let cf = config.clone();
         thread::Builder::new()
             .name(format!("bioyino_cnt{}", i).into())
             .spawn(move || {
+                let runner = TaskRunner::new(tlog, cf, 8192);
                 let mut runtime = Runtime::new().expect("creating runtime for counting worker");
-                let future = rx.for_each(move |task: Task| ok(task.run()));
+                let future = rx.fold(runner, move |mut runner, task: Task| {runner.run(task); Ok(runner)}).map(|_|()).map_err(|_|());
+                //        let future = rx.for_each(|task: Task| ok(runner.run(task)));
                 runtime.block_on(future).expect("worker thread failed");
             }).expect("starting counting worker thread");
     }

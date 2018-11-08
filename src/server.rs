@@ -120,7 +120,7 @@ impl IntoFuture for StatsdServer {
                             };
 
                             spawn(
-                                chan.send(Task::Parse(ahash, buf.freeze()))
+                                chan.send(Task::Parse(ahash, buf))
                                 .map_err(|_| {
                                     DROPS.fetch_add(1, Ordering::Relaxed);
                                 }).map(|_| ()),

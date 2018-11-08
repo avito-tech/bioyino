@@ -12,16 +12,26 @@ use futures::sync::mpsc::{Sender, UnboundedSender};
 use futures::sync::oneshot;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
 use resolve::resolver;
-use slog::Logger;
+use slog::{Logger, Drain};
 use tokio::executor::current_thread::spawn;
 use tokio::timer::{Delay, Interval};
 
 use metric::{Metric, MetricType};
-use task::{AggregateData, Task};
+use task::{AggregateData, Task, aggregate_task};
 use {Cache, Float};
 use {AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
 
 use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
+
+pub fn prepare_log(root: &'static str) -> Logger {
+    // Set logging
+    let decorator = slog_term::TermDecorator::new().build();
+    let drain = slog_term::FullFormat::new(decorator).build().fuse();
+    let filter = slog::LevelFilter::new(drain, slog::Level::Trace).fuse();
+    let drain = slog_async::Async::new(filter).build().fuse();
+    let rlog = slog::Logger::root(drain, o!("program"=>"test", "test"=>root));
+    return rlog;
+}
 
 pub fn try_resolve(s: &str) -> SocketAddr {
     s.parse().unwrap_or_else(|_| {
@@ -279,25 +289,25 @@ impl IntoFuture for Aggregator {
                     }).enumerate()
                 .map(move |(num, (name, metric))| {
                     let buf = BytesMut::with_capacity(1024);
-                    let task = Task::Aggregate(AggregateData {
+                    let task_data = AggregateData {
                         buf,
                         name: Bytes::from(name),
                         metric,
                         options: options.clone(),
                         response: tx.clone(),
-                    });
+                    };
                     if options.fast_aggregation {
                         spawn(
                             chans[num % chans.len()]
                             .clone()
-                            .send(task)
+                            .send(Task::Aggregate(task_data))
                             .map(|_| ())
                             .map_err(|_| {
                                 DROPS.fetch_add(1, Ordering::Relaxed);
                             }),
                             );
                     } else {
-                        task.run();
+                        aggregate_task(task_data);
                     }
                 }).last();
                 Ok(())
