@@ -13,8 +13,8 @@ use futures::{Future, IntoFuture, Sink};
 use tokio::executor::current_thread::spawn;
 use tokio::net::UdpSocket;
 
-use task::Task;
 use config::System;
+use task::Task;
 
 #[derive(Debug)]
 pub struct StatsdServer {
@@ -42,7 +42,7 @@ impl StatsdServer {
         readbuf: BytesMut,
         flush_flags: Arc<Vec<AtomicBool>>,
         thread_idx: usize,
-        ) -> Self {
+    ) -> Self {
         Self {
             socket,
             chans,
@@ -106,7 +106,7 @@ impl IntoFuture for StatsdServer {
                             let mut hasher = DefaultHasher::new();
                             addr.hash(&mut hasher);
                             let ahash = hasher.finish();
-                            let chan = if config.consistent_parsing {
+                            let chan = if config.metrics.consistent_parsing {
                                 let chlen = chans.len();
                                 chans[ahash as usize % chlen].clone()
                             } else {
@@ -121,10 +121,10 @@ impl IntoFuture for StatsdServer {
 
                             spawn(
                                 chan.send(Task::Parse(ahash, buf))
-                                .map_err(|_| {
-                                    DROPS.fetch_add(1, Ordering::Relaxed);
-                                }).map(|_| ()),
-                                )
+                                    .map_err(|_| {
+                                        DROPS.fetch_add(1, Ordering::Relaxed);
+                                    }).map(|_| ()),
+                            )
                         }).last();
 
                     spawn(
@@ -139,8 +139,8 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                            ).into_future(),
-                            );
+                        ).into_future(),
+                    );
                 } else {
                     spawn(
                         StatsdServer::new(
@@ -154,8 +154,8 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                            ).into_future(),
-                            );
+                        ).into_future(),
+                    );
                 }
                 Ok(())
             });

@@ -70,7 +70,7 @@ use std::time::{self, Duration, Instant, SystemTime};
 
 use slog::{Drain, Level};
 
-use bytes::{Bytes};
+use bytes::Bytes;
 use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
@@ -140,13 +140,13 @@ pub enum ConsensusKind {
 }
 
 lazy_static! {
-    pub static ref CONSENSUS_STATE: Mutex<ConsensusState> = { Mutex::new(ConsensusState::Disabled) };
+    pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
+        { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
 
 fn main() {
-
     let (system, command) = System::load();
 
     let mut config = system.clone();
@@ -163,40 +163,40 @@ fn main() {
                 mm_async,
                 mm_timeout,
                 buffer_flush_time,
-                buffer_flush_length :_,
+                buffer_flush_length: _,
                 greens,
                 async_sockets,
                 nodes,
                 snapshot_interval,
             },
-            raft,
-            consul:
-                Consul {
-                    start_as: consul_start_as,
-                    agent,
-                    session_ttl: consul_session_ttl,
-                    renew_time: consul_renew_time,
-                    key_name: consul_key,
-                },
-                metrics:
-                    Metrics {
-                        //           max_metrics,
-                        mut count_updates,
-                        update_counter_prefix,
-                        update_counter_suffix,
-                        update_counter_threshold,
-                        fast_aggregation,
-                        log_parse_errors: _,
-                    },
-                    carbon,
-                    n_threads,
-                    w_threads,
-                    stats_interval: s_interval,
-                    task_queue_size,
-                    start_as_leader,
-                    stats_prefix,
-                    consensus,
-                    consistent_parsing: _,
+        raft,
+        consul:
+            Consul {
+                start_as: consul_start_as,
+                agent,
+                session_ttl: consul_session_ttl,
+                renew_time: consul_renew_time,
+                key_name: consul_key,
+            },
+        metrics:
+            Metrics {
+                //           max_metrics,
+                mut count_updates,
+                update_counter_prefix,
+                update_counter_suffix,
+                update_counter_threshold,
+                fast_aggregation,
+                consistent_parsing: _,
+                log_parse_errors: _,
+            },
+        carbon,
+        n_threads,
+        w_threads,
+        stats_interval: s_interval,
+        task_queue_size,
+        start_as_leader,
+        stats_prefix,
+        consensus,
     } = system;
 
     let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
@@ -269,7 +269,12 @@ fn main() {
             .spawn(move || {
                 let runner = TaskRunner::new(tlog, cf, 8192);
                 let mut runtime = Runtime::new().expect("creating runtime for counting worker");
-                let future = rx.fold(runner, move |mut runner, task: Task| {runner.run(task); Ok(runner)}).map(|_|()).map_err(|_|());
+                let future = rx
+                    .fold(runner, move |mut runner, task: Task| {
+                        runner.run(task);
+                        Ok(runner)
+                    }).map(|_| ())
+                    .map_err(|_| ());
                 //        let future = rx.for_each(|task: Task| ok(runner.run(task)));
                 runtime.block_on(future).expect("worker thread failed");
             }).expect("starting counting worker thread");
@@ -292,11 +297,11 @@ fn main() {
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
-        ).into_future()
-        .map_err(move |e| {
-            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-            info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
-        });
+    ).into_future()
+    .map_err(move |e| {
+        PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+        info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
+    });
     runtime.spawn(snapshot);
 
     // settings safe for asap restart
@@ -490,7 +495,6 @@ fn main() {
         }
     }
 
-
     if buffer_flush_time > 0 {
         let dur = Duration::from_millis(buffer_flush_time);
         let flush_timer = Interval::new(Instant::now() + dur, dur);
@@ -525,7 +529,7 @@ fn main() {
             mm_async,
             mm_timeout,
             flush_flags.clone(),
-            );
+        );
     } else {
         start_async_udp(
             log,
@@ -537,7 +541,7 @@ fn main() {
             async_sockets,
             bufsize,
             flush_flags.clone(),
-            );
+        );
     }
 
     runtime

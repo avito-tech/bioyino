@@ -55,9 +55,6 @@ pub struct System {
 
     /// Consensus kind to use
     pub consensus: ConsensusKind,
-
-    /// Consistent parsing
-    pub consistent_parsing: bool,
 }
 
 impl Default for System {
@@ -76,7 +73,6 @@ impl Default for System {
             start_as_leader: false,
             stats_prefix: "resources.monitoring.bioyino".to_string(),
             consensus: ConsensusKind::None,
-            consistent_parsing: true,
         }
     }
 }
@@ -101,6 +97,9 @@ pub struct Metrics {
     /// Aggregate faster at the price or probably loosing some incoming metrics
     pub fast_aggregation: bool,
 
+    /// Consistent parsing
+    pub consistent_parsing: bool,
+
     /// Whether we should spam parsing errors in logs
     pub log_parse_errors: bool,
 }
@@ -114,6 +113,7 @@ impl Default for Metrics {
             update_counter_suffix: String::new(),
             update_counter_threshold: 200,
             fast_aggregation: true,
+            consistent_parsing: true,
             log_parse_errors: false,
         }
     }
@@ -317,35 +317,35 @@ impl System {
         let app = app_from_crate!()
             .arg(
                 Arg::with_name("config")
-                .help("configuration file path")
-                .long("config")
-                .short("c")
-                .required(true)
-                .takes_value(true)
-                .default_value("/etc/bioyino/bioyino.toml"),
-                ).arg(
-                    Arg::with_name("verbosity")
+                    .help("configuration file path")
+                    .long("config")
+                    .short("c")
+                    .required(true)
+                    .takes_value(true)
+                    .default_value("/etc/bioyino/bioyino.toml"),
+            ).arg(
+                Arg::with_name("verbosity")
                     .short("v")
                     .help("logging level")
                     .takes_value(true),
-                    ).subcommand(
-                        SubCommand::with_name("query")
-                        .about("send a management command to running bioyino server")
-                        .arg(
-                            Arg::with_name("host")
+            ).subcommand(
+                SubCommand::with_name("query")
+                    .about("send a management command to running bioyino server")
+                    .arg(
+                        Arg::with_name("host")
                             .short("h")
                             .default_value("127.0.0.1:8137"),
-                            ).subcommand(SubCommand::with_name("status").about("get server state"))
-                        .subcommand(
-                            SubCommand::with_name("consensus")
+                    ).subcommand(SubCommand::with_name("status").about("get server state"))
+                    .subcommand(
+                        SubCommand::with_name("consensus")
                             .arg(Arg::with_name("action").index(1))
                             .arg(
                                 Arg::with_name("leader_action")
-                                .index(2)
-                                .default_value("unchanged"),
-                                ),
-                                ),
-                                ).get_matches();
+                                    .index(2)
+                                    .default_value("unchanged"),
+                            ),
+                    ),
+            ).get_matches();
 
         let config = value_t!(app.value_of("config"), String).expect("config file must be string");
         let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
@@ -370,7 +370,7 @@ impl System {
                 (
                     system,
                     Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server),
-                    )
+                )
             } else {
                 // shold be unreachable
                 unreachable!("clap bug?")

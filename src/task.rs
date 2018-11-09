@@ -1,23 +1,23 @@
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use combine::Parser;
 use combine::error::UnexpectedParse;
+use combine::Parser;
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::oneshot;
 use futures::{Future, Sink};
-use tokio::runtime::current_thread::spawn;
 use slog::Logger;
+use tokio::runtime::current_thread::spawn;
 
+use config::System;
 use metric::Metric;
 use parser::metric_parser;
 use util::AggregateOptions;
-use config::System;
 
-use { Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS,  PARSE_ERRORS, PEER_ERRORS };
+use {Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
 
 #[derive(Debug)]
 pub struct AggregateData {
@@ -57,7 +57,7 @@ fn cut_bad(log: Option<Logger>, buf: &mut Bytes) -> Option<usize> {
     match buf.iter().position(|&c| c == 10u8) {
         Some(pos) if pos <= buf.len() - 1 => {
             if let Some(log) = log {
-                warn!(log, "dropping buffer: {:?}", &buf[0..pos+1]);
+                warn!(log, "dropping buffer: {:?}", &buf[0..pos + 1]);
             }
             buf.advance(pos + 1);
             Some(pos)
@@ -97,29 +97,28 @@ impl TaskRunner {
                 };
                 let mut buf = {
                     let len = buf.len();
-                    let (_, ref mut prev_buf) = self.buffers.entry(addr)
+                    let (_, ref mut prev_buf) = self
+                        .buffers
+                        .entry(addr)
                         .and_modify(|(times, _)| {
                             *times += 1;
-                        })
-                    .or_insert((0, BytesMut::with_capacity(len)));
+                        }).or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf.clone().freeze()
                 };
 
                 let parsed = self.parse_and_insert(log, buf);
-                self.buffers.entry(addr)
-                    .and_modify(|(_, buf)| {
-                        buf.advance(parsed);
-                    });
+                self.buffers.entry(addr).and_modify(|(_, buf)| {
+                    buf.advance(parsed);
+                });
             }
-            Task::AddMetric(name, metric) =>
-                update_metric(&mut self.short, name, metric),
-                Task::AddMetrics(mut list) => {
-                    list.drain(..)
-                        .map(|(name, metric)| update_metric(&mut self.short, name, metric))
-                        .last();
-                }
+            Task::AddMetric(name, metric) => update_metric(&mut self.short, name, metric),
+            Task::AddMetrics(mut list) => {
+                list.drain(..)
+                    .map(|(name, metric)| update_metric(&mut self.short, name, metric))
+                    .last();
+            }
             Task::AddSnapshot(mut list) => {
                 // snapshots go to long cache to avoid being duplicated to other nodes
                 list.drain(..)
@@ -132,9 +131,11 @@ impl TaskRunner {
 
                 // self.short now contains empty hashmap
                 // join a copy of data in short cache to long cache
-                short.iter()
-                    .map(|(name, metric)| update_metric(&mut self.long, name.clone(), metric.clone()))
-                    .last();
+                short
+                    .iter()
+                    .map(|(name, metric)| {
+                        update_metric(&mut self.long, name.clone(), metric.clone())
+                    }).last();
 
                 // TODO: we could do this without additional copying if borrowck would allow us
                 // this. Maybe NLL would help us with that in Rust 2018:
@@ -190,8 +191,8 @@ impl TaskRunner {
                             input = input.split_at(pos + 1).1;
                             continue;
                         } else {
-                            return rest.len()
-                                //break;
+                            return rest.len();
+                            //break;
                         }
                     }
 
@@ -202,8 +203,8 @@ impl TaskRunner {
                                 input = input.split_at(pos + 1).1;
                                 continue;
                             } else {
-                                return rest.len()
-                                    //break;
+                                return rest.len();
+                                //break;
                             }
                         }
                     };
@@ -211,8 +212,8 @@ impl TaskRunner {
                     INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
                     update_metric(&mut self.short, name, metric);
                     if rest.len() == 0 {
-                        return 0
-                            //break;
+                        return 0;
+                        //break;
                     }
                 }
                 Err(UnexpectedParse::Eoi) => {
@@ -239,7 +240,6 @@ impl TaskRunner {
     pub fn get_short_entry(&self, e: &Bytes) -> Option<&Metric<Float>> {
         self.short.get(e)
     }
-
 }
 
 pub fn aggregate_task(data: AggregateData) {
@@ -283,16 +283,16 @@ pub fn aggregate_task(data: AggregateData) {
             let name = buf.take().freeze();
             (name, value)
         }).chain(upd)
-    .map(|data| {
-        spawn(
-            response
-            .clone()
-            .send(data)
-            .map_err(|_| {
-                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-            }).map(|_| ()),
+        .map(|data| {
+            spawn(
+                response
+                    .clone()
+                    .send(data)
+                    .map_err(|_| {
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    }).map(|_| ()),
             );
-    }).last();
+        }).last();
 }
 
 #[cfg(test)]
@@ -307,7 +307,7 @@ mod tests {
         let mut data = Bytes::new();
         data.extend_from_slice(
             b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000|g|@0.5\nMORETrasH\nFUUU",
-            );
+        );
 
         let mut config = System::default();
         config.metrics.log_parse_errors = true;
