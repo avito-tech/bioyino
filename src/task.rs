@@ -101,7 +101,7 @@ impl TaskRunner {
                         .buffers
                         .entry(addr)
                         .and_modify(|(times, _)| {
-                            *times += 1;
+                            *times = 0;
                         }).or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
