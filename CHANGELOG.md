@@ -1,4 +1,4 @@
- Release 0.4.0
+# Release 0.4.0 #
 
 This release is notable by internal Raft implementation and schema-based node interconnection, opening a route for large, cluster-aware installations.
 
