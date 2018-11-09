@@ -8,9 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
+use config::System;
 use server::StatsdServer;
 use task::Task;
-use config::System;
 use {DROPS, INGRESS};
 
 use bytes::{BufMut, BytesMut};
@@ -35,7 +35,7 @@ pub(crate) fn start_sync_udp(
     mm_async: bool,
     mm_timeout: u64,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -132,7 +132,7 @@ pub(crate) fn start_sync_udp(
                         let mut chunk = iovec {
                             iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr()
                                 as *mut c_void,
-                                iov_len: rowsize,
+                            iov_len: rowsize,
                         };
                         chunks.push(chunk);
                         // put the result to mheaders
@@ -167,7 +167,7 @@ pub(crate) fn start_sync_udp(
                                 } else {
                                     null_mut()
                                 },
-                                )
+                            )
                         };
 
                         if res == 0 {
@@ -182,10 +182,20 @@ pub(crate) fn start_sync_udp(
                                 INGRESS.fetch_add(mlen, Ordering::Relaxed);
 
                                 // create address entry in messagemap
-                                let mut entry = bufmap
-                                    .entry(addrs[i])
-                                    .or_insert(BytesMut::with_capacity(config.network.buffer_flush_length));
-                                // and put it's buffer there
+                                let mut entry = bufmap.entry(addrs[i]).or_insert(
+                                    BytesMut::with_capacity(config.network.buffer_flush_length),
+                                );
+
+                                // check we can fit the buffer
+                                if entry.remaining_mut() < mlen + 1 {
+                                    entry.reserve(if mlen > config.network.buffer_flush_length {
+                                        mlen
+                                    } else {
+                                        config.network.buffer_flush_length
+                                    });
+                                }
+
+                                // and put the buffer into the map
                                 entry.put(&recv_buffer[i * rowsize..i * rowsize + mlen]);
 
                                 // reset addres to be used in next cycle
@@ -201,12 +211,20 @@ pub(crate) fn start_sync_udp(
                                     .drain()
                                     .map(|(addr, mut buf)| {
                                         // in some ideal world we want all values from the same host to be parsed by the
-                                        // same thread, but this could cause load unbalancing between
-                                        // threads TODO: make it an option in config
+                                        // same thread, but this could cause load unbalancing between threads in some
+                                        // corner cases, i.e. when only few hosts are sending most
+                                        // metrics
+                                        // TODO: we can work this around by fast-scanning buffer
+                                        // for newlines. if more than 2 newlines are there, buffer
+                                        // can be split into 3 parts and the middle part can be
+                                        // cropped from the buffer and relatively safely given to other nodes for
+                                        // parsing. It would be WAY better to do this in counting
+                                        // nodes rather than networking ones, but could be harder
+                                        // than it seems because of queue reordering
                                         let mut hasher = DefaultHasher::new();
                                         hasher.write(&addr);
                                         let ahash = hasher.finish();
-                                        let mut chan = if config.consistent_parsing {
+                                        let mut chan = if config.metrics.consistent_parsing {
                                             chans[ahash as usize % chlen].clone()
                                         } else {
                                             ichans.next().unwrap().clone()
@@ -217,7 +235,7 @@ pub(crate) fn start_sync_udp(
                                                 DROPS.fetch_add(
                                                     messages as usize,
                                                     Ordering::Relaxed,
-                                                    );
+                                                );
                                             }).unwrap_or(());
                                     }).last();
                             }
@@ -247,7 +265,7 @@ pub(crate) fn start_async_udp(
     async_sockets: usize,
     bufsize: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
 
     // Create a pool of listener sockets
@@ -287,7 +305,7 @@ pub(crate) fn start_async_udp(
                         let socket = socket.try_clone().expect("cloning socket");
                         let socket =
                             UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
-                            .expect("adding socket to event loop");
+                                .expect("adding socket to event loop");
 
                         let server = StatsdServer::new(
                             socket,
@@ -300,7 +318,7 @@ pub(crate) fn start_async_udp(
                             readbuf,
                             flush_flags.clone(),
                             i,
-                            );
+                        );
 
                         runtime.spawn(server.into_future());
                     }
