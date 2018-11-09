@@ -1,4 +1,9 @@
-use std::sync::atomic::Ordering;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use {DROPS, INGRESS};
 
@@ -8,40 +13,47 @@ use futures::{Future, IntoFuture, Sink};
 use tokio::executor::current_thread::spawn;
 use tokio::net::UdpSocket;
 
+use config::System;
 use task::Task;
 
 #[derive(Debug)]
 pub struct StatsdServer {
     socket: UdpSocket,
     chans: Vec<mpsc::Sender<Task>>,
-    buf: BytesMut,
-    buf_queue_size: usize,
+    bufmap: HashMap<SocketAddr, BytesMut>,
+    config: Arc<System>,
     bufsize: usize,
+    recv_counter: usize,
     next: usize,
     readbuf: BytesMut,
-    chunks: usize,
+    flush_flags: Arc<Vec<AtomicBool>>,
+    thread_idx: usize,
 }
 
 impl StatsdServer {
-    pub fn new(
+    pub(crate) fn new(
         socket: UdpSocket,
         chans: Vec<mpsc::Sender<Task>>,
-        buf: BytesMut,
-        buf_queue_size: usize,
+        bufmap: HashMap<SocketAddr, BytesMut>,
+        config: Arc<System>,
         bufsize: usize,
+        recv_counter: usize,
         next: usize,
         readbuf: BytesMut,
-        chunks: usize,
+        flush_flags: Arc<Vec<AtomicBool>>,
+        thread_idx: usize,
     ) -> Self {
         Self {
             socket,
             chans,
-            buf,
-            buf_queue_size,
+            bufmap,
+            config,
             bufsize,
+            recv_counter,
             next,
             readbuf,
-            chunks,
+            flush_flags,
+            thread_idx,
         }
     }
 }
@@ -55,62 +67,93 @@ impl IntoFuture for StatsdServer {
         let Self {
             socket,
             chans,
-            mut buf,
-            buf_queue_size,
+            mut bufmap,
+            config,
             bufsize,
-            next,
+            mut recv_counter,
+            mut next,
             readbuf,
-            chunks,
+            flush_flags,
+            thread_idx,
         } = self;
 
         let future = socket
             .recv_dgram(readbuf)
             .map_err(|e| println!("error receiving UDP packet {:?}", e))
-            .and_then(move |(socket, received, size, _addr)| {
+            .and_then(move |(socket, received, size, addr)| {
                 INGRESS.fetch_add(1, Ordering::Relaxed);
                 if size == 0 {
                     return Ok(());
                 }
 
-                buf.put(&received[0..size]);
+                {
+                    let buf = bufmap
+                        .entry(addr)
+                        .or_insert(BytesMut::with_capacity(config.network.buffer_flush_length));
+                    recv_counter += size;
+                    buf.put(&received[0..size]);
+                }
 
-                if buf.remaining_mut() < bufsize || chunks == 0 {
-                    let (chan, next) = if next >= chans.len() {
-                        (chans[0].clone(), 1)
-                    } else {
-                        (chans[next].clone(), next + 1)
-                    };
-                    let newbuf = BytesMut::with_capacity(buf_queue_size * bufsize);
+                let flush = flush_flags
+                    .get(thread_idx)
+                    .unwrap()
+                    .swap(false, Ordering::SeqCst);
+
+                if recv_counter >= config.network.buffer_flush_length || flush {
+                    bufmap
+                        .drain()
+                        .map(|(addr, buf)| {
+                            let mut hasher = DefaultHasher::new();
+                            addr.hash(&mut hasher);
+                            let ahash = hasher.finish();
+                            let chan = if config.metrics.consistent_parsing {
+                                let chlen = chans.len();
+                                chans[ahash as usize % chlen].clone()
+                            } else {
+                                if next >= chans.len() {
+                                    next = 1;
+                                    chans[0].clone()
+                                } else {
+                                    next = next + 1;
+                                    chans[next].clone()
+                                }
+                            };
+
+                            spawn(
+                                chan.send(Task::Parse(ahash, buf))
+                                    .map_err(|_| {
+                                        DROPS.fetch_add(1, Ordering::Relaxed);
+                                    }).map(|_| ()),
+                            )
+                        }).last();
 
                     spawn(
-                        chan.send(Task::Parse(buf.freeze()))
-                            .map_err(|_| {
-                                DROPS.fetch_add(1, Ordering::Relaxed);
-                            })
-                            .and_then(move |_| {
-                                StatsdServer::new(
-                                    socket,
-                                    chans,
-                                    newbuf,
-                                    buf_queue_size,
-                                    bufsize,
-                                    next,
-                                    received,
-                                    buf_queue_size,
-                                ).into_future()
-                            }),
+                        StatsdServer::new(
+                            socket,
+                            chans,
+                            bufmap,
+                            config,
+                            bufsize,
+                            0,
+                            next,
+                            received,
+                            flush_flags,
+                            thread_idx,
+                        ).into_future(),
                     );
                 } else {
                     spawn(
                         StatsdServer::new(
                             socket,
                             chans,
-                            buf,
-                            buf_queue_size,
+                            bufmap,
+                            config,
                             bufsize,
+                            recv_counter,
                             next,
                             received,
-                            chunks - 1,
+                            flush_flags,
+                            thread_idx,
                         ).into_future(),
                     );
                 }

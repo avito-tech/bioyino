@@ -1,4 +1,6 @@
-# This is an example config showing all the options, filled with default values
+# This is an example config showing all the possible options
+# Required options are filled with default values
+# Non-required options are commented with defaul values in comments
 
 verbosity = "warn"
 
@@ -8,8 +10,11 @@ n-threads = 4
 # Number of aggregating and counting threads, use 0(not recommended) to use all CPU cores
 w-threads = 4
 
-# Queue size for single counting thread before packet is dropped
+# Queue size for single counting thread before task is dropped
 task-queue-size = 1024
+
+# If server should become leader from it's very start
+start-as-leader = true
 
 # How often to gather own stats, in ms. Use 0 to disable (stats are still gathered and printed to log,
 # but not included in metric dump
@@ -17,6 +22,9 @@ stats-interval = 10000
 
 # Prefix for sending own stats
 stats-prefix = "resources.monitoring.bioyino"
+
+# What consensus to use: "consul", "internal" or "none"
+consensus = "none"
 
 [metrics]
 # Should we provide metrics that update more than update-counter-threshold times diring aggregation interval
@@ -30,6 +38,22 @@ update-counter-suffix = ""
 
 # Minimal update counter to be reported
 update-counter-threshold = 200
+
+# Aggregation can be made in two ways giving a tradeoff between the aggregation speed and
+# the probability of loosing metrics
+# 1. In a specially spawned thread (fast-aggregation=false). In this case only one thread will be used to do all the counting.
+# This is slow, but worker threads will keep parsing decreasing probabiilty of metric drops.
+# 2. In worker threads (fast-aggregation=true). In this case metrics will be aggregated in worker threads, so
+# any heavy counting would potentially block task and make some unparsed buffers to be skipped
+# fast-aggregation = true
+
+# Process buffers from different hosts separately, this gives more guarantee to parse
+# metrics from different hosts correctly. Can play bad if lots of metrics is received from a single host, set
+# it to false if you have such use case
+# consistent-parsing = true
+
+# Log all buffers being dropped due to parsing errors. Can be very spammy.
+# log-parse-errors = false
 
 [carbon]
 
@@ -57,8 +81,11 @@ send-retries = 30
 # Address:port to listen for metrics at
 listen = "127.0.0.1:8125"
 
-# Address and port for replication/command server to listen on
+# Address and port for replication server to listen on
 peer-listen = "127.0.0.1:8136"
+
+# Address and port for management server to listen on
+mgmt-listen = "127.0.0.1:8137"
 
 # UDP buffer size for single packet. Needs to be around MTU. Packet's bytes after that value
 # may be lost
@@ -68,13 +95,36 @@ bufsize = 1500
 multimessage = false
 
 # Number of multimessage packets to receive at once if in multimessage mode
+# Note that this setting is per thread, so in reality one can only see metrics
+# after receiving at least mm-packets*n_threads datagrams
 mm-packets = 100
+
+# Do multimessage operations in async mode.
+# This means recvmmsg will receive 0..mm-packets datagrams instead of waiting for mm-packets
+mm-async = false
+
+# Multimessage mode assumes early return by timeout, but ONLY when received
+# a packet after timeout expiration.
+# Basically this should be changed in very rare and specific cases.
+# 0 means this value will be equal to buffer-flush-time
+# mm-timeout = 0
+
+# To avoid packets staying in queue forever, this option can be used to flush
+# incoming data buffer forcing it to be sent even if it's not full
+buffer-flush-time = 0
+
+# Same as buffer-flush-time, but riggers on buffer length. Please, notice that multimessage
+# mode can only consider timer, so this check is only possible every mm-packets packets.
+# zero value means automatic management depending on memory allocator internal logic,
+# which on tests was found to reach 30Mb
+# if in multimessage mode this value is lower that mm-packets*bufsize, it will be set to this value
+buffer-flush-length = 65536
 
 # Nmber of green threads for single-message mode
 greens = 4
 
 # Socket pool size for single-message mode
-snum = 4
+async-sockets = 4
 
 # List of nodes to replicate metrics to
 nodes = []
@@ -82,9 +132,33 @@ nodes = []
 # Interval to send snapshots to nodes, ms
 snapshot-interval = 1000
 
+# Settings for internal Raft
+[raft]
+# Defer start of raft consensus to avoid node becoming leader too early
+# Such situation is very likely when restarting current leader node
+# and means losing metrics in most cases
+#start-delay = 0
+
+# Timeouts tuned according to the Raft paper and typical network latency.
+# Better not to change if unsure
+#heartbeat-timeout = 250
+#election-timeout-min = 500
+#election-timeout-max = 750
+
+# The name of the current node is taken from hostname by default
+# After that all hostnames are resolved using DNS. If node name cannot
+# be resolved through DNS for some reason, it can be specified in this-node
+# parameter in a format similar to one in node list.
+# this-node = <empty>
+
+# A map of other raft nodes. Keys are in form of hostname:port or IP:port
+# values are integers
+nodes = {}
+
 [consul]
-# Start in disabled leader finding mode
-start-disabled = false
+# Start in disabled leader finding mode. This only works while consul is bootstrapping.
+# Can be helpful when there is a danger of agent being inaccessible.
+start-as = "disabled"
 
 # Consul agent address
 agent = "127.0.0.1:8500"
