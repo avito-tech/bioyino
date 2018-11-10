@@ -2,8 +2,7 @@
 The StatsD server written in Rust
 
 # Description #
-A fully statsd-protocol compliant server with carbon backend
-This server was written as a drop-in replacement for now unsupported [github's brubeck](https://github.com/github/brubeck/issues).
+Bioyino is a distributed statsd-protocol server with carbon backend.
 
 # Features #
 
@@ -11,16 +10,18 @@ This server was written as a drop-in replacement for now unsupported [github's b
 * fault tolerant: metrics are replicated to all nodes in the cluster
 * clustering: all nodes gather and replicate metrics, but only leader sends metrics to backend
 * precise: 64-bit floats, full metric set is stored in memory (for metric types that require post-processing), no approximation algorithms involved
+* standalone: can work without external services
 * safety and security: written in memory-safe language
-* networking is separate from counting to avoid dropping UDP packets as much as possible
+* networking tries to do it's best to avoid dropping UDP packets as much as possible
 * networking is asynchronous
 * small memory footprint and low CPU consumption
 
 # Status #
-Currently works, being tested on production-grade metric stream (~1,5M metrics per second)
+Currently works in production at Avito, processing production-grade metric stream (~4M metrics per second on 3 nodes)
 
 # Installing #
 Do the usual Rust-program build-install cycle
+Please note, that building is always tested on latest stable version of Rust.
 
 ```
 $ git clone <this repo>
@@ -38,4 +39,3 @@ You can help project by doing the following:
 * create issues to request new features
 * add new features, like new metric types
 * test the server on your environment and creating new issues if/when bugs found
-
