@@ -19,4 +19,7 @@ pub enum GeneralError {
 
     #[fail(display = "future send error")]
     FutureSend,
+
+    #[fail(display = "unknown consensus state")]
+    UnknownState,
 }

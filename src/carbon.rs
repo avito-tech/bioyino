@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -8,9 +8,9 @@ use failure::Error;
 use ftoa;
 use futures::stream;
 use futures::{Future, IntoFuture, Sink, Stream};
+use slog::Logger;
 use tokio::net::TcpStream;
-use tokio_io::AsyncRead;
-use tokio_io::codec::{Decoder, Encoder};
+use tokio_codec::{Decoder, Encoder};
 
 use errors::GeneralError;
 
@@ -19,36 +19,41 @@ use {Float, AGG_ERRORS};
 #[derive(Clone)]
 pub struct CarbonBackend {
     addr: SocketAddr,
-
     metrics: Arc<Vec<(Bytes, Bytes, Bytes)>>,
+    log: Logger,
 }
 
 impl CarbonBackend {
-    pub(crate) fn new(addr: SocketAddr, ts: Duration, metrics: Arc<Vec<(Bytes, Float)>>) -> Self {
+    pub(crate) fn new(
+        addr: SocketAddr,
+        ts: Duration,
+        metrics: Arc<Vec<(Bytes, Float)>>,
+        log: Logger,
+    ) -> Self {
         let ts: Bytes = ts.as_secs().to_string().into();
 
         let buf = BytesMut::with_capacity(metrics.len() * 200); // 200 is an approximate for full metric name + value
-        let (metrics, _) = metrics.iter().fold(
-            (Vec::new(), buf),
-            |(mut acc, mut buf), (name, metric)| {
-                let mut wr = buf.writer();
-                let buf = match ftoa::write(&mut wr, *metric) {
-                    Ok(()) => {
-                        buf = wr.into_inner();
-                        let metric = buf.take().freeze();
-                        acc.push((name.clone(), metric, ts.clone()));
-                        buf
-                    }
-                    Err(_) => {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                        wr.into_inner()
-                    }
-                };
-                (acc, buf)
-            },
-        );
+        let (metrics, _) =
+            metrics
+                .iter()
+                .fold((Vec::new(), buf), |(mut acc, mut buf), (name, metric)| {
+                    let mut wr = buf.writer();
+                    let buf = match ftoa::write(&mut wr, *metric) {
+                        Ok(()) => {
+                            buf = wr.into_inner();
+                            let metric = buf.take().freeze();
+                            acc.push((name.clone(), metric, ts.clone()));
+                            buf
+                        }
+                        Err(_) => {
+                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            wr.into_inner()
+                        }
+                    };
+                    (acc, buf)
+                });
         let metrics = Arc::new(metrics);
-        let self_ = Self { addr, metrics };
+        let self_ = Self { addr, metrics, log };
         self_
     }
 }
@@ -59,17 +64,22 @@ impl IntoFuture for CarbonBackend {
     type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { addr, metrics } = self;
+        let Self { addr, metrics, log } = self;
 
         let conn = TcpStream::connect(&addr).map_err(|e| GeneralError::Io(e));
+        let elog = log.clone();
         let future = conn.and_then(move |conn| {
-            let writer = conn.framed(CarbonCodec::new());
-            //let metric_stream = stream::iter_ok::<_, ()>(metrics.clone());
+            info!(log, "carbon backend sending metrics");
+            let writer = CarbonCodec::new().framed(conn);
             let metric_stream = stream::iter_ok::<_, ()>(SharedIter::new(metrics));
             metric_stream
                 .map_err(|_| GeneralError::CarbonBackend)
                 .forward(writer.sink_map_err(|_| GeneralError::CarbonBackend))
-                .map(|_| ())
+                .map(move |_| info!(log, "carbon backend finished"))
+                .map_err(move |e| {
+                    info!(elog, "carbon backend error");
+                    e
+                })
         });
 
         Box::new(future)

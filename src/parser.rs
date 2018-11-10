@@ -1,27 +1,21 @@
+use std::fmt::Debug;
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
+use std::str::from_utf8;
+use std::str::FromStr;
+
 use combine::byte::{byte, bytes, newline};
 use combine::combinator::{eof, skip_many};
-use combine::range::{take_while, take_while1};
-use combine::{optional, Parser};
-use metric::{Metric, MetricType};
-use std::fmt::Debug;
-use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
-use std::str::FromStr;
-use std::str::from_utf8;
-//use quantiles::ckms::CKMS;
-//use quantiles::greenwald_khanna::Stream as GK;
+use combine::error::UnexpectedParse;
+use combine::parser::byte::digit;
+use combine::parser::range::{recognize, take_while1};
+use combine::{optional, skip_many1, Parser};
 
-use failure::ResultExt;
+use metric::MetricType;
 
-#[derive(Fail, Debug)]
-enum ParseError {
-    #[fail(display = "parsing UTF-8 data")]
-    Utf8(#[cause] ::std::str::Utf8Error),
-
-    #[fail(display = "parsing float")]
-    Float(String),
-}
-
-pub fn metric_parser<'a, F>() -> impl Parser<Output = (String, Metric<F>), Input = &'a [u8]>
+// to make his zero-copy and get better errors, parser only recognizes parts
+// of the metric: (name, value, type, sampling)
+pub fn metric_parser<'a, F>(
+) -> impl Parser<Output = (&'a [u8], F, MetricType<F>, Option<f32>), Input = &'a [u8]>
 where
     F: FromStr
         + Add<Output = F>
@@ -30,8 +24,10 @@ where
         + SubAssign
         + Div<Output = F>
         + Mul<Output = F>
+        + Neg<Output = F>
         + PartialOrd
         + Into<f64>
+        + From<f64>
         + Debug
         + Default
         + Clone
@@ -40,10 +36,7 @@ where
         + Sync,
 {
     // This will parse metric name and separator
-    let name = take_while1(|c: u8| c != b':' && c != b'\n')
-        .skip(byte(b':'))
-        .and_then(|name| from_utf8(name).map(|name| name.to_string()));
-
+    let name = take_while1(|c: u8| c != b':' && c != b'\n').skip(byte(b':'));
     let sign = byte(b'+').map(|_| 1i8).or(byte(b'-').map(|_| -1i8));
 
     // This should parse metric value and separator
@@ -51,20 +44,12 @@ where
         .skip(byte(b'|'))
         .and_then(|value| {
             from_utf8(value)
-                .map_err(|e| ParseError::Utf8(e))
-                .compat()?
-                .parse::<F>()
-                .map_err(|_| {
-                    ParseError::Float(
-                        format!("parsing {:?} as float metric value", value).to_string(),
-                    )
-                })
-                .compat()
+                .map_err(|_e| UnexpectedParse::Unexpected)
+                .map(|v| v.parse::<F>().map_err(|_e| UnexpectedParse::Unexpected))?
         });
 
     // This parses metric type
     let mtype = bytes(b"ms")
-        //.map(|_| MetricType::Timer(CKMS::<F>::new(EPSILON)))
         .map(|_| MetricType::Timer(Vec::<F>::new()))
         .or(byte(b'g').map(|_| MetricType::Gauge(None)))
         .or(byte(b'C').map(|_| MetricType::DiffCounter(F::default())))
@@ -74,112 +59,146 @@ where
         //        .or(byte(b'h').map(|_| MetricType::Histrogram))
         ;
 
-    let sampling = (bytes(b"|@"), take_while(|c: u8| c != b'\n')).and_then(|(_, value)| {
-        from_utf8(value)
-            .map_err(|e| ParseError::Utf8(e))
-            .compat()?
-            .parse::<f32>()
-            .map_err(|_| {
-                ParseError::Float(
-                    format!("parsing {:?} as float sampling value", value).to_string(),
-                )
-            })
-            .compat()
-    });
+    let unsigned_float = skip_many1(digit())
+        .and(optional((byte(b'.'), skip_many1(digit()))))
+        .and(optional((
+            byte(b'e'),
+            optional(byte(b'+').or(byte(b'-'))),
+            skip_many1(digit()),
+        )));
 
-    let metric = name.and(
-        (
-            optional(sign),
-            value,
-            mtype,
-            optional(sampling),
-            skip_many(newline()).or(eof()),
-        ).and_then(|(sign, value, mtype, sampling, _)| {
+    let sampling = (bytes(b"|@"), recognize(unsigned_float)).and_then(|(_, value)| {
+        // TODO replace from_utf8 with handmade parser removing recognize
+        from_utf8(value)
+            .map_err(|_e| UnexpectedParse::Unexpected)
+            .map(|v| v.parse::<f32>().map_err(|_e| UnexpectedParse::Unexpected))?
+    });
+    (
+        name,
+        optional(sign),
+        value,
+        mtype,
+        optional(sampling),
+        skip_many(newline()).or(eof()),
+    )
+        .and_then(|(name, sign, mut value, mtype, sampling, _)| {
             let mtype = if let MetricType::Gauge(_) = mtype {
                 MetricType::Gauge(sign)
             } else {
+                if sign == Some(-1) {
+                    // get negative values back
+                    value = value.neg()
+                }
                 mtype
             };
 
-            Metric::<F>::new(value, mtype, sampling).compat()
-        }),
-    );
-
-    metric
+            Ok::<_, UnexpectedParse>((name, value, mtype, sampling))
+        })
 }
 
-/*
 #[cfg(test)]
 mod tests {
-// WARNING: these tests most probably don't work as of now
-// FIXME: tests
-use super::*;
-use num::rational::Ratio;
+    use super::*;
 
-// TODO; parse bad and tricky metrics
-// Questioned cases:
-//  * non-integer counters
-//  * negative counters
+    // TODO: Questioned cases:
+    //  * negative counters
+    //  * diff counters
 
-#[test]
-fn parse_good_counter() {
-let data = b"gorets:1|c|@1";
-let v = parse_metrics(data).unwrap();
-assert_eq!(v[0].0, "gorets".to_string());
-assert_eq!(v.len(), 1);
-assert_eq!(v[0].1.mtype, MetricType::Counter);
-assert_eq!(v[0].1.value, 0);
-}
+    #[test]
+    fn parse_metric_good_counter() {
+        let data = b"gorets:1|c|@1";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1f64);
+        assert_eq!(v.2, MetricType::Counter);
+        assert_eq!(v.3, Some(1f32));
+        assert_eq!(rest.len(), 0);
+    }
 
-#[test]
-fn parse_multi_metric_one() {
-let data = b"complex.bioyino.test:1|g\n";
-let v = parse_metrics(data).unwrap();
-assert_eq!(v[0].0, "complex.bioyino.test".to_string());
-assert_eq!(v.len(), 1);
-assert_eq!(v[0].1.mtype, MetricType::Gauge(None));
-assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
-}
+    #[test]
+    fn parse_metric_good_counter_float() {
+        let data = b"gorets:12.65|c|@0.001";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 12.65f64);
+        assert_eq!(v.2, MetricType::Counter);
+        assert_eq!(v.3, Some(1e-3f32));
+        assert_eq!(rest.len(), 0);
+    }
 
-#[test]
-fn parse_multi_metric_many() {
-let data = b"complex.bioyino.test.1:1|g\ncomplex.bioyino.test.2:2|g";
-let v = parse_metrics(data).unwrap();
-assert_eq!(v.len(), 2);
-assert_eq!(v[0].0, "complex.bioyino.test.1".to_string());
-assert_eq!(v[0].1.mtype, MetricType::Gauge(None));
-assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
-assert_eq!(v[1].0, "complex.bioyino.test.2".to_string());
-assert_eq!(v[1].1.mtype, MetricType::Gauge(None));
-assert_eq!(v[1].1.value, Ratio::new(2.into(), 1.into()));
-}
+    #[test]
+    fn parse_metric_with_newline() {
+        let data = b"complex.bioyino.test:-1e10|g\n";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"complex.bioyino.test");
+        assert_eq!(v.1, 1e10f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        assert_eq!(rest.len(), 0);
+    }
 
-#[test]
-fn parse_short_metric() {
-let data = b"gorets:1|c";
-let d = parse_metrics(data);
-let v = d.unwrap();
-assert_eq!(v[0].1.mtype, MetricType::Counter);
-assert_eq!(v[0].1.value, Ratio::new(1.into(), 1.into()));
-}
+    #[test]
+    fn parse_metric_without_newline() {
+        let data = b"complex.bioyino.test1:-1e10|gcomplex.bioyino.test10:-1e10|g\n";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"complex.bioyino.test1");
+        assert_eq!(v.1, 1e10f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        let (v, rest) = parser.parse(rest).unwrap();
+        assert_eq!(v.0, b"complex.bioyino.test10");
+        assert_eq!(v.1, 1e10f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        assert_eq!(rest.len(), 0);
+    }
 
-#[test]
-fn parse_gauge() {
-let data = b"gorets:-75e-2|g|@1";
-let v = parse_metrics(data).unwrap();
-assert_eq!(v[0].1.mtype, MetricType::Gauge(Some(-1)), "bad type");
-// 0.75 should parse to 3/4
-assert_eq!(v[0].1.value, Ratio::new(3.into(), 4.into()), "bad value");
-}
+    #[test]
+    fn parse_metric_without_newline_sampling() {
+        let data = b"gorets:+1000|g|@0.4e-3gorets:-1000|g|@0.5";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1000f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(1i8)));
+        assert_eq!(v.3, Some(0.0004f32));
+        //assert_neq!(rest.len(), 0)
+        let (v, rest) = parser.parse(rest).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1000f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        assert_eq!(v.3, Some(0.5f32));
+        assert_eq!(rest.len(), 0)
+    }
 
-#[test]
-fn parse_complex_gauges() {
-let data = b"gorets:+1000|g\ngorets:-1000|g|@0.5";
-let v = parse_metrics(data).unwrap();
-assert_eq!(v[0].1.mtype, MetricType::Gauge(Some(1)));
-assert_eq!(v[0].1.value, Ratio::new(1000.into(), 1.into()));
-assert_eq!(v[1].1.mtype, MetricType::Gauge(Some(-1)), "");
-assert_eq!(v[1].1.value, Ratio::new(1000.into(), 1.into()));
+    #[test]
+    fn parse_metric_short() {
+        let data = b"gorets:1|c";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1f64);
+        assert_eq!(v.2, MetricType::Counter);
+        assert_eq!(v.3, None);
+        assert_eq!(rest.len(), 0)
+    }
+
+    #[test]
+    fn parse_metric_many() {
+        let data = b"gorets:+1000|g\ngorets:-1000|g|@0.5";
+        let mut parser = metric_parser::<f64>();
+        let (v, rest) = parser.parse(data).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1000f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(1i8)));
+        assert_eq!(v.3, None);
+        //assert_neq!(rest.len(), 0)
+        let (v, rest) = parser.parse(rest).unwrap();
+        assert_eq!(v.0, b"gorets");
+        assert_eq!(v.1, 1000f64);
+        assert_eq!(v.2, MetricType::Gauge(Some(-1i8)));
+        assert_eq!(v.3, Some(0.5f32));
+        assert_eq!(rest.len(), 0)
+    }
 }
-}
-*/
