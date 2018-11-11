@@ -126,9 +126,8 @@ impl TaskRunner {
                     .last();
             }
             Task::TakeSnapshot(channel) => {
-                let mut short = HashMap::with_capacity(self.short.len());
-                ::std::mem::swap(&mut short, &mut self.short);
-
+                let mut short = self.short.clone();
+                self.short.clear();
                 // self.short now contains empty hashmap
                 // join a copy of data in short cache to long cache
                 short
@@ -176,57 +175,69 @@ impl TaskRunner {
         // so they are zero-copied
         let mut input: &[u8] = &(buf.clone());
         let mut parser = metric_parser::<Float>();
+        let mut cutlen = 0;
         loop {
             let buflen = buf.len();
             match parser.parse(&input) {
                 Ok(((name, value, mtype, sampling), rest)) => {
+                    // at this point we already know the whole metric is parsed
+                    // so we can cut it from the original buffer
+                    cutlen += buflen - rest.len();
+
+                    //info!(ilog, "parse error {:?}", _e);
                     // name is always at the beginning of the buf
+                    // split it to be the key for hashmap
                     let name = buf.split_to(name.len());
+                    // we don't need the rest of bytes in buffer as we have them in slices
                     buf.advance(buflen - rest.len() - name.len());
                     input = rest;
 
                     // check if name is valid UTF-8
                     if let Err(_) = ::std::str::from_utf8(&name) {
-                        if let Some(pos) = cut_bad(log.clone(), &mut buf) {
-                            input = input.split_at(pos + 1).1;
-                            continue;
-                        } else {
-                            return rest.len();
-                            //break;
+                        // the whole metric has been parsed but name was not valid UTF-8
+                        // TODO: parser must check this actually
+                        // this is a kind of parsing error, but the original parser did everything
+                        // right so we just cut the whole buffer part and continue
+                        if rest.len() == 0 {
+                            return cutlen;
                         }
+                        continue
                     }
 
-                    let metric = match Metric::<Float>::new(value, mtype, None, sampling) {
-                        Ok(metric) => metric,
-                        Err(_) => {
-                            if let Some(pos) = cut_bad(log.clone(), &mut buf) {
-                                input = input.split_at(pos + 1).1;
-                                continue;
-                            } else {
-                                return rest.len();
-                                //break;
-                            }
-                        }
+                    if let Ok(metric) = Metric::<Float>::new(value, mtype, None, sampling) {
+                        INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
+                        update_metric(&mut self.short, name, metric);
+                    } else {
+                        // TODO log
                     };
 
-                    INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
-                    update_metric(&mut self.short, name, metric);
                     if rest.len() == 0 {
-                        return 0;
-                        //break;
+                        return cutlen;
                     }
                 }
                 Err(UnexpectedParse::Eoi) => {
-                    return buflen;
-                    //break;
+                    // parser did not get enough bytes:
+                    // cut only what we were able to parse
+                    return cutlen;
                 }
                 Err(_e) => {
+                    // parser had enough bytes, but gave parsing error
+                    // try to cut metric to closest \n
                     if let Some(pos) = cut_bad(log.clone(), &mut buf) {
+                        // on success increase cutlen to cutting position plus \n
+                        // and try to parse next part
+                        cutlen += pos+1;
                         input = input.split_at(pos + 1).1;
-                        continue;
+                        if input.len() != 0{
+                            continue;
+                        } else {
+                            return cutlen
+                        }
                     } else {
-                        return input.len();
-                        //break;
+                        // failure means we have a buffer full of some bad data
+                        // all we can do here is cut to it out
+                        cutlen += buflen;
+                        return cutlen;
                     }
                 }
             }
@@ -283,16 +294,16 @@ pub fn aggregate_task(data: AggregateData) {
             let name = buf.take().freeze();
             (name, value)
         }).chain(upd)
-        .map(|data| {
-            spawn(
-                response
-                    .clone()
-                    .send(data)
-                    .map_err(|_| {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    }).map(|_| ()),
+    .map(|data| {
+        spawn(
+            response
+            .clone()
+            .send(data)
+            .map_err(|_| {
+                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+            }).map(|_| ()),
             );
-        }).last();
+    }).last();
 }
 
 #[cfg(test)]
@@ -304,15 +315,15 @@ mod tests {
 
     #[test]
     fn parse_trashed_metric_buf() {
-        let mut data = Bytes::new();
+        let mut data = BytesMut::new();
         data.extend_from_slice(
             b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000|g|@0.5\nMORETrasH\nFUUU",
-        );
+            );
 
         let mut config = System::default();
         config.metrics.log_parse_errors = true;
         let mut runner = TaskRunner::new(prepare_log("parse_thrashed"), Arc::new(config), 16);
-        runner.parse_and_insert(Some(prepare_log("thrashed")), data);
+        runner.run(Task::Parse(2, data));
 
         let key: Bytes = "gorets1".into();
         let metric = runner.short.get(&key).unwrap().clone();
@@ -326,4 +337,5 @@ mod tests {
         assert_eq!(metric.mtype, MetricType::Gauge(Some(-1i8)));
         assert_eq!(metric.sampling, Some(0.5f32));
     }
+
 }

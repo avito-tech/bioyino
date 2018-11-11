@@ -141,7 +141,7 @@ pub enum ConsensusKind {
 
 lazy_static! {
     pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
-        { Mutex::new(ConsensusState::Disabled) };
+    { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
@@ -149,7 +149,7 @@ pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
 fn main() {
     let (system, command) = System::load();
 
-    let mut config = system.clone();
+    let config = system.clone();
     let System {
         verbosity,
         network:
@@ -169,34 +169,34 @@ fn main() {
                 nodes,
                 snapshot_interval,
             },
-        raft,
-        consul:
-            Consul {
-                start_as: consul_start_as,
-                agent,
-                session_ttl: consul_session_ttl,
-                renew_time: consul_renew_time,
-                key_name: consul_key,
-            },
-        metrics:
-            Metrics {
-                //           max_metrics,
-                mut count_updates,
-                update_counter_prefix,
-                update_counter_suffix,
-                update_counter_threshold,
-                fast_aggregation,
-                consistent_parsing: _,
-                log_parse_errors: _,
-            },
-        carbon,
-        n_threads,
-        w_threads,
-        stats_interval: s_interval,
-        task_queue_size,
-        start_as_leader,
-        stats_prefix,
-        consensus,
+            raft,
+            consul:
+                Consul {
+                    start_as: consul_start_as,
+                    agent,
+                    session_ttl: consul_session_ttl,
+                    renew_time: consul_renew_time,
+                    key_name: consul_key,
+                },
+                metrics:
+                    Metrics {
+                        //           max_metrics,
+                        mut count_updates,
+                        update_counter_prefix,
+                        update_counter_suffix,
+                        update_counter_threshold,
+                        fast_aggregation,
+                        consistent_parsing: _,
+                        log_parse_errors: _,
+                    },
+                    carbon,
+                    n_threads,
+                    w_threads,
+                    stats_interval: s_interval,
+                    task_queue_size,
+                    start_as_leader,
+                    stats_prefix,
+                    consensus,
     } = system;
 
     let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
@@ -242,15 +242,6 @@ fn main() {
     let update_counter_prefix: Bytes = update_counter_prefix.into();
     let update_counter_suffix: Bytes = update_counter_suffix.into();
 
-    let reserve_min = bufsize * mm_packets * mm_packets;
-
-    config.network.buffer_flush_length = if config.network.buffer_flush_length < reserve_min {
-        debug!(rlog, "buffer-flush-len is lower than mm-packets*mm-packets*bufsize"; "new-value"=>reserve_min, "old-value"=>config.network.buffer_flush_length);
-        reserve_min
-    } else {
-        config.network.buffer_flush_length
-    };
-
     let config = Arc::new(config);
     let log = rlog.new(o!("thread" => "main"));
 
@@ -274,7 +265,7 @@ fn main() {
                         runner.run(task);
                         Ok(runner)
                     }).map(|_| ())
-                    .map_err(|_| ());
+                .map_err(|_| ());
                 //        let future = rx.for_each(|task: Task| ok(runner.run(task)));
                 runtime.block_on(future).expect("worker thread failed");
             }).expect("starting counting worker thread");
@@ -297,11 +288,11 @@ fn main() {
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
-    ).into_future()
-    .map_err(move |e| {
-        PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-        info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
-    });
+        ).into_future()
+        .map_err(move |e| {
+            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+            info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
+        });
     runtime.spawn(snapshot);
 
     // settings safe for asap restart
@@ -529,7 +520,7 @@ fn main() {
             mm_async,
             mm_timeout,
             flush_flags.clone(),
-        );
+            );
     } else {
         start_async_udp(
             log,
@@ -541,7 +532,7 @@ fn main() {
             async_sockets,
             bufsize,
             flush_flags.clone(),
-        );
+            );
     }
 
     runtime
