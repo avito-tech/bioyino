@@ -35,7 +35,7 @@ pub(crate) fn start_sync_udp(
     mm_async: bool,
     mm_timeout: u64,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -132,7 +132,7 @@ pub(crate) fn start_sync_udp(
                         let mut chunk = iovec {
                             iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr()
                                 as *mut c_void,
-                                iov_len: rowsize,
+                            iov_len: rowsize,
                         };
                         chunks.push(chunk);
                         // put the result to mheaders
@@ -167,7 +167,7 @@ pub(crate) fn start_sync_udp(
                                 } else {
                                     null_mut()
                                 },
-                                )
+                            )
                         };
 
                         if res == 0 {
@@ -182,9 +182,9 @@ pub(crate) fn start_sync_udp(
                                 INGRESS.fetch_add(mlen, Ordering::Relaxed);
 
                                 // create address entry in messagemap
-                                let mut entry = bufmap.entry(addrs[i]).or_insert(
-                                    BytesMut::with_capacity(mlen),
-                                    );
+                                let mut entry = bufmap
+                                    .entry(addrs[i])
+                                    .or_insert(BytesMut::with_capacity(mlen));
 
                                 // check we can fit the buffer
                                 if entry.remaining_mut() < mlen + 1 {
@@ -231,7 +231,7 @@ pub(crate) fn start_sync_udp(
                                                 DROPS.fetch_add(
                                                     messages as usize,
                                                     Ordering::Relaxed,
-                                                    );
+                                                );
                                             }).unwrap_or(());
                                     }).last();
                             }
@@ -261,7 +261,7 @@ pub(crate) fn start_async_udp(
     async_sockets: usize,
     bufsize: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
 
     // Create a pool of listener sockets
@@ -301,7 +301,7 @@ pub(crate) fn start_async_udp(
                         let socket = socket.try_clone().expect("cloning socket");
                         let socket =
                             UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
-                            .expect("adding socket to event loop");
+                                .expect("adding socket to event loop");
 
                         let server = StatsdServer::new(
                             socket,
@@ -314,7 +314,7 @@ pub(crate) fn start_async_udp(
                             readbuf,
                             flush_flags.clone(),
                             i,
-                            );
+                        );
 
                         runtime.spawn(server.into_future());
                     }

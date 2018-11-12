@@ -201,7 +201,7 @@ impl TaskRunner {
                         if rest.len() == 0 {
                             return cutlen;
                         }
-                        continue
+                        continue;
                     }
 
                     if let Ok(metric) = Metric::<Float>::new(value, mtype, None, sampling) {
@@ -226,12 +226,12 @@ impl TaskRunner {
                     if let Some(pos) = cut_bad(log.clone(), &mut buf) {
                         // on success increase cutlen to cutting position plus \n
                         // and try to parse next part
-                        cutlen += pos+1;
+                        cutlen += pos + 1;
                         input = input.split_at(pos + 1).1;
-                        if input.len() != 0{
+                        if input.len() != 0 {
                             continue;
                         } else {
-                            return cutlen
+                            return cutlen;
                         }
                     } else {
                         // failure means we have a buffer full of some bad data
@@ -294,16 +294,16 @@ pub fn aggregate_task(data: AggregateData) {
             let name = buf.take().freeze();
             (name, value)
         }).chain(upd)
-    .map(|data| {
-        spawn(
-            response
-            .clone()
-            .send(data)
-            .map_err(|_| {
-                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-            }).map(|_| ()),
+        .map(|data| {
+            spawn(
+                response
+                    .clone()
+                    .send(data)
+                    .map_err(|_| {
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    }).map(|_| ()),
             );
-    }).last();
+        }).last();
 }
 
 #[cfg(test)]
@@ -318,7 +318,7 @@ mod tests {
         let mut data = BytesMut::new();
         data.extend_from_slice(
             b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000|g|@0.5\nMORETrasH\nFUUU",
-            );
+        );
 
         let mut config = System::default();
         config.metrics.log_parse_errors = true;
