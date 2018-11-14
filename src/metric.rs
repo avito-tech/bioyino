@@ -7,8 +7,8 @@ use capnp::message::{Allocator, Builder, HeapAllocator};
 use failure::Error;
 
 use protocol_capnp::metric as cmetric;
-use Float;
 use std::collections::HashSet;
+use Float;
 
 #[derive(Fail, Debug)]
 pub enum MetricError {
