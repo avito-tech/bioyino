@@ -56,6 +56,9 @@ struct MetricType {
         # gauge can work as a counter too when `+value` or `-value` is received
         gauge @3 :Gauge;
 
+        # set holds all values for further cardinality estimation
+        set @4 :List(UInt64);
+
         # someday we will support this... conributions are welcomed if you need any of those
         #   histogram @4 :...
         #   set @5 :...

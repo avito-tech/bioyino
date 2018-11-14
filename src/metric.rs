@@ -8,6 +8,7 @@ use failure::Error;
 
 use protocol_capnp::metric as cmetric;
 use Float;
+use std::collections::HashSet;
 
 #[derive(Fail, Debug)]
 pub enum MetricError {
@@ -64,8 +65,8 @@ where
     DiffCounter(F),
     Timer(Vec<F>),
     Gauge(Option<i8>),
+    Set(HashSet<u64>),
     //    Histogram,
-    //    Set(HashSet<MetricValue>),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -114,9 +115,9 @@ where
         if let MetricType::Timer(ref mut agg) = metric.mtype {
             agg.push(metric.value)
         };
-        // if let MetricType::Set(ref mut set) = metric.mtype {
-        //set.insert(metric.value.clone());
-        // };
+        if let MetricType::Set(ref mut hs) = metric.mtype {
+            hs.insert(metric.value.into().to_bits());
+        };
         Ok(metric)
     }
 
@@ -155,9 +156,10 @@ where
                 self.value = new.value;
                 agg.append(agg2);
             }
-            //(&mut Set(ref mut set), Set(_)) => {
-            //    set.insert(new.value);
-            //}
+            (&mut Set(ref mut hs), Set(_)) => {
+                hs.insert(new.value.into().to_bits());
+            }
+
             (_m1, _m2) => {
                 return Err(MetricError::Aggregating.into());
             }
@@ -190,6 +192,11 @@ where
                 v.reserve_exact(reader.len() as usize);
                 reader.iter().map(|ms| v.push(ms)).last();
                 MetricType::Timer(v)
+            }
+            metric_type::Which::Set(reader) => {
+                let reader = reader.map_err(MetricError::Capnp)?;
+                let v = reader.iter().collect();
+                MetricType::Set(v)
             }
         };
 
@@ -247,6 +254,14 @@ where
                         .map(|(idx, value)| {
                             let value: f64 = (*value).into();
                             timer_builder.set(idx as u32, value);
+                        }).last();
+                }
+                MetricType::Set(ref v) => {
+                    let mut set_builder = t_builder.init_set(v.len() as u32);
+                    v.iter()
+                        .enumerate()
+                        .map(|(idx, value)| {
+                            set_builder.set(idx as u32, *value);
                         }).last();
                 }
             }
@@ -408,6 +423,7 @@ where
                     _ => None,
                 }
             }
+            &MetricType::Set(ref hs) if self.count == 0 => Some(("", Float::from(hs.len() as u32))),
             _ => None,
         };
         self.count += 1;
