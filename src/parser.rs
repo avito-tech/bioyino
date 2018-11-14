@@ -11,6 +11,7 @@ use combine::parser::range::{recognize, take_while1};
 use combine::{optional, skip_many1, Parser};
 
 use metric::MetricType;
+use std::collections::HashSet;
 
 // to make his zero-copy and get better errors, parser only recognizes parts
 // of the metric: (name, value, type, sampling)
@@ -54,7 +55,7 @@ F: FromStr
         .or(byte(b'g').map(|_| MetricType::Gauge(None)))
         .or(byte(b'C').map(|_| MetricType::DiffCounter(F::default())))
         .or(byte(b'c').map(|_| MetricType::Counter))
-        //        .or(byte(b's').map(|_| MetricType::Set(HashSet::new())))
+        .or(byte(b's').map(|_| MetricType::Set(HashSet::new())))
         // we can add more types  here
         //        .or(byte(b'h').map(|_| MetricType::Histrogram))
         ;
