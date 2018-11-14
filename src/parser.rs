@@ -18,23 +18,23 @@ use std::collections::HashSet;
 pub fn metric_parser<'a, F>(
 ) -> impl Parser<Output = (&'a [u8], F, MetricType<F>, Option<f32>), Input = &'a [u8]>
 where
-F: FromStr
-+ Add<Output = F>
-+ AddAssign
-+ Sub<Output = F>
-+ SubAssign
-+ Div<Output = F>
-+ Mul<Output = F>
-+ Neg<Output = F>
-+ PartialOrd
-+ Into<f64>
-+ From<f64>
-+ Debug
-+ Default
-+ Clone
-+ Copy
-+ PartialEq
-+ Sync,
+    F: FromStr
+        + Add<Output = F>
+        + AddAssign
+        + Sub<Output = F>
+        + SubAssign
+        + Div<Output = F>
+        + Mul<Output = F>
+        + Neg<Output = F>
+        + PartialOrd
+        + Into<f64>
+        + From<f64>
+        + Debug
+        + Default
+        + Clone
+        + Copy
+        + PartialEq
+        + Sync,
 {
     // This will parse metric name and separator
     let name = take_while1(|c: u8| c != b':' && c != b'\n').skip(byte(b':'));
@@ -63,10 +63,10 @@ F: FromStr
     let unsigned_float = skip_many1(digit())
         .and(optional((byte(b'.'), skip_many1(digit()))))
         .and(optional((
-                    byte(b'e'),
-                    optional(byte(b'+').or(byte(b'-'))),
-                    skip_many1(digit()),
-                    )));
+            byte(b'e'),
+            optional(byte(b'+').or(byte(b'-'))),
+            skip_many1(digit()),
+        )));
 
     let sampling = (bytes(b"|@"), recognize(unsigned_float)).and_then(|(_, value)| {
         // TODO replace from_utf8 with handmade parser removing recognize
@@ -81,7 +81,7 @@ F: FromStr
         mtype,
         optional(sampling),
         skip_many(newline()).or(eof()),
-        )
+    )
         .and_then(|(name, sign, mut value, mtype, sampling, _)| {
             let mtype = if let MetricType::Gauge(_) = mtype {
                 MetricType::Gauge(sign)
