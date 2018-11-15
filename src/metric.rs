@@ -156,8 +156,8 @@ where
                 self.value = new.value;
                 agg.append(agg2);
             }
-            (&mut Set(ref mut hs), Set(_)) => {
-                hs.insert(new.value.into().to_bits());
+            (&mut Set(ref mut hs), Set(ref mut hs2)) => {
+                hs.extend(hs2.iter());
             }
 
             (_m1, _m2) => {
