@@ -20,8 +20,10 @@ Bioyino is a distributed statsd-protocol server with carbon backend.
 Currently works in production at Avito, processing production-grade metric stream (~4M metrics per second on 3 nodes)
 
 # Installing #
-Do the usual Rust-program build-install cycle
-Please note, that building is always tested on latest stable version of Rust.
+One of Bioyino's most powerful features - multimessage mode - require it to be working on GNU/Linux.
+
+* Install [capnp compiler tool](https://capnproto.org/install.html) to generate schemas. It's usually downloaded using your distribution's package manager.
+* Do the usual Rust-program build-install cycle. Please note, that building is always tested on latest stable version of Rust.
 
 ```
 $ git clone <this repo>
