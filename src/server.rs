@@ -91,6 +91,11 @@ impl IntoFuture for StatsdServer {
                         .entry(addr)
                         .or_insert(BytesMut::with_capacity(config.network.buffer_flush_length));
                     recv_counter += size;
+                    // check we can fit the buffer
+                    if buf.remaining_mut() < size {
+                        buf.reserve(size + 1)
+                    }
+
                     buf.put(&received[0..size]);
                 }
 
