@@ -100,8 +100,9 @@ impl<T> SharedIter<T> {
 impl<T: Clone> Iterator for SharedIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
+        let n = self.inner.get(self.current).map(|i| i.clone());
         self.current += 1;
-        self.inner.get(self.current).map(|i| i.clone())
+        n
     }
 }
 
