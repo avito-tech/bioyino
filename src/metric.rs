@@ -214,11 +214,15 @@ where
             Err(_) => (None, None),
         };
 
-        let mut metric = Metric::new(value.into(), mtype, timestamp, sampling)?;
-
-        if let Some(c) = up_counter {
-            metric.update_counter = c;
-        }
+        // we should NOT use Metric::new here because it is not a newly created metric
+        // we'd get duplicate value in timer/set metrics if we used new
+        let metric = Metric {
+            value: value.into(),
+            mtype,
+            timestamp,
+            sampling,
+            update_counter: if let Some(c) = up_counter { c } else { 1 },
+        };
 
         Ok((name, metric))
     }
@@ -247,7 +251,8 @@ where
                         .map(|(idx, value)| {
                             let value: f64 = (*value).into();
                             timer_builder.set(idx as u32, value);
-                        }).last();
+                        })
+                        .last();
                 }
             }
         }
