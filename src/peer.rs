@@ -103,7 +103,8 @@ impl IntoFuture for NativeProtocolServer {
                             warn!(log, "bad incoming message"; "error" => e.to_string());
                             PeerError::Metric(e)
                         })
-                    }).for_each(|_| {
+                    })
+                    .for_each(|_| {
                         // Consume all messages from the stream
                         Ok(())
                     })
@@ -139,7 +140,8 @@ fn parse_and_send(
                 .map(|reader| {
                     Metric::<Float>::from_capnp(reader)
                         .map(|(name, metric)| metrics.push((name, metric)))
-                }).last();
+                })
+                .last();
             let future = next_chan
                 .send(Task::AddMetrics(metrics))
                 .map(|_| ()) // drop next sender
@@ -158,7 +160,8 @@ fn parse_and_send(
                 .map(|reader| {
                     Metric::<Float>::from_capnp(reader)
                         .map(|(name, metric)| metrics.push((name, metric)))
-                }).last();
+                })
+                .last();
             let future = next_chan
                 .send(Task::AddSnapshot(metrics))
                 .map(|_| ()) // drop next sender
@@ -219,13 +222,15 @@ impl IntoFuture for NativeProtocolSnapshot {
                     let (tx, rx) = oneshot::channel();
                     spawn(chan.send(Task::TakeSnapshot(tx)).then(|_| Ok(())));
                     rx
-                }).collect::<Vec<_>>();
+                })
+                .collect::<Vec<_>>();
 
             let get_metrics = join_all(metrics)
                 .map_err(|_| {
                     PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
                     PeerError::TaskSend
-                }).and_then(move |mut metrics| {
+                })
+                .and_then(move |mut metrics| {
                     metrics.retain(|m| m.len() > 0);
                     Ok(metrics)
                 });
@@ -270,17 +275,21 @@ impl IntoFuture for NativeProtocolSnapshot {
                                                 unsafe { ::std::str::from_utf8_unchecked(&name) };
                                             c_metric.set_name(name);
                                             metric.fill_capnp(&mut c_metric);
-                                        }).last();
+                                        })
+                                        .last();
                                 }
                                 codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
                                     debug!(elog, "codec error"; "error"=>e.to_string());
                                     PeerError::Capnp(e)
                                 })
-                            }).map_err(move |e| {
+                            })
+                            .map_err(move |e| {
                                 PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
                                 debug!(dlog, "error sending snapshot: {}", e)
-                            }).then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
-                    }).collect::<Vec<_>>();
+                            })
+                            .then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
+                    })
+                    .collect::<Vec<_>>();
                 join_all(clients).map(|_| ())
             })
         });
@@ -323,6 +332,7 @@ mod test {
             .into_future()
             .map_err(move |e| {
                 warn!(c_serv_log, "shot server gone with error: {:?}", e);
+                panic!("shot server");
             });
         runtime.spawn(peer_server);
 
@@ -351,7 +361,8 @@ mod test {
             .fold(runner, move |mut runner, task: Task| {
                 runner.run(task);
                 Ok(runner)
-            }).and_then(move |runner| {
+            })
+            .and_then(move |runner| {
                 let single_name: Bytes = "complex.test.bioyino_single".into();
                 let multi_name: Bytes = "complex.test.bioyino_multi".into();
                 let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
@@ -360,13 +371,15 @@ mod test {
                 assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
 
                 Ok(())
-            }).map_err(|_| panic!("error in the future"));
+            })
+            .map_err(|_| panic!("error in the future"));
         runtime.spawn(future);
 
         let sender = TcpStream::connect(&address)
             .map_err(|e| {
-                println!("connection err: {:?}", e);
-            }).and_then(move |conn| {
+                panic!("connection err: {:?}", e);
+            })
+            .and_then(move |conn| {
                 let codec =
                     ::capnp_futures::serialize::Transport::new(conn, ReaderOptions::default());
 
@@ -402,9 +415,11 @@ mod test {
                         codec
                             .send(multi_message)
                             .and_then(|codec| codec.send(snapshot_message))
-                    }).map(|_| ())
+                    })
+                    .map(|_| ())
                     .map_err(|e| println!("codec error: {:?}", e))
-            }).map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
+            })
+            .map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
 
         let d = Delay::new(Instant::now() + Duration::from_secs(1));
         let delayed = d.map_err(|_| ()).and_then(|_| sender);
