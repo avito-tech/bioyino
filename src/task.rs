@@ -102,7 +102,8 @@ impl TaskRunner {
                         .entry(addr)
                         .and_modify(|(times, _)| {
                             *times = 0;
-                        }).or_insert((0, BytesMut::with_capacity(len)));
+                        })
+                        .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf.clone().freeze()
@@ -126,23 +127,18 @@ impl TaskRunner {
                     .last();
             }
             Task::TakeSnapshot(channel) => {
+                // clone short cache for further sending
                 let mut short = self.short.clone();
-                self.short.clear();
-                // self.short now contains empty hashmap
-                // join a copy of data in short cache to long cache
-                short
-                    .iter()
-                    .map(|(name, metric)| {
-                        update_metric(&mut self.long, name.clone(), metric.clone())
-                    }).last();
+                // join short cache to long cache removing data from short
+                {
+                    let mut long = &mut self.long; // self.long cannot be borrowed in map, so we borrow it earlier
+                    self.short
+                        .drain()
+                        .map(|(name, metric)| update_metric(&mut long, name, metric))
+                        .last();
+                }
 
-                // TODO: we could do this without additional copying if borrowck would allow us
-                // this. Maybe NLL would help us with that in Rust 2018:
-                //self.short
-                //.drain()
-                //.map(|(name, metric)| update_metric(&mut self.long, name, metric))
-                //    .last();
-
+                // self.short now contains empty hashmap because of draining
                 // give a copy of snapshot to requestor
                 channel.send(short).unwrap_or_else(|_| {
                     PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
@@ -293,7 +289,8 @@ pub fn aggregate_task(data: AggregateData) {
             buf.extend_from_slice(suffix.as_bytes());
             let name = buf.take().freeze();
             (name, value)
-        }).chain(upd)
+        })
+        .chain(upd)
         .map(|data| {
             spawn(
                 response
@@ -301,9 +298,11 @@ pub fn aggregate_task(data: AggregateData) {
                     .send(data)
                     .map_err(|_| {
                         AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    }).map(|_| ()),
+                    })
+                    .map(|_| ()),
             );
-        }).last();
+        })
+        .last();
 }
 
 #[cfg(test)]
