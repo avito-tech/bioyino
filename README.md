@@ -43,6 +43,20 @@ $ cargo build --release && strip target/release/bioyno
     bash contrib/fpm/create_package_rpm.sh
 ```
 
+# Build DEB package (for systemd-based distro)
+
+1.  Install requirements (as root or with sudo)
+```
+    apt-get install -y capnproto libcapnp-dev
+    apt-get install -y ruby-dev
+    gem install fpm
+```
+
+2.  Build
+```
+    bash contrib/fpm/create_package_deb.sh
+```
+
 # Configuring #
 To configure, please, see config.toml, all the options are listed there and all of them are commented.
 
