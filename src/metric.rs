@@ -221,11 +221,15 @@ where
             Err(_) => (None, None),
         };
 
-        let mut metric = Metric::new(value.into(), mtype, timestamp, sampling)?;
-
-        if let Some(c) = up_counter {
-            metric.update_counter = c;
-        }
+        // we should NOT use Metric::new here because it is not a newly created metric
+        // we'd get duplicate value in timer/set metrics if we used new
+        let metric = Metric {
+            value: value.into(),
+            mtype,
+            timestamp,
+            sampling,
+            update_counter: if let Some(c) = up_counter { c } else { 1 },
+        };
 
         Ok((name, metric))
     }
@@ -254,7 +258,8 @@ where
                         .map(|(idx, value)| {
                             let value: f64 = (*value).into();
                             timer_builder.set(idx as u32, value);
-                        }).last();
+                        })
+                        .last();
                 }
                 MetricType::Set(ref v) => {
                     let mut set_builder = t_builder.init_set(v.len() as u32);
@@ -262,7 +267,8 @@ where
                         .enumerate()
                         .map(|(idx, value)| {
                             set_builder.set(idx as u32, *value);
-                        }).last();
+                        })
+                        .last();
                 }
             }
         }
@@ -433,5 +439,71 @@ where
 
 #[cfg(test)]
 mod tests {
-    //use super::*;
+
+    use super::*;
+    use capnp::serialize::{read_message, write_message};
+
+    fn capnp_test(metric: Metric<Float>) {
+        let mut buf = Vec::new();
+        write_message(&mut buf, &metric.as_capnp_heap()).unwrap();
+        let mut cursor = std::io::Cursor::new(buf);
+        let reader = read_message(&mut cursor, capnp::message::DEFAULT_READER_OPTIONS).unwrap();
+        let reader = reader.get_root().unwrap();
+        let (_, rmetric) = Metric::<Float>::from_capnp(reader).unwrap();
+        assert_eq!(rmetric, metric);
+    }
+
+    #[test]
+    fn test_metric_capnp_counter() {
+        let mut metric1 = Metric::new(1f64, MetricType::Counter, Some(10), Some(0.1)).unwrap();
+        let metric2 = Metric::new(2f64, MetricType::Counter, None, None).unwrap();
+        metric1.aggregate(metric2).unwrap();
+        capnp_test(metric1);
+    }
+
+    #[test]
+    fn test_metric_capnp_diffcounter() {
+        let mut metric1 =
+            Metric::new(1f64, MetricType::DiffCounter(0.1f64), Some(20), Some(0.2)).unwrap();
+        let metric2 = Metric::new(1f64, MetricType::DiffCounter(0.5f64), None, None).unwrap();
+        metric1.aggregate(metric2).unwrap();
+        capnp_test(metric1);
+    }
+
+    #[test]
+    fn test_metric_capnp_timer() {
+        let mut metric1 =
+            Metric::new(1f64, MetricType::Timer(Vec::new()), Some(10), Some(0.1)).unwrap();
+        let metric2 = Metric::new(2f64, MetricType::Timer(vec![3f64]), None, None).unwrap();
+        metric1.aggregate(metric2).unwrap();
+        assert!(if let MetricType::Timer(ref v) = metric1.mtype {
+            v.len() == 3
+        } else {
+            false
+        });
+
+        capnp_test(metric1);
+    }
+
+    #[test]
+    fn test_metric_capnp_gauge() {
+        let mut metric1 = Metric::new(1f64, MetricType::Gauge(None), Some(10), Some(0.1)).unwrap();
+        let metric2 = Metric::new(2f64, MetricType::Gauge(Some(-1)), None, None).unwrap();
+        metric1.aggregate(metric2).unwrap();
+
+        capnp_test(metric1);
+    }
+
+    #[test]
+    fn test_metric_capnp_set() {
+        let mut set1 = HashSet::new();
+        set1.extend(vec![10u64, 20u64, 10u64].into_iter());
+        let mut metric1 = Metric::new(1f64, MetricType::Set(set1), Some(10), Some(0.1)).unwrap();
+        let mut set2 = HashSet::new();
+        set2.extend(vec![10u64, 30u64].into_iter());
+        let metric2 = Metric::new(2f64, MetricType::Set(set2), None, None).unwrap();
+        metric1.aggregate(metric2).unwrap();
+
+        capnp_test(metric1);
+    }
 }
