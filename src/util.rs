@@ -123,7 +123,7 @@ impl OwnStats {
     pub fn new(interval: u64, prefix: String, chan: Sender<Task>, log: Logger) -> Self {
         let log = log.new(o!("source"=>"stats"));
         let now = Instant::now();
-        let dur = Duration::from_millis(interval);
+        let dur = Duration::from_millis(if interval < 100 { 1000 } else { interval }); // exclude too small intervals
         Self {
             interval,
             prefix,
