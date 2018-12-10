@@ -30,8 +30,10 @@ set +f; unset IFS
 	die 1 "Can't parse version from git";
 }
 
-cargo build --release || die 1 "Build error"
-strip target/release/bioyino || die 1 "Strip error"
+[ -r "target/release/bioyino" ] || {
+    cargo build --release || die 1 "Build error"
+    strip target/release/bioyino || die 1 "Strip error"
+}
 
 TMPDIR=$(mktemp -d)
 [ "${TMPDIR}" = "" ] && die 1 "Can't create temp dir"
@@ -39,10 +41,10 @@ echo version ${VERSION} release ${RELEASE}
 mkdir -p "${TMPDIR}/usr/bin" || die 1 "Can't create bin dir"
 mkdir -p "${TMPDIR}/usr/share/${NAME}" || die 1 "Can't create share dir"
 mkdir -p "${TMPDIR}/etc/sysconfig" || die 1 "Can't create sysconfig dir"
-mkdir -p "${TMPDIR}/etc/systemd/system" || die 1 "Can't create systemd dir"
+mkdir -p "${TMPDIR}/usr/lib/systemd/system" || die 1 "Can't create systemd dir"
 cp ./target/release/bioyino "${TMPDIR}/usr/bin/" || die 1 "Can't install package binary"
 cp ./config.toml "${TMPDIR}/usr/share/${NAME}" || die 1 "Can't install package shared files"
-cp ./contrib/rhel/${NAME}.service "${TMPDIR}/etc/systemd/system" || die 1 "Can't install package systemd files"
+cp ./contrib/rhel/${NAME}.service "${TMPDIR}/usr/lib/systemd/system" || die 1 "Can't install package systemd files"
 cp ./contrib/common/${NAME}.env "${TMPDIR}/etc/sysconfig/${NAME}" || die 1 "Can't install package sysconfig file"
 
 fpm -s dir -t rpm -n ${NAME} -v ${VERSION} -C ${TMPDIR} \
@@ -54,6 +56,6 @@ fpm -s dir -t rpm -n ${NAME} -v ${VERSION} -C ${TMPDIR} \
     --after-install contrib/fpm/post_install.sh \
     --post-uninstall contrib/fpm/post_uninstall.sh \
     "${@}" \
-    etc usr/bin usr/share || die 1 "Can't create package!"
+    etc usr/bin usr/lib/systemd usr/share || die 1 "Can't create package!"
 
 die 0 "Success"

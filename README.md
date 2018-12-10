@@ -29,6 +29,19 @@ One of Bioyino's most powerful features - multimessage mode - require it to be w
 $ git clone <this repo>
 $ cargo build --release && strip target/release/bioyno
 ```
+# Build RPM package (for systemd-based distro)
+
+1.  Install requirements (as root or with sudo)
+```
+    yum install -y capnproto capnproto-devel
+    yum install -y ruby-devel
+    gem install fpm
+```
+
+2.  Build
+```
+    bash contrib/fpm/create_package_rpm.sh
+```
 
 # Configuring #
 To configure, please, see config.toml, all the options are listed there and all of them are commented.

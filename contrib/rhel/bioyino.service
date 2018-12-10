@@ -8,7 +8,6 @@ User=bioyino
 Group=bioyino
 EnvironmentFile=/etc/sysconfig/bioyino
 ExecStart=/usr/bin/bioyino $BIOYINO_ARGS
-ExecReload=/usr/bin/kill -USR2 $MAINPID
 PIDFile=/var/run/bioyino/bioyino.pid
 LimitNOFILE=65536
 RuntimeDirectory=bioyino
