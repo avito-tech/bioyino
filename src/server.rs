@@ -116,21 +116,22 @@ impl IntoFuture for StatsdServer {
                                 chans[ahash as usize % chlen].clone()
                             } else {
                                 if next >= chans.len() {
-                                    next = 1;
-                                    chans[0].clone()
-                                } else {
-                                    next = next + 1;
-                                    chans[next].clone()
+                                    next = 0;
                                 }
+                                let chan = chans[next].clone();
+                                next = next + 1;
+                                chan
                             };
 
                             spawn(
                                 chan.send(Task::Parse(ahash, buf))
                                     .map_err(|_| {
                                         DROPS.fetch_add(1, Ordering::Relaxed);
-                                    }).map(|_| ()),
+                                    })
+                                    .map(|_| ()),
                             )
-                        }).last();
+                        })
+                        .last();
 
                     spawn(
                         StatsdServer::new(
@@ -144,7 +145,8 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                        ).into_future(),
+                        )
+                        .into_future(),
                     );
                 } else {
                     spawn(
@@ -159,7 +161,8 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                        ).into_future(),
+                        )
+                        .into_future(),
                     );
                 }
                 Ok(())
