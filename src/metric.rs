@@ -410,6 +410,7 @@ where
                     9 => Some((".percentile.98", percentile(agg, 0.98).into())),
                     10 => Some((".percentile.99", percentile(agg, 0.99).into())),
                     11 => Some((".percentile.999", percentile(agg, 0.999).into())),
+                    12 => Some((".percentile.50", percentile(agg, 0.5).into())),
                     _ => None,
                 }
             }
