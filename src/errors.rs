@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use failure_derive::Fail;
 
 #[derive(Fail, Debug)]
 pub enum GeneralError {

@@ -12,16 +12,16 @@ use futures::sync::mpsc::{Sender, UnboundedSender};
 use futures::sync::oneshot;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
 use resolve::resolver;
-use slog::{Drain, Logger};
+use slog::{Drain, Logger, info, debug, o, warn};
 use tokio::executor::current_thread::spawn;
 use tokio::timer::{Delay, Interval};
 
-use metric::{Metric, MetricType};
-use task::{aggregate_task, AggregateData, Task};
-use {Cache, Float};
-use {AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
+use crate::metric::{Metric, MetricType};
+use crate::task::{aggregate_task, AggregateData, Task};
+use crate::{Cache, Float};
+use crate::{AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
 
-use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
+use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
 
 pub fn prepare_log(root: &'static str) -> Logger {
     // Set logging
@@ -227,7 +227,7 @@ impl Aggregator {
         chans: Vec<Sender<Task>>,
         tx: UnboundedSender<(Bytes, Float)>,
         log: Logger,
-    ) -> Self {
+        ) -> Self {
         Self {
             options,
             chans,
@@ -287,31 +287,31 @@ impl IntoFuture for Aggregator {
                     .inspect(|_| {
                         EGRESS.fetch_add(1, Ordering::Relaxed);
                     }).enumerate()
-                    .map(move |(num, (name, metric))| {
-                        let buf = BytesMut::with_capacity(1024);
-                        let task_data = AggregateData {
-                            buf,
-                            name: Bytes::from(name),
-                            metric,
-                            options: options.clone(),
-                            response: tx.clone(),
-                        };
-                        if options.fast_aggregation {
-                            spawn(
-                                chans[num % chans.len()]
-                                    .clone()
-                                    .send(Task::Aggregate(task_data))
-                                    .map(|_| ())
-                                    .map_err(|_| {
-                                        DROPS.fetch_add(1, Ordering::Relaxed);
-                                    }),
+                .map(move |(num, (name, metric))| {
+                    let buf = BytesMut::with_capacity(1024);
+                    let task_data = AggregateData {
+                        buf,
+                        name: Bytes::from(name),
+                        metric,
+                        options: options.clone(),
+                        response: tx.clone(),
+                    };
+                    if options.fast_aggregation {
+                        spawn(
+                            chans[num % chans.len()]
+                            .clone()
+                            .send(Task::Aggregate(task_data))
+                            .map(|_| ())
+                            .map_err(|_| {
+                                DROPS.fetch_add(1, Ordering::Relaxed);
+                            }),
                             );
-                        } else {
-                            aggregate_task(task_data);
-                        }
-                    }).last();
+                    } else {
+                        aggregate_task(task_data);
+                    }
+                }).last();
                 Ok(())
-                //});
+                    //});
                     /*
                      * TODO: this was an expermient for multithreade aggregation in separate threadpol with rayon
                      * it worked, but needs more work to be in prod
@@ -345,7 +345,7 @@ impl IntoFuture for Aggregator {
                      });
                      Ok(())
                      */            });
-            Box::new(aggregate)
+                    Box::new(aggregate)
         } else {
             // only get metrics from threads
             let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
@@ -375,16 +375,16 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-    where
+        where
         F: IntoFuture + Clone,
-    {
-        let inner = Either::A(action.clone().into_future());
-        BackoffRetry {
-            action,
-            inner: inner,
-            options: self,
+        {
+            let inner = Either::A(action.clone().into_future());
+            BackoffRetry {
+                action,
+                inner: inner,
+                options: self,
+            }
         }
-    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -396,7 +396,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-    F: IntoFuture + Clone,
+F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;

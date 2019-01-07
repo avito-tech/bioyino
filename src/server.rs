@@ -5,16 +5,15 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use {DROPS, INGRESS};
-
 use bytes::{BufMut, BytesMut};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Sink};
 use tokio::executor::current_thread::spawn;
 use tokio::net::UdpSocket;
 
-use config::System;
-use task::Task;
+use crate::{DROPS, INGRESS};
+use crate::config::System;
+use crate::task::Task;
 
 #[derive(Debug)]
 pub struct StatsdServer {
@@ -42,7 +41,7 @@ impl StatsdServer {
         readbuf: BytesMut,
         flush_flags: Arc<Vec<AtomicBool>>,
         thread_idx: usize,
-    ) -> Self {
+        ) -> Self {
         Self {
             socket,
             chans,
@@ -125,13 +124,13 @@ impl IntoFuture for StatsdServer {
 
                             spawn(
                                 chan.send(Task::Parse(ahash, buf))
-                                    .map_err(|_| {
-                                        DROPS.fetch_add(1, Ordering::Relaxed);
-                                    })
-                                    .map(|_| ()),
-                            )
+                                .map_err(|_| {
+                                    DROPS.fetch_add(1, Ordering::Relaxed);
+                                })
+                                .map(|_| ()),
+                                )
                         })
-                        .last();
+                    .last();
 
                     spawn(
                         StatsdServer::new(
@@ -145,9 +144,9 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                        )
+                            )
                         .into_future(),
-                    );
+                        );
                 } else {
                     spawn(
                         StatsdServer::new(
@@ -161,9 +160,9 @@ impl IntoFuture for StatsdServer {
                             received,
                             flush_flags,
                             thread_idx,
-                        )
+                            )
                         .into_future(),
-                    );
+                        );
                 }
                 Ok(())
             });

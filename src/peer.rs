@@ -9,16 +9,16 @@ use futures::future::{join_all, Future, IntoFuture};
 use futures::sync::mpsc::Sender;
 use futures::sync::oneshot;
 use futures::{Sink, Stream};
-use slog::Logger;
+use slog::{Logger, warn, o, debug};
 use tokio::executor::current_thread::spawn;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::timer::Interval;
+use failure_derive::Fail;
 
-use metric::{Metric, MetricError};
-use protocol_capnp::message as cmsg;
-
-use task::Task;
-use {Float, PEER_ERRORS};
+use crate::metric::{Metric, MetricError};
+use crate::protocol_capnp::message as cmsg;
+use crate::task::Task;
+use crate::{Float, PEER_ERRORS};
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
@@ -104,10 +104,10 @@ impl IntoFuture for NativeProtocolServer {
                             PeerError::Metric(e)
                         })
                     })
-                    .for_each(|_| {
-                        // Consume all messages from the stream
-                        Ok(())
-                    })
+                .for_each(|_| {
+                    // Consume all messages from the stream
+                    Ok(())
+                })
             });
         Box::new(future)
     }
@@ -117,7 +117,7 @@ fn parse_and_send(
     reader: cmsg::Reader,
     next_chan: Sender<Task>,
     log: Logger,
-) -> Result<(), MetricError> {
+    ) -> Result<(), MetricError> {
     match reader.which().map_err(MetricError::CapnpSchema)? {
         cmsg::Single(reader) => {
             let reader = reader.map_err(MetricError::Capnp)?;
@@ -141,7 +141,7 @@ fn parse_and_send(
                     Metric::<Float>::from_capnp(reader)
                         .map(|(name, metric)| metrics.push((name, metric)))
                 })
-                .last();
+            .last();
             let future = next_chan
                 .send(Task::AddMetrics(metrics))
                 .map(|_| ()) // drop next sender
@@ -161,7 +161,7 @@ fn parse_and_send(
                     Metric::<Float>::from_capnp(reader)
                         .map(|(name, metric)| metrics.push((name, metric)))
                 })
-                .last();
+            .last();
             let future = next_chan
                 .send(Task::AddSnapshot(metrics))
                 .map(|_| ()) // drop next sender
@@ -188,7 +188,7 @@ impl NativeProtocolSnapshot {
         nodes: Vec<SocketAddr>,
         interval: Duration,
         chans: &Vec<Sender<Task>>,
-    ) -> Self {
+        ) -> Self {
         Self {
             log: log.new(o!("source"=>"peer-client")),
             nodes,
@@ -223,17 +223,17 @@ impl IntoFuture for NativeProtocolSnapshot {
                     spawn(chan.send(Task::TakeSnapshot(tx)).then(|_| Ok(())));
                     rx
                 })
-                .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
             let get_metrics = join_all(metrics)
                 .map_err(|_| {
                     PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
                     PeerError::TaskSend
                 })
-                .and_then(move |mut metrics| {
-                    metrics.retain(|m| m.len() > 0);
-                    Ok(metrics)
-                });
+            .and_then(move |mut metrics| {
+                metrics.retain(|m| m.len() > 0);
+                Ok(metrics)
+            });
 
             // All nodes have to receive the same metrics
             // so we don't parallel connections and metrics fetching
@@ -254,13 +254,13 @@ impl IntoFuture for NativeProtocolSnapshot {
                                 let codec = ::capnp_futures::serialize::Transport::new(
                                     conn,
                                     ReaderOptions::default(),
-                                );
+                                    );
 
                                 let mut snapshot_message = Builder::new_default();
                                 {
                                     let builder = snapshot_message
-                                        .init_root::<::protocol_capnp::message::Builder>(
-                                    );
+                                        .init_root::<crate::protocol_capnp::message::Builder>(
+                                        );
                                     let flat_len =
                                         metrics.iter().flat_map(|hmap| hmap.iter()).count();
                                     let mut multi_metric = builder.init_snapshot(flat_len as u32);
@@ -276,20 +276,20 @@ impl IntoFuture for NativeProtocolSnapshot {
                                             c_metric.set_name(name);
                                             metric.fill_capnp(&mut c_metric);
                                         })
-                                        .last();
+                                    .last();
                                 }
                                 codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
                                     debug!(elog, "codec error"; "error"=>e.to_string());
                                     PeerError::Capnp(e)
                                 })
                             })
-                            .map_err(move |e| {
-                                PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                debug!(dlog, "error sending snapshot: {}", e)
-                            })
-                            .then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
+                        .map_err(move |e| {
+                            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            debug!(dlog, "error sending snapshot: {}", e)
+                        })
+                        .then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
                     })
-                    .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
                 join_all(clients).map(|_| ())
             })
         });
@@ -311,10 +311,10 @@ mod test {
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 
-    use config::System;
-    use metric::{Metric, MetricType};
-    use task::TaskRunner;
-    use util::prepare_log;
+    use crate::config::System;
+    use crate::metric::{Metric, MetricType};
+    use crate::task::TaskRunner;
+    use crate::util::prepare_log;
 
     use super::*;
 
@@ -362,64 +362,64 @@ mod test {
                 runner.run(task);
                 Ok(runner)
             })
-            .and_then(move |runner| {
-                let single_name: Bytes = "complex.test.bioyino_single".into();
-                let multi_name: Bytes = "complex.test.bioyino_multi".into();
-                let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
-                assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
-                assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
-                assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
+        .and_then(move |runner| {
+            let single_name: Bytes = "complex.test.bioyino_single".into();
+            let multi_name: Bytes = "complex.test.bioyino_multi".into();
+            let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
+            assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
+            assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
+            assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
 
-                Ok(())
-            })
-            .map_err(|_| panic!("error in the future"));
+            Ok(())
+        })
+        .map_err(|_| panic!("error in the future"));
         runtime.spawn(future);
 
         let sender = TcpStream::connect(&address)
             .map_err(|e| {
                 panic!("connection err: {:?}", e);
             })
-            .and_then(move |conn| {
-                let codec =
-                    ::capnp_futures::serialize::Transport::new(conn, ReaderOptions::default());
+        .and_then(move |conn| {
+            let codec =
+                ::capnp_futures::serialize::Transport::new(conn, ReaderOptions::default());
 
-                let mut single_message = Builder::new_default();
-                {
-                    let builder = single_message.init_root::<::protocol_capnp::message::Builder>();
-                    let mut c_metric = builder.init_single();
-                    c_metric.set_name("complex.test.bioyino_single");
-                    metric.fill_capnp(&mut c_metric);
-                }
+            let mut single_message = Builder::new_default();
+            {
+                let builder = single_message.init_root::<crate::protocol_capnp::message::Builder>();
+                let mut c_metric = builder.init_single();
+                c_metric.set_name("complex.test.bioyino_single");
+                metric.fill_capnp(&mut c_metric);
+            }
 
-                let mut multi_message = Builder::new_default();
-                {
-                    let builder = multi_message.init_root::<::protocol_capnp::message::Builder>();
-                    let multi_metric = builder.init_multi(1);
-                    let mut new_metric = multi_metric.get(0);
-                    new_metric.set_name("complex.test.bioyino_multi");
-                    metric.fill_capnp(&mut new_metric);
-                }
+            let mut multi_message = Builder::new_default();
+            {
+                let builder = multi_message.init_root::<crate::protocol_capnp::message::Builder>();
+                let multi_metric = builder.init_multi(1);
+                let mut new_metric = multi_metric.get(0);
+                new_metric.set_name("complex.test.bioyino_multi");
+                metric.fill_capnp(&mut new_metric);
+            }
 
-                let mut snapshot_message = Builder::new_default();
-                {
-                    let builder =
-                        snapshot_message.init_root::<::protocol_capnp::message::Builder>();
-                    let multi_metric = builder.init_snapshot(1);
-                    let mut new_metric = multi_metric.get(0);
-                    new_metric.set_name("complex.test.bioyino_snapshot");
-                    metric.fill_capnp(&mut new_metric);
-                }
-                codec
-                    .send(single_message)
-                    .and_then(|codec| {
-                        codec
-                            .send(multi_message)
-                            .and_then(|codec| codec.send(snapshot_message))
-                    })
-                    .map(|_| ())
-                    .map_err(|e| println!("codec error: {:?}", e))
-            })
-            .map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
+            let mut snapshot_message = Builder::new_default();
+            {
+                let builder =
+                    snapshot_message.init_root::<crate::protocol_capnp::message::Builder>();
+                let multi_metric = builder.init_snapshot(1);
+                let mut new_metric = multi_metric.get(0);
+                new_metric.set_name("complex.test.bioyino_snapshot");
+                metric.fill_capnp(&mut new_metric);
+            }
+            codec
+                .send(single_message)
+                .and_then(|codec| {
+                    codec
+                        .send(multi_message)
+                        .and_then(|codec| codec.send(snapshot_message))
+                })
+            .map(|_| ())
+                .map_err(|e| println!("codec error: {:?}", e))
+        })
+        .map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
 
         let d = Delay::new(Instant::now() + Duration::from_secs(1));
         let delayed = d.map_err(|_| ()).and_then(|_| sender);

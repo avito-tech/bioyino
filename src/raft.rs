@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use rand::random;
 
-use slog::Logger;
+use slog::{Logger, warn};
 
 use futures::future::lazy;
 use tokio::runtime::current_thread::spawn;
@@ -13,11 +13,12 @@ use raft_tokio::raft_consensus::state_machine::null::NullStateMachine;
 use raft_tokio::raft_consensus::ServerId;
 
 ////use raft_tokio::raft::RaftPeerProtocol;
-use config::Raft;
 use raft_tokio::raft::{BiggerIdSolver, ConnectionSolver};
 use raft_tokio::start_raft_tcp;
 use raft_tokio::Notifier;
-use util::{get_hostname, switch_leader, try_resolve};
+
+use crate::util::{get_hostname, switch_leader, try_resolve};
+use crate::config::Raft;
 
 #[derive(Clone)]
 pub struct LeaderNotifier(Logger);

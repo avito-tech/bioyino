@@ -47,7 +47,7 @@ struct MetricType {
         counter @0 :Void;
 
         # for diff counter the metric value stores current counter value
-        # the internal value stores last received counter change fr differentiating
+        # the internal value stores last received counter change for differentiating
         diffCounter @1 :Float64;
 
         # timer holds all values for further stats counting
@@ -59,9 +59,8 @@ struct MetricType {
         # set holds all values for further cardinality estimation
         set @4 :List(UInt64);
 
-        # someday we will support this... conributions are welcomed if you need any of those
-        #   histogram @4 :...
-        #   set @5 :...
+        # someday we will support this... contributions are welcome if you need any of those or other ones
+        #   histogram @5 :...
     }
 }
 

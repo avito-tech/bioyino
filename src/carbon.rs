@@ -8,13 +8,13 @@ use failure::Error;
 use ftoa;
 use futures::stream;
 use futures::{Future, IntoFuture, Sink, Stream};
-use slog::Logger;
+use slog::{Logger, info};
 use tokio::net::TcpStream;
 use tokio_codec::{Decoder, Encoder};
 
-use errors::GeneralError;
+use crate::errors::GeneralError;
 
-use {Float, AGG_ERRORS};
+use crate::{Float, AGG_ERRORS};
 
 #[derive(Clone)]
 pub struct CarbonBackend {
@@ -29,29 +29,29 @@ impl CarbonBackend {
         ts: Duration,
         metrics: Arc<Vec<(Bytes, Float)>>,
         log: Logger,
-    ) -> Self {
+        ) -> Self {
         let ts: Bytes = ts.as_secs().to_string().into();
 
         let buf = BytesMut::with_capacity(metrics.len() * 200); // 200 is an approximate for full metric name + value
         let (metrics, _) =
             metrics
-                .iter()
-                .fold((Vec::new(), buf), |(mut acc, mut buf), (name, metric)| {
-                    let mut wr = buf.writer();
-                    let buf = match ftoa::write(&mut wr, *metric) {
-                        Ok(()) => {
-                            buf = wr.into_inner();
-                            let metric = buf.take().freeze();
-                            acc.push((name.clone(), metric, ts.clone()));
-                            buf
-                        }
-                        Err(_) => {
-                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                            wr.into_inner()
-                        }
-                    };
-                    (acc, buf)
-                });
+            .iter()
+            .fold((Vec::new(), buf), |(mut acc, mut buf), (name, metric)| {
+                let mut wr = buf.writer();
+                let buf = match ftoa::write(&mut wr, *metric) {
+                    Ok(()) => {
+                        buf = wr.into_inner();
+                        let metric = buf.take().freeze();
+                        acc.push((name.clone(), metric, ts.clone()));
+                        buf
+                    }
+                    Err(_) => {
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        wr.into_inner()
+                    }
+                };
+                (acc, buf)
+            });
         let metrics = Arc::new(metrics);
         let self_ = Self { addr, metrics, log };
         self_
