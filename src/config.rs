@@ -5,13 +5,15 @@ use std::net::SocketAddr;
 use std::ops::Range;
 use std::time::Duration;
 
-use clap::{Arg, SubCommand};
+use clap::{Arg, SubCommand, app_from_crate, value_t, crate_name, crate_authors, crate_description, crate_version};
 use toml;
 
-use management::{ConsensusAction, LeaderAction, MgmtCommand};
+use serde_derive::{Serialize, Deserialize};
 
 use raft_tokio::RaftOptions;
-use {ConsensusKind, ConsensusState};
+
+use crate::{ConsensusKind, ConsensusState};
+use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -102,6 +104,11 @@ pub struct Metrics {
 
     /// Whether we should spam parsing errors in logs
     pub log_parse_errors: bool,
+
+    /// Maximum length of data parser can keep in buffer befor considering it trash and throwing
+    /// away
+    pub max_unparsed_buffer: usize,
+
 }
 
 impl Default for Metrics {
@@ -115,6 +122,7 @@ impl Default for Metrics {
             fast_aggregation: true,
             consistent_parsing: true,
             log_parse_errors: false,
+            max_unparsed_buffer: 10000,
         }
     }
 }
@@ -317,35 +325,35 @@ impl System {
         let app = app_from_crate!()
             .arg(
                 Arg::with_name("config")
-                    .help("configuration file path")
-                    .long("config")
-                    .short("c")
-                    .required(true)
-                    .takes_value(true)
-                    .default_value("/etc/bioyino/bioyino.toml"),
-            ).arg(
-                Arg::with_name("verbosity")
+                .help("configuration file path")
+                .long("config")
+                .short("c")
+                .required(true)
+                .takes_value(true)
+                .default_value("/etc/bioyino/bioyino.toml"),
+                ).arg(
+                    Arg::with_name("verbosity")
                     .short("v")
                     .help("logging level")
                     .takes_value(true),
-            ).subcommand(
-                SubCommand::with_name("query")
-                    .about("send a management command to running bioyino server")
-                    .arg(
-                        Arg::with_name("host")
+                    ).subcommand(
+                        SubCommand::with_name("query")
+                        .about("send a management command to running bioyino server")
+                        .arg(
+                            Arg::with_name("host")
                             .short("h")
                             .default_value("127.0.0.1:8137"),
-                    ).subcommand(SubCommand::with_name("status").about("get server state"))
-                    .subcommand(
-                        SubCommand::with_name("consensus")
+                            ).subcommand(SubCommand::with_name("status").about("get server state"))
+                        .subcommand(
+                            SubCommand::with_name("consensus")
                             .arg(Arg::with_name("action").index(1))
                             .arg(
                                 Arg::with_name("leader_action")
-                                    .index(2)
-                                    .default_value("unchanged"),
-                            ),
-                    ),
-            ).get_matches();
+                                .index(2)
+                                .default_value("unchanged"),
+                                ),
+                                ),
+                                ).get_matches();
 
         let config = value_t!(app.value_of("config"), String).expect("config file must be string");
         let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
@@ -370,7 +378,7 @@ impl System {
                 (
                     system,
                     Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server),
-                )
+                    )
             } else {
                 // shold be unreachable
                 unreachable!("clap bug?")

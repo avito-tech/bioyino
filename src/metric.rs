@@ -1,14 +1,18 @@
+use std::collections::HashSet;
 use std::fmt::Debug;
-use std::ops::{Add, AddAssign, Div, Mul, Sub, SubAssign};
+use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
+use std::str::FromStr;
 
 use bytes::Bytes;
 use capnp;
 use capnp::message::{Allocator, Builder, HeapAllocator};
 use failure::Error;
+use failure_derive::Fail;
+use serde_derive::{Serialize, Deserialize};
 
-use protocol_capnp::metric as cmetric;
-use std::collections::HashSet;
-use Float;
+use crate::protocol_capnp::{metric as cmetric, metric_type, gauge};
+
+use crate::Float;
 
 #[derive(Fail, Debug)]
 pub enum MetricError {
@@ -32,7 +36,7 @@ pub enum MetricError {
 // vector must be sorted
 pub fn percentile<F>(vec: &Vec<F>, nth: f64) -> f64
 where
-    F: Into<f64> + Clone,
+F: Into<f64> + Clone,
 {
     let last = (vec.len() - 1) as f64;
     if last == 0f64 {
@@ -56,10 +60,44 @@ where
     res
 }
 
+// Simplify specifying generics
+pub trait AnyFloat:
+Debug
++ Add<Output = Self>
++ AddAssign
++ Sub<Output = Self>
++ SubAssign
++ Div<Output = Self>
++ Mul<Output = Self>
++ Neg<Output = Self>
++ PartialOrd
++ Into<f64>
+//   + From<f64>
++ Debug
++ Default
++ Clone
++ Copy
++ PartialEq
++ FromStr
+{
+}
+
+impl AnyFloat for f64 {}
+impl AnyFloat for f32 {}
+
+pub trait SyncFloat: AnyFloat + Sync
+where
+<Self as FromStr>::Err: std::error::Error + Sync + Send + 'static,
+{
+}
+
+impl SyncFloat for f64 {}
+impl SyncFloat for f32 {}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MetricType<F>
 where
-    F: Copy + PartialEq + Debug,
+F: Copy + PartialEq + Debug,
 {
     Counter,
     DiffCounter(F),
@@ -72,7 +110,7 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Metric<F>
 where
-    F: Copy + PartialEq + Debug,
+F: Copy + PartialEq + Debug,
 {
     pub value: F,
     pub mtype: MetricType<F>,
@@ -83,27 +121,14 @@ where
 
 impl<F> Metric<F>
 where
-    F: Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Clone
-        + Div<Output = F>
-        + Mul<Output = F>
-        + PartialOrd
-        + PartialEq
-        + Into<Float>
-        + From<Float>
-        + Copy
-        + Debug
-        + Sync,
+F: AnyFloat + Sync,
 {
     pub fn new(
         value: F,
         mtype: MetricType<F>,
         timestamp: Option<u64>,
         sampling: Option<f32>,
-    ) -> Result<Self, MetricError> {
+        ) -> Result<Self, MetricError> {
         let mut metric = Metric {
             value,
             mtype,
@@ -169,17 +194,15 @@ where
 
     pub fn from_capnp<'a>(
         reader: cmetric::Reader<'a>,
-    ) -> Result<(Bytes, Metric<Float>), MetricError> {
+        ) -> Result<(Bytes, Metric<Float>), MetricError> {
         let name = reader.get_name().map_err(MetricError::Capnp)?.into();
         let value = reader.get_value();
 
         let mtype = reader.get_type().map_err(MetricError::Capnp)?;
-        use protocol_capnp::metric_type;
         let mtype = match mtype.which().map_err(MetricError::CapnpSchema)? {
             metric_type::Which::Counter(()) => MetricType::Counter,
             metric_type::Which::DiffCounter(c) => MetricType::DiffCounter(c),
             metric_type::Which::Gauge(reader) => {
-                use protocol_capnp::gauge;
                 let reader = reader.map_err(MetricError::Capnp)?;
                 match reader.which().map_err(MetricError::CapnpSchema)? {
                     gauge::Which::Unsigned(()) => MetricType::Gauge(None),
@@ -217,7 +240,7 @@ where
                     None
                 },
                 Some(reader.get_update_counter()),
-            ),
+                ),
             Err(_) => (None, None),
         };
 
@@ -259,7 +282,7 @@ where
                             let value: f64 = (*value).into();
                             timer_builder.set(idx as u32, value);
                         })
-                        .last();
+                    .last();
                 }
                 MetricType::Set(ref v) => {
                     let mut set_builder = t_builder.init_set(v.len() as u32);
@@ -268,7 +291,7 @@ where
                         .map(|(idx, value)| {
                             set_builder.set(idx as u32, *value);
                         })
-                        .last();
+                    .last();
                 }
             }
         }
@@ -311,18 +334,18 @@ where
 
 impl<F> IntoIterator for Metric<F>
 where
-    F: Debug
-        + Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Div<Output = F>
-        + Mul<Output = F>
-        + Clone
-        + Copy
-        + PartialOrd
-        + PartialEq
-        + Into<f64>,
+F: Debug
++ Add<Output = F>
++ AddAssign
++ Sub<Output = F>
++ SubAssign
++ Div<Output = F>
++ Mul<Output = F>
++ Clone
++ Copy
++ PartialOrd
++ PartialEq
++ Into<f64>,
 {
     type Item = (&'static str, Float);
     type IntoIter = MetricIter<F>;
@@ -333,18 +356,18 @@ where
 
 pub struct MetricIter<F>
 where
-    F: Debug
-        + Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Div<Output = F>
-        + Mul<Output = F>
-        + Clone
-        + Copy
-        + PartialOrd
-        + PartialEq
-        + Into<f64>,
+F: Debug
++ Add<Output = F>
++ AddAssign
++ Sub<Output = F>
++ SubAssign
++ Div<Output = F>
++ Mul<Output = F>
++ Clone
++ Copy
++ PartialOrd
++ PartialEq
++ Into<f64>,
 {
     m: Metric<F>,
     count: usize,
@@ -354,18 +377,18 @@ where
 
 impl<F> MetricIter<F>
 where
-    F: Debug
-        + Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Div<Output = F>
-        + Mul<Output = F>
-        + Clone
-        + Copy
-        + PartialOrd
-        + PartialEq
-        + Into<f64>,
+F: Debug
++ Add<Output = F>
++ AddAssign
++ Sub<Output = F>
++ SubAssign
++ Div<Output = F>
++ Mul<Output = F>
++ Clone
++ Copy
++ PartialOrd
++ PartialEq
++ Into<f64>,
 {
     fn new(mut metric: Metric<F>) -> Self {
         let sum = if let MetricType::Timer(ref mut agg) = metric.mtype {
@@ -385,18 +408,18 @@ where
 
 impl<F> Iterator for MetricIter<F>
 where
-    F: Debug
-        + Add<Output = F>
-        + AddAssign
-        + Sub<Output = F>
-        + SubAssign
-        + Div<Output = F>
-        + Mul<Output = F>
-        + Clone
-        + Copy
-        + PartialOrd
-        + PartialEq
-        + Into<Float>,
+F: Debug
++ Add<Output = F>
++ AddAssign
++ Sub<Output = F>
++ SubAssign
++ Div<Output = F>
++ Mul<Output = F>
++ Clone
++ Copy
++ PartialOrd
++ PartialEq
++ Into<Float>,
 {
     type Item = (&'static str, Float);
 

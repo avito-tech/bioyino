@@ -55,6 +55,10 @@ update-counter-threshold = 200
 # Log all buffers being dropped due to parsing errors. Can be very spammy.
 # log-parse-errors = false
 
+# Size of buffer that parser considers invalid. Used to avoid DoS attacks on parser.
+# Increase this if you have metrics taking more than 1000 bytes
+# max-unparsed-buffer = 1000
+
 [carbon]
 
 # IP and port of the carbon-protocol backend to send aggregated data to

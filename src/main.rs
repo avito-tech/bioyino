@@ -1,48 +1,5 @@
 // General
-#[macro_use]
-extern crate lazy_static;
-extern crate failure;
-#[macro_use]
-extern crate failure_derive;
-#[macro_use]
-extern crate slog;
-extern crate rand;
-extern crate slog_async;
-extern crate slog_scope;
-extern crate slog_term;
-
-// Options
-#[macro_use]
-extern crate clap;
-extern crate toml;
-
-// Network
-extern crate bytes;
-extern crate capnp;
-extern crate capnp_futures;
-extern crate futures;
-extern crate hyper;
-extern crate libc;
-extern crate mime;
-extern crate net2;
-extern crate num_cpus;
-extern crate resolve;
-extern crate tokio;
-extern crate tokio_codec;
-extern crate tokio_io;
-
-// Raft
-extern crate raft_tokio;
-
-// Other
-extern crate combine;
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-extern crate ftoa;
-extern crate serde_json;
-
-pub mod bigint;
+//pub mod bigint;
 pub mod carbon;
 pub mod config;
 pub mod consul;
@@ -68,28 +25,31 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
 
-use slog::{Drain, Level};
+use slog::{Drain, Level, info, error, o};
 
+use serde_derive::{Serialize, Deserialize};
 use bytes::Bytes;
 use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
+use lazy_static::lazy_static;
+use slog::warn;
 
 use tokio::runtime::current_thread::Runtime;
 use tokio::timer::{Delay, Interval};
 
-use udp::{start_async_udp, start_sync_udp};
+use crate::udp::{start_async_udp, start_sync_udp};
 
-use carbon::CarbonBackend;
-use config::{Command, Consul, Metrics, Network, System};
-use consul::ConsulConsensus;
-use errors::GeneralError;
-use management::{MgmtClient, MgmtServer};
-use metric::Metric;
-use peer::{NativeProtocolServer, NativeProtocolSnapshot};
-use raft::start_internal_raft;
-use task::{Task, TaskRunner};
-use util::{
+use crate::carbon::CarbonBackend;
+use crate::config::{Command, Consul, Metrics, Network, System};
+use crate::consul::ConsulConsensus;
+use crate::errors::GeneralError;
+use crate::management::{MgmtClient, MgmtServer};
+use crate::metric::Metric;
+use crate::peer::{NativeProtocolServer, NativeProtocolSnapshot};
+use crate::raft::start_internal_raft;
+use crate::task::{Task, TaskRunner};
+use crate::util::{
     try_resolve, AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions,
 };
 
@@ -132,7 +92,7 @@ impl FromStr for ConsensusState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum ConsensusKind {
     None,
     Consul,
@@ -141,7 +101,7 @@ pub enum ConsensusKind {
 
 lazy_static! {
     pub static ref CONSENSUS_STATE: Mutex<ConsensusState> =
-        { Mutex::new(ConsensusState::Disabled) };
+    { Mutex::new(ConsensusState::Disabled) };
 }
 
 pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
@@ -169,34 +129,35 @@ fn main() {
                 nodes,
                 snapshot_interval,
             },
-        raft,
-        consul:
-            Consul {
-                start_as: consul_start_as,
-                agent,
-                session_ttl: consul_session_ttl,
-                renew_time: consul_renew_time,
-                key_name: consul_key,
-            },
-        metrics:
-            Metrics {
-                //           max_metrics,
-                mut count_updates,
-                update_counter_prefix,
-                update_counter_suffix,
-                update_counter_threshold,
-                fast_aggregation,
-                consistent_parsing: _,
-                log_parse_errors: _,
-            },
-        carbon,
-        n_threads,
-        w_threads,
-        stats_interval: s_interval,
-        task_queue_size,
-        start_as_leader,
-        stats_prefix,
-        consensus,
+            raft,
+            consul:
+                Consul {
+                    start_as: consul_start_as,
+                    agent,
+                    session_ttl: consul_session_ttl,
+                    renew_time: consul_renew_time,
+                    key_name: consul_key,
+                },
+                metrics:
+                    Metrics {
+                        //           max_metrics,
+                        mut count_updates,
+                        update_counter_prefix,
+                        update_counter_suffix,
+                        update_counter_threshold,
+                        fast_aggregation,
+                        consistent_parsing: _,
+                        log_parse_errors: _,
+                        max_unparsed_buffer: _,
+                    },
+                    carbon,
+                    n_threads,
+                    w_threads,
+                    stats_interval: s_interval,
+                    task_queue_size,
+                    start_as_leader,
+                    stats_prefix,
+                    consensus,
     } = system;
 
     let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
@@ -265,7 +226,7 @@ fn main() {
                         runner.run(task);
                         Ok(runner)
                     }).map(|_| ())
-                    .map_err(|_| ());
+                .map_err(|_| ());
                 //        let future = rx.for_each(|task: Task| ok(runner.run(task)));
                 runtime.block_on(future).expect("worker thread failed");
             }).expect("starting counting worker thread");
@@ -288,11 +249,11 @@ fn main() {
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
-    ).into_future()
-    .map_err(move |e| {
-        PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-        info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
-    });
+        ).into_future()
+        .map_err(move |e| {
+            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+            info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
+        });
     runtime.spawn(snapshot);
 
     // settings safe for asap restart
@@ -520,7 +481,7 @@ fn main() {
             mm_async,
             mm_timeout,
             flush_flags.clone(),
-        );
+            );
     } else {
         start_async_udp(
             log,
@@ -532,7 +493,7 @@ fn main() {
             async_sockets,
             bufsize,
             flush_flags.clone(),
-        );
+            );
     }
 
     runtime
