@@ -355,6 +355,7 @@ impl IntoFuture for Aggregator {
 }
 
 #[derive(Clone, Debug)]
+/// Builder for `BackoffRetry`, delays are specified in milliseconds
 pub struct BackoffRetryBuilder {
     pub delay: u64,
     pub delay_mul: f32,

@@ -262,7 +262,7 @@ fn main() {
 
     let peer_server = NativeProtocolServer::new(rlog.clone(), peer_listen, chans.clone());
     let peer_server = peer_server_ret.spawn(peer_server).map_err(move |e| {
-        warn!(serv_log, "shot server gone with error: {:?}", e);
+        warn!(serv_log, "shot server gone with error"; "error"=>format!("{:?}", e));
     });
 
     runtime.spawn(peer_server);

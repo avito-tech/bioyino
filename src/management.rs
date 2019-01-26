@@ -5,7 +5,6 @@ use std::sync::atomic::Ordering;
 use futures::future::{err, ok, Future, IntoFuture};
 use futures::Stream;
 use serde_json;
-use serde;
 use slog::{Logger, warn, o, info};
 
 use hyper::service::Service;
@@ -344,8 +343,7 @@ mod test {
     use std::time::{Duration, Instant};
     use {slog, slog_async, slog_term};
 
-    use slog::Drain;
-    use slog::Logger;
+    use slog::{Drain, Logger};
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 

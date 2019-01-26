@@ -19,6 +19,7 @@ use slog::{Logger, info, warn, debug, o};
 use std::os::unix::io::AsRawFd;
 use tokio::net::UdpSocket;
 use tokio::runtime::current_thread::Runtime;
+use tokio::reactor::Handle;
 
 use crate::config::System;
 use crate::server::StatsdServer;
@@ -301,7 +302,7 @@ pub(crate) fn start_async_udp(
                         // create UDP listener
                         let socket = socket.try_clone().expect("cloning socket");
                         let socket =
-                            UdpSocket::from_std(socket, &::tokio::reactor::Handle::current())
+                            UdpSocket::from_std(socket, &Handle::default())
                             .expect("adding socket to event loop");
 
                         let server = StatsdServer::new(

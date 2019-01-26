@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capnp;
@@ -19,7 +20,8 @@ use metric::{Metric, MetricError};
 use metric::protocol_capnp::{message as cmsg, message::Builder as CBuilder};
 
 use crate::task::Task;
-use crate::{Float, PEER_ERRORS};
+use crate::util::BackoffRetryBuilder;
+use crate::{Float, PEER_ERRORS, Cache};
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
@@ -49,6 +51,7 @@ pub enum PeerError {
 
     #[fail(display = "decoding metric failed: {}", _0)]
     Metric(MetricError),
+
 }
 
 #[derive(Clone, Debug)]
@@ -233,68 +236,104 @@ impl IntoFuture for NativeProtocolSnapshot {
                 })
             .and_then(move |mut metrics| {
                 metrics.retain(|m| m.len() > 0);
-                Ok(metrics)
+                Ok(Arc::new(metrics))
             });
 
             // All nodes have to receive the same metrics
             // so we don't parallel connections and metrics fetching
-            // TODO: we probably clone a lots of bytes here,
-            // could've changed them to Arc
-            let dlog = log.clone();
-            let elog = log.clone();
+            let log = log.clone();
             get_metrics.and_then(move |metrics| {
-                let clients = nodes
+                nodes
                     .into_iter()
-                    .map(|address| {
+                    .map(move |address| {
                         let metrics = metrics.clone();
-                        let elog = elog.clone();
-                        let dlog = dlog.clone();
-                        TcpStream::connect(&address)
-                            .map_err(|e| PeerError::Io(e))
-                            .and_then(move |conn| {
-                                let codec = ::capnp_futures::serialize::Transport::new(
-                                    conn,
-                                    ReaderOptions::default(),
-                                    );
-
-                                let mut snapshot_message = Builder::new_default();
-                                {
-                                    let builder = snapshot_message
-                                        .init_root::<CBuilder>(
-                                        );
-                                    let flat_len =
-                                        metrics.iter().flat_map(|hmap| hmap.iter()).count();
-                                    let mut multi_metric = builder.init_snapshot(flat_len as u32);
-                                    metrics
-                                        .into_iter()
-                                        .flat_map(|hmap| hmap.into_iter())
-                                        .enumerate()
-                                        .map(|(idx, (name, metric))| {
-                                            let mut c_metric =
-                                                multi_metric.reborrow().get(idx as u32);
-                                            let name =
-                                                unsafe { ::std::str::from_utf8_unchecked(&name) };
-                                            c_metric.set_name(name);
-                                            metric.fill_capnp(&mut c_metric);
-                                        })
-                                    .last();
-                                }
-                                codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
-                                    debug!(elog, "codec error"; "error"=>e.to_string());
-                                    PeerError::Capnp(e)
-                                })
-                            })
-                        .map_err(move |e| {
-                            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                            debug!(dlog, "error sending snapshot: {}", e)
-                        })
-                        .then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
+                        let log = log.clone();
+                        let peer_client_ret = BackoffRetryBuilder {
+                            delay: 500,
+                            delay_mul: 1.5f32,
+                            delay_max: 5,
+                            retries: 5,
+                        };
+                        let client = SnapshotSender::new(metrics, address, log.clone());
+                        spawn(peer_client_ret.spawn(client).map_err(move |e|{
+                            warn!(log, "snashot client removed after giving up trying"; "error"=>format!("{:?}", e));
+                        }));
                     })
-                .collect::<Vec<_>>();
-                join_all(clients).map(|_| ())
+                .last();
+                Ok(())
             })
         });
         Box::new(future)
+    }
+}
+
+#[derive(Clone)]
+pub struct SnapshotSender {
+    metrics: Arc<Vec<Cache>>,
+    address: SocketAddr,
+    log: Logger,
+}
+
+impl SnapshotSender {
+    pub fn new(metrics: Arc<Vec<Cache>>, address: SocketAddr, log: Logger) -> Self {
+        Self { metrics, address, log}
+    }
+}
+
+impl IntoFuture for SnapshotSender {
+    type Item = ();
+    type Error = PeerError;
+    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+
+    fn into_future(self) -> Self::Future {
+        let Self {
+            metrics,
+            log,
+            address,
+        } = self;
+        let elog = log.clone();
+        let sender =
+            TcpStream::connect(&address)
+            .map_err(|e| PeerError::Io(e))
+            .and_then(move |conn| {
+                let codec = ::capnp_futures::serialize::Transport::new(
+                    conn,
+                    ReaderOptions::default(),
+                    );
+
+                let mut snapshot_message = Builder::new_default();
+                {
+                    let builder = snapshot_message
+                        .init_root::<CBuilder>(
+                        );
+                    let flat_len =
+                        metrics.iter().flat_map(|hmap| hmap.iter()).count();
+                    let mut multi_metric = builder.init_snapshot(flat_len as u32);
+                    metrics
+                        .iter()
+                        .flat_map(|hmap| hmap.into_iter())
+                        .enumerate()
+                        .map(|(idx, (name, metric))| {
+                            let mut c_metric =
+                                multi_metric.reborrow().get(idx as u32);
+                            let name =
+                                unsafe { ::std::str::from_utf8_unchecked(&name) };
+                            c_metric.set_name(name);
+                            metric.fill_capnp(&mut c_metric);
+                        })
+                    .last();
+                }
+                codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
+                    debug!(log, "codec error"; "error"=>e.to_string());
+                    PeerError::Capnp(e)
+                })
+            })
+        .map_err(move |e| {
+            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+            debug!(elog, "error sending snapshot: {}", e);
+            e
+        });
+        Box::new(sender)
     }
 }
 
@@ -421,7 +460,7 @@ mod test {
             .map(|_| ())
                 .map_err(|e| println!("codec error: {:?}", e))
         })
-        .map_err(move |e| debug!(log, "error sending snapshot: {:?}", e));
+        .map_err(move |e| {debug!(log, "error sending snapshot: {:?}", e); panic!("failed sending snapshot");});
 
         let d = Delay::new(Instant::now() + Duration::from_secs(1));
         let delayed = d.map_err(|_| ()).and_then(|_| sender);
