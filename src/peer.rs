@@ -15,8 +15,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::timer::Interval;
 use failure_derive::Fail;
 
-use crate::metric::{Metric, MetricError};
-use crate::protocol_capnp::message as cmsg;
+use metric::{Metric, MetricError};
+use metric::protocol_capnp::{message as cmsg, message::Builder as CBuilder};
+
 use crate::task::Task;
 use crate::{Float, PEER_ERRORS};
 
@@ -259,7 +260,7 @@ impl IntoFuture for NativeProtocolSnapshot {
                                 let mut snapshot_message = Builder::new_default();
                                 {
                                     let builder = snapshot_message
-                                        .init_root::<crate::protocol_capnp::message::Builder>(
+                                        .init_root::<CBuilder>(
                                         );
                                     let flat_len =
                                         metrics.iter().flat_map(|hmap| hmap.iter()).count();
@@ -311,8 +312,9 @@ mod test {
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 
+    use metric::{Metric, MetricType};
+
     use crate::config::System;
-    use crate::metric::{Metric, MetricType};
     use crate::task::TaskRunner;
     use crate::util::prepare_log;
 
@@ -385,7 +387,7 @@ mod test {
 
             let mut single_message = Builder::new_default();
             {
-                let builder = single_message.init_root::<crate::protocol_capnp::message::Builder>();
+                let builder = single_message.init_root::<CBuilder>();
                 let mut c_metric = builder.init_single();
                 c_metric.set_name("complex.test.bioyino_single");
                 metric.fill_capnp(&mut c_metric);
@@ -393,7 +395,7 @@ mod test {
 
             let mut multi_message = Builder::new_default();
             {
-                let builder = multi_message.init_root::<crate::protocol_capnp::message::Builder>();
+                let builder = multi_message.init_root::<CBuilder>();
                 let multi_metric = builder.init_multi(1);
                 let mut new_metric = multi_metric.get(0);
                 new_metric.set_name("complex.test.bioyino_multi");
@@ -403,7 +405,7 @@ mod test {
             let mut snapshot_message = Builder::new_default();
             {
                 let builder =
-                    snapshot_message.init_root::<crate::protocol_capnp::message::Builder>();
+                    snapshot_message.init_root::<CBuilder>();
                 let multi_metric = builder.init_snapshot(1);
                 let mut new_metric = multi_metric.get(0);
                 new_metric.set_name("complex.test.bioyino_snapshot");

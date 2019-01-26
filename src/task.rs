@@ -10,9 +10,10 @@ use futures::{Future, Sink};
 use slog::{Logger, warn, debug};
 use tokio::runtime::current_thread::spawn;
 
+use metric::Metric;
+use metric::parser::{MetricParser, ParseErrorHandler};
+
 use crate::config::System;
-use crate::metric::Metric;
-use crate::parser::{MetricParser, ParseErrorHandler};
 use crate::util::AggregateOptions;
 
 use crate::{Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
@@ -232,7 +233,7 @@ impl ParseErrorHandler for TaskParseErrorHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metric::MetricType;
+    use metric::MetricType;
 
     use crate::util::prepare_log;
 

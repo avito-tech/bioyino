@@ -16,7 +16,7 @@ use slog::{Drain, Logger, info, debug, o, warn};
 use tokio::executor::current_thread::spawn;
 use tokio::timer::{Delay, Interval};
 
-use crate::metric::{Metric, MetricType};
+use metric::{Metric, MetricType};
 use crate::task::{aggregate_task, AggregateData, Task};
 use crate::{Cache, Float};
 use crate::{AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};

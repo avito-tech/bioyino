@@ -5,18 +5,12 @@ pub mod config;
 pub mod consul;
 pub mod errors;
 pub mod management;
-pub mod metric;
-pub mod parser;
 pub mod peer;
 pub mod raft;
 pub mod server;
 pub mod task;
 pub mod udp;
 pub mod util;
-
-pub mod protocol_capnp {
-    include!(concat!(env!("OUT_DIR"), "/schema/protocol_capnp.rs"));
-}
 
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -38,6 +32,7 @@ use slog::warn;
 use tokio::runtime::current_thread::Runtime;
 use tokio::timer::{Delay, Interval};
 
+use metric::metric::Metric;
 use crate::udp::{start_async_udp, start_sync_udp};
 
 use crate::carbon::CarbonBackend;
@@ -45,7 +40,6 @@ use crate::config::{Command, Consul, Metrics, Network, System};
 use crate::consul::ConsulConsensus;
 use crate::errors::GeneralError;
 use crate::management::{MgmtClient, MgmtServer};
-use crate::metric::Metric;
 use crate::peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use crate::raft::start_internal_raft;
 use crate::task::{Task, TaskRunner};

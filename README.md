@@ -23,7 +23,7 @@ Currently works in production at Avito, processing production-grade metric strea
 One of Bioyino's most powerful features - multimessage mode - require it to be working on GNU/Linux.
 
 * Install [capnp compiler tool](https://capnproto.org/install.html) to generate schemas. It's usually downloaded using your distribution's package manager.
-* Do the usual Rust-program build-install cycle. Please note, that building is always tested on latest stable version of Rust.
+* Do the usual Rust-program build-install cycle. Please note, that building is always tested on latest stable version of Rust. Rust 2018 edition is required.
 
 ```
 $ git clone <this repo>

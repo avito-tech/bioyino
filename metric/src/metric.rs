@@ -1,7 +1,5 @@
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
-use std::str::FromStr;
 
 use bytes::Bytes;
 use capnp;
@@ -12,7 +10,7 @@ use serde_derive::{Serialize, Deserialize};
 
 use crate::protocol_capnp::{metric as cmetric, metric_type, gauge};
 
-use crate::Float;
+use num_traits::{Float, AsPrimitive};
 
 #[derive(Fail, Debug)]
 pub enum MetricError {
@@ -34,65 +32,31 @@ pub enum MetricError {
 
 // Percentile counter. Not safe. Requires at least two elements in vector
 // vector must be sorted
-pub fn percentile<F>(vec: &Vec<F>, nth: f64) -> f64
+pub fn percentile<F>(vec: &Vec<F>, nth: F) -> F
 where
-F: Into<f64> + Clone,
+F: Float + AsPrimitive<usize>,
 {
-    let last = (vec.len() - 1) as f64;
-    if last == 0f64 {
-        return vec[0].clone().into();
+    let last = F::from(vec.len() - 1).unwrap(); // usize to float should be ok for both f32 and f64
+    if last == F::zero() {
+        return vec[0].clone();
     }
 
-    let k: f64 = nth * last;
+    let k = nth * last;
     let f = k.floor();
     let c = k.ceil();
 
     if c == f {
         // exact nth percentile have been found
-        return vec[k as usize].clone().into();
+        return vec[k.as_()].clone();
     }
 
     let m0 = c - k;
     let m1 = k - f;
-    let d0 = vec[f as usize].clone().into() * m0;
-    let d1 = vec[c as usize].clone().into() * m1;
+    let d0 = vec[f.as_()].clone() * m0;
+    let d1 = vec[c.as_()].clone() * m1;
     let res = d0 + d1;
     res
 }
-
-// Simplify specifying generics
-pub trait AnyFloat:
-Debug
-+ Add<Output = Self>
-+ AddAssign
-+ Sub<Output = Self>
-+ SubAssign
-+ Div<Output = Self>
-+ Mul<Output = Self>
-+ Neg<Output = Self>
-+ PartialOrd
-+ Into<f64>
-//   + From<f64>
-+ Debug
-+ Default
-+ Clone
-+ Copy
-+ PartialEq
-+ FromStr
-{
-}
-
-impl AnyFloat for f64 {}
-impl AnyFloat for f32 {}
-
-pub trait SyncFloat: AnyFloat + Sync
-where
-<Self as FromStr>::Err: std::error::Error + Sync + Send + 'static,
-{
-}
-
-impl SyncFloat for f64 {}
-impl SyncFloat for f32 {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum MetricType<F>
@@ -119,9 +83,33 @@ F: Copy + PartialEq + Debug,
     pub sampling: Option<f32>,
 }
 
+pub trait FromF64
+{
+    fn from_f64(value: f64) -> Self;
+}
+
+impl FromF64 for f64
+{
+    fn from_f64(value: f64) -> Self {
+        value
+    }
+}
+
+impl FromF64 for f32
+{
+    // TODO specilaization will give us a possibility to use any other float the same way
+    fn from_f64(value: f64) -> Self {
+        let (mantissa, exponent, sign) = Float::integer_decode(value);
+        let sign_f = sign as f32;
+        let mantissa_f = mantissa as f32;
+        let exponent_f = 2f32.powf(exponent as f32);
+        sign_f * mantissa_f * exponent_f
+    }
+}
+
 impl<F> Metric<F>
 where
-F: AnyFloat + Sync,
+F: Float + Debug + AsPrimitive<f64> + FromF64 + Sync,
 {
     pub fn new(
         value: F,
@@ -141,7 +129,7 @@ F: AnyFloat + Sync,
             agg.push(metric.value)
         };
         if let MetricType::Set(ref mut hs) = metric.mtype {
-            hs.insert(metric.value.into().to_bits());
+            hs.insert(metric.value.as_().to_bits());
         };
         Ok(metric)
     }
@@ -151,7 +139,7 @@ F: AnyFloat + Sync,
         self.update_counter += new.update_counter;
         match (&mut self.mtype, new.mtype) {
             (&mut Counter, Counter) => {
-                self.value += new.value;
+                self.value = self.value + new.value;
             }
             (&mut DiffCounter(ref mut previous), DiffCounter(_)) => {
                 // FIXME: this is most probably incorrect when joining with another
@@ -163,13 +151,13 @@ F: AnyFloat + Sync,
                     new.value
                 };
                 *previous = new.value;
-                self.value += diff;
+                self.value = self.value + diff;
             }
             (&mut Gauge(_), Gauge(Some(1))) => {
-                self.value += new.value;
+                self.value = self.value + new.value;
             }
             (&mut Gauge(_), Gauge(Some(-1))) => {
-                self.value -= new.value;
+                self.value = self.value - new.value;
             }
             (&mut Gauge(_), Gauge(None)) => {
                 self.value = new.value;
@@ -192,16 +180,17 @@ F: AnyFloat + Sync,
         Ok(())
     }
 
+
     pub fn from_capnp<'a>(
         reader: cmetric::Reader<'a>,
-        ) -> Result<(Bytes, Metric<Float>), MetricError> {
+        ) -> Result<(Bytes, Metric<F>), MetricError> {
         let name = reader.get_name().map_err(MetricError::Capnp)?.into();
-        let value = reader.get_value();
+        let value: F = F::from_f64(reader.get_value());
 
         let mtype = reader.get_type().map_err(MetricError::Capnp)?;
         let mtype = match mtype.which().map_err(MetricError::CapnpSchema)? {
             metric_type::Which::Counter(()) => MetricType::Counter,
-            metric_type::Which::DiffCounter(c) => MetricType::DiffCounter(c),
+            metric_type::Which::DiffCounter(c) => MetricType::DiffCounter(F::from_f64(c)),
             metric_type::Which::Gauge(reader) => {
                 let reader = reader.map_err(MetricError::Capnp)?;
                 match reader.which().map_err(MetricError::CapnpSchema)? {
@@ -213,7 +202,7 @@ F: AnyFloat + Sync,
                 let reader = reader.map_err(MetricError::Capnp)?;
                 let mut v = Vec::new();
                 v.reserve_exact(reader.len() as usize);
-                reader.iter().map(|ms| v.push(ms)).last();
+                reader.iter().map(|ms| v.push(FromF64::from_f64(ms))).last();
                 MetricType::Timer(v)
             }
             metric_type::Which::Set(reader) => {
@@ -246,8 +235,8 @@ F: AnyFloat + Sync,
 
         // we should NOT use Metric::new here because it is not a newly created metric
         // we'd get duplicate value in timer/set metrics if we used new
-        let metric = Metric {
-            value: value.into(),
+        let metric: Metric<F> = Metric {
+            value: value,
             mtype,
             timestamp,
             sampling,
@@ -260,13 +249,13 @@ F: AnyFloat + Sync,
     pub fn fill_capnp<'a>(&self, builder: &mut cmetric::Builder<'a>) {
         // no name is known at this stage
         // value
-        builder.set_value(self.value.into());
+        builder.set_value(self.value.as_());
         // mtype
         {
             let mut t_builder = builder.reborrow().init_type();
             match self.mtype {
                 MetricType::Counter => t_builder.set_counter(()),
-                MetricType::DiffCounter(v) => t_builder.set_diff_counter(v.into()),
+                MetricType::DiffCounter(v) => t_builder.set_diff_counter(v.as_()),
                 MetricType::Gauge(sign) => {
                     let mut g_builder = t_builder.init_gauge();
                     match sign {
@@ -279,7 +268,7 @@ F: AnyFloat + Sync,
                     v.iter()
                         .enumerate()
                         .map(|(idx, value)| {
-                            let value: f64 = (*value).into();
+                            let value: f64 = (*value).as_();
                             timer_builder.set(idx as u32, value);
                         })
                     .last();
@@ -334,20 +323,9 @@ F: AnyFloat + Sync,
 
 impl<F> IntoIterator for Metric<F>
 where
-F: Debug
-+ Add<Output = F>
-+ AddAssign
-+ Sub<Output = F>
-+ SubAssign
-+ Div<Output = F>
-+ Mul<Output = F>
-+ Clone
-+ Copy
-+ PartialOrd
-+ PartialEq
-+ Into<f64>,
+F: Float + Debug + FromF64 + AsPrimitive<usize>
 {
-    type Item = (&'static str, Float);
+    type Item = (&'static str, F);
     type IntoIter = MetricIter<F>;
     fn into_iter(self) -> Self::IntoIter {
         MetricIter::new(self)
@@ -356,18 +334,7 @@ F: Debug
 
 pub struct MetricIter<F>
 where
-F: Debug
-+ Add<Output = F>
-+ AddAssign
-+ Sub<Output = F>
-+ SubAssign
-+ Div<Output = F>
-+ Mul<Output = F>
-+ Clone
-+ Copy
-+ PartialOrd
-+ PartialEq
-+ Into<f64>,
+F: Float + Debug + FromF64 + AsPrimitive<usize>
 {
     m: Metric<F>,
     count: usize,
@@ -377,18 +344,7 @@ F: Debug
 
 impl<F> MetricIter<F>
 where
-F: Debug
-+ Add<Output = F>
-+ AddAssign
-+ Sub<Output = F>
-+ SubAssign
-+ Div<Output = F>
-+ Mul<Output = F>
-+ Clone
-+ Copy
-+ PartialOrd
-+ PartialEq
-+ Into<f64>,
+F: Float + Debug + FromF64 + AsPrimitive<usize>
 {
     fn new(mut metric: Metric<F>) -> Self {
         let sum = if let MetricType::Timer(ref mut agg) = metric.mtype {
@@ -408,51 +364,40 @@ F: Debug
 
 impl<F> Iterator for MetricIter<F>
 where
-F: Debug
-+ Add<Output = F>
-+ AddAssign
-+ Sub<Output = F>
-+ SubAssign
-+ Div<Output = F>
-+ Mul<Output = F>
-+ Clone
-+ Copy
-+ PartialOrd
-+ PartialEq
-+ Into<Float>,
+F: Float + Debug + FromF64 + AsPrimitive<usize>
 {
-    type Item = (&'static str, Float);
+    type Item = (&'static str, F);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let res = match &self.m.mtype {
+        let res: Option<Self::Item> = match &self.m.mtype {
             &MetricType::Counter if self.count == 0 => Some(("", self.m.value.into())),
             &MetricType::DiffCounter(_) if self.count == 0 => Some(("", self.m.value.into())),
             &MetricType::Gauge(_) if self.count == 0 => Some(("", self.m.value.into())),
             &MetricType::Timer(ref agg) => {
                 match self.count {
-                    0 => Some((".count", Float::from(agg.len() as u32))),
+                    0 => Some((".count", F::from_f64(agg.len() as f64) )),
                     // agg.len() = 0 is impossible here because of metric creation logic.
                     // For additional panic safety and to ensure unwrapping is safe here
                     // this will return None interrupting the iteration and making other
                     // aggregations unreachable since they are useless in that case
                     1 => agg.last().map(|last| (".last", (*last).into())),
-                    2 => Some((".min", agg[0].into())),
-                    3 => Some((".max", agg[agg.len() - 1].into())),
-                    4 => Some((".sum", self.timer_sum.unwrap().into())),
-                    5 => Some((".median", percentile(agg, 0.5).into())),
+                    2 => Some((".min", agg[0])),
+                    3 => Some((".max", agg[agg.len() - 1])),
+                    4 => Some((".sum", self.timer_sum.unwrap())),
+                    5 => Some((".median", percentile(agg, F::from_f64(0.5)))),
                     6 => {
-                        let len: Float = (agg.len() as u32).into();
-                        Some((".mean", self.timer_sum.unwrap().into() / len))
+                        let len: F = F::from_f64(agg.len() as f64);
+                        Some((".mean", self.timer_sum.unwrap() / len))
                     }
-                    7 => Some((".percentile.75", percentile(agg, 0.75).into())),
-                    8 => Some((".percentile.95", percentile(agg, 0.95).into())),
-                    9 => Some((".percentile.98", percentile(agg, 0.98).into())),
-                    10 => Some((".percentile.99", percentile(agg, 0.99).into())),
-                    11 => Some((".percentile.999", percentile(agg, 0.999).into())),
+                    7 => Some((".percentile.75", percentile(agg, F::from_f64(0.75)))),
+                    8 => Some((".percentile.95", percentile(agg, F::from_f64(0.95)))),
+                    9 => Some((".percentile.98", percentile(agg, F::from_f64(0.98)))),
+                    10 => Some((".percentile.99", percentile(agg, F::from_f64(0.99)))),
+                    11 => Some((".percentile.999", percentile(agg, F::from_f64(0.999)))),
                     _ => None,
                 }
             }
-            &MetricType::Set(ref hs) if self.count == 0 => Some(("", Float::from(hs.len() as u32))),
+            &MetricType::Set(ref hs) if self.count == 0 => Some(("", F::from_f64(hs.len() as f64))),
             _ => None,
         };
         self.count += 1;
@@ -465,6 +410,7 @@ mod tests {
 
     use super::*;
     use capnp::serialize::{read_message, write_message};
+    type Float = f64;
 
     fn capnp_test(metric: Metric<Float>) {
         let mut buf = Vec::new();
