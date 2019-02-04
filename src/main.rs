@@ -495,7 +495,7 @@ fn main() {
         let flush_timer = flush_timer
             .map_err(|e| GeneralError::Timer(e))
             .for_each(move |_tick| {
-                info!(tlog, "buffer flush requested");
+                debug!(tlog, "buffer flush requested");
                 flags
                     .iter()
                     .map(|flag| flag.swap(true, Ordering::SeqCst))
