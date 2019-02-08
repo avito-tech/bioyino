@@ -86,6 +86,7 @@ use consul::ConsulConsensus;
 use errors::GeneralError;
 use management::{MgmtClient, MgmtServer};
 use metric::Metric;
+use std::net::SocketAddr;
 use peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use raft::start_internal_raft;
 use task::{Task, TaskRunner};
@@ -283,11 +284,13 @@ fn main() {
     info!(log, "starting snapshot sender");
     let snap_log = rlog.clone();
     let snap_err_log = rlog.clone();
+    let snap_bind_addr = (peer_listen.ip().to_string() + ":0").parse::<SocketAddr>().unwrap();
     let snapshot = NativeProtocolSnapshot::new(
         &snap_log,
         nodes.clone(),
         Duration::from_millis(snapshot_interval as u64),
         &chans,
+        snap_bind_addr,
     ).into_future()
     .map_err(move |e| {
         PEER_ERRORS.fetch_add(1, Ordering::Relaxed);

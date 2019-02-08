@@ -13,6 +13,8 @@ use slog::Logger;
 use tokio::executor::current_thread::spawn;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::timer::Interval;
+use tokio::reactor::Handle;
+use net2::TcpBuilder;
 
 use metric::{Metric, MetricError};
 use protocol_capnp::message as cmsg;
@@ -177,6 +179,7 @@ pub struct NativeProtocolSnapshot {
     interval: Duration,
     chans: Vec<Sender<Task>>,
     log: Logger,
+    bind_addr: SocketAddr,
 }
 
 impl NativeProtocolSnapshot {
@@ -185,12 +188,14 @@ impl NativeProtocolSnapshot {
         nodes: Vec<SocketAddr>,
         interval: Duration,
         chans: &Vec<Sender<Task>>,
+        bind_addr: SocketAddr,
     ) -> Self {
         Self {
             log: log.new(o!("source"=>"peer-client")),
             nodes,
             interval,
             chans: chans.clone(),
+            bind_addr: bind_addr,
         }
     }
 }
@@ -206,6 +211,7 @@ impl IntoFuture for NativeProtocolSnapshot {
             nodes,
             interval,
             chans,
+            bind_addr,
         } = self;
 
         let timer = Interval::new(Instant::now() + interval, interval);
@@ -243,43 +249,52 @@ impl IntoFuture for NativeProtocolSnapshot {
                         let metrics = metrics.clone();
                         let elog = elog.clone();
                         let dlog = dlog.clone();
-                        TcpStream::connect(&address)
-                            .map_err(|e| PeerError::Io(e))
-                            .and_then(move |conn| {
-                                let codec = ::capnp_futures::serialize::Transport::new(
-                                    conn,
-                                    ReaderOptions::default(),
-                                );
+                        let tcp = TcpBuilder::new_v4().unwrap();
+                        match tcp.bind(bind_addr) {
+                            Ok(tcp_bind) => {
+                                let tcp_stream = tcp_bind.to_tcp_stream().unwrap();
+                                TcpStream::connect_std(tcp_stream, &address, &Handle::default())
+                                    .map_err(|e| PeerError::Io(e))
+                                    .and_then(move |conn| {
+                                        let codec = ::capnp_futures::serialize::Transport::new(
+                                            conn,
+                                            ReaderOptions::default(),
+                                        );
 
-                                let mut snapshot_message = Builder::new_default();
-                                {
-                                    let builder = snapshot_message
-                                        .init_root::<::protocol_capnp::message::Builder>(
-                                    );
-                                    let flat_len =
-                                        metrics.iter().flat_map(|hmap| hmap.iter()).count();
-                                    let mut multi_metric = builder.init_snapshot(flat_len as u32);
-                                    metrics
-                                        .into_iter()
-                                        .flat_map(|hmap| hmap.into_iter())
-                                        .enumerate()
-                                        .map(|(idx, (name, metric))| {
-                                            let mut c_metric =
-                                                multi_metric.reborrow().get(idx as u32);
-                                            let name =
-                                                unsafe { ::std::str::from_utf8_unchecked(&name) };
-                                            c_metric.set_name(name);
-                                            metric.fill_capnp(&mut c_metric);
-                                        }).last();
-                                }
-                                codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
-                                    debug!(elog, "codec error"; "error"=>e.to_string());
-                                    PeerError::Capnp(e)
-                                })
-                            }).map_err(move |e| {
-                                PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                debug!(dlog, "error sending snapshot: {}", e)
-                            }).then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
+                                        let mut snapshot_message = Builder::new_default();
+                                        {
+                                            let builder = snapshot_message
+                                                .init_root::<::protocol_capnp::message::Builder>(
+                                            );
+                                            let flat_len =
+                                                metrics.iter().flat_map(|hmap| hmap.iter()).count();
+                                            let mut multi_metric = builder.init_snapshot(flat_len as u32);
+                                            metrics
+                                                .into_iter()
+                                                .flat_map(|hmap| hmap.into_iter())
+                                                .enumerate()
+                                                .map(|(idx, (name, metric))| {
+                                                    let mut c_metric =
+                                                        multi_metric.reborrow().get(idx as u32);
+                                                    let name =
+                                                        unsafe { ::std::str::from_utf8_unchecked(&name) };
+                                                    c_metric.set_name(name);
+                                                    metric.fill_capnp(&mut c_metric);
+                                                }).last();
+                                        }
+                                        codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
+                                            debug!(elog, "codec error"; "error"=>e.to_string());
+                                            PeerError::Capnp(e)
+                                        })
+                                    }).map_err(move |e| {
+                                        PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                                        debug!(dlog, "error sending snapshot to {}: {}", address.to_string(), e)
+                                    }).then(|_| Ok(())) // we don't want to fail the whole timer cycle because of one send error
+                            },
+                            Err(err) => {
+                                panic!("unable bind snapshot sender client socket to {}: {:?}", bind_addr.to_string(), err);
+                            },
+                        }
                     }).collect::<Vec<_>>();
                 join_all(clients).map(|_| ())
             })
