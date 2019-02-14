@@ -54,7 +54,6 @@ fpm -s dir -t deb -n ${NAME} -v ${VERSION} -C ${TMPDIR} \
     --license BSD-2 \
     --url "https://github.com/avito-tech/bioyino" \
     --after-install contrib/fpm/post_install.sh \
-    --post-uninstall contrib/fpm/post_uninstall.sh \
     "${@}" \
     etc usr/bin usr/lib/systemd usr/share || die 1 "Can't create package!"
 
