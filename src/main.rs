@@ -226,7 +226,7 @@ fn main() {
             }).expect("starting counting worker thread");
     }
 
-    let stats_prefix = stats_prefix.trim_right_matches(".").to_string();
+    let stats_prefix = stats_prefix.trim_end_matches(".").to_string();
 
     // Spawn future gatering bioyino own stats
     let own_stat_chan = chans[0].clone();

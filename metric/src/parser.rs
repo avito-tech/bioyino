@@ -18,7 +18,8 @@ use crate::metric::{Metric, MetricType, FromF64};
 use num_traits::{Float, AsPrimitive};
 
 // Used for returning parsing result
-enum ParsedPart<F>
+#[derive(Debug)]
+pub enum ParsedPart<F>
 where
 F: Float + FromStr + Debug + AsPrimitive<f64>,
 {
@@ -42,8 +43,10 @@ F: 'a + Float + Debug + FromStr + AsPrimitive<f64> + FromF64 + Sync,
         .and_then(|(start, name, stop)| {
             //let len =stop - start;// name.len();
             from_utf8(name)
-                .map_err(StreamErrorFor::<I>::other)
-                .map(|_| (start, stop))
+                .map_err(|_e| {
+                    StreamErrorFor::<I>::unexpected_static_message("name is not valid utf8")
+                })
+            .map(|_| (start, stop))
                 //TODO: introduce metric name limits, use is.alphabetical for each unicode char
         });
 
@@ -264,8 +267,15 @@ F: Float + FromStr + AsPrimitive<f64> + FromF64 + Debug + Sync ,
                     self.handler.handle(self.input, self.skip);
                     if skip == 0 {
                         // error found at the very first byte
-                        self.skip += 1;
-                        return None;
+                        // skip 1 byte and try again
+                        //self.skip += 1;
+
+                        // try to find \r to cun until there
+                        match input.iter().position(|c| *c == 10u8) {
+                            Some(pos) => self.input.advance(pos),
+                            None => self.input.clear(),
+                        }
+                        //cut all the input otherwise
                     } else {
                         // cut buffer to position where error was found
                         self.skip = 0;
@@ -386,6 +396,24 @@ mod tests {
         assert_eq!(metric, Metric::<f64>::new(1000f64, MetricType::Gauge(Some(-1)), None, Some(0.5)).unwrap());
         assert_eq!(parser.next(), None);
     }
+
+#[test]
+    fn parse_metric_bad_utf8() {
+        use bytes::BufMut;
+        let mut data = BytesMut::from(&b"borets1"[..]);
+        data.reserve(1000);
+        data.put(193u8);
+        data.put(129u8);
+        data.put(&b":+1000|g\ngorets:-1000|g|@0.5"[..]);
+        let mut parser = make_parser(&mut data);
+        let r = parser.next();
+        let (name, metric) = r.unwrap();
+
+        // Only one metric should be parsed
+        assert_eq!(&name[..], &b"gorets"[..]);
+        assert_eq!(metric, Metric::<f64>::new(1000f64, MetricType::Gauge(Some(-1)), None, Some(0.5)).unwrap());
+    }
+
 
     #[test]
     fn parse_split_metric_buf() {
