@@ -14,7 +14,7 @@ pub mod util;
 
 use std::collections::HashMap;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering, ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{self, Duration, Instant, SystemTime};
@@ -54,13 +54,13 @@ pub type Float = f64;
 pub type Cache = HashMap<Bytes, Metric<Float>>;
 
 // statistic counters
-pub static PARSE_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
-pub static AGG_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
-pub static PEER_ERRORS: AtomicUsize = ATOMIC_USIZE_INIT;
-pub static INGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
-pub static INGRESS_METRICS: AtomicUsize = ATOMIC_USIZE_INIT;
-pub static EGRESS: AtomicUsize = ATOMIC_USIZE_INIT;
-pub static DROPS: AtomicUsize = ATOMIC_USIZE_INIT;
+pub static PARSE_ERRORS: AtomicUsize = AtomicUsize::new(0);
+pub static AGG_ERRORS: AtomicUsize = AtomicUsize::new(0);
+pub static PEER_ERRORS: AtomicUsize = AtomicUsize::new(0);
+pub static INGRESS: AtomicUsize = AtomicUsize::new(0);
+pub static INGRESS_METRICS: AtomicUsize = AtomicUsize::new(0);
+pub static EGRESS: AtomicUsize = AtomicUsize::new(0);
+pub static DROPS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -95,7 +95,7 @@ lazy_static! {
     pub static ref CONSENSUS_STATE: Mutex<ConsensusState> = { Mutex::new(ConsensusState::Disabled) };
 }
 
-pub static IS_LEADER: AtomicBool = ATOMIC_BOOL_INIT;
+pub static IS_LEADER: AtomicBool = AtomicBool::new(false);
 
 fn main() {
     let (system, command) = System::load();
