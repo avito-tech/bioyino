@@ -159,6 +159,10 @@ snapshot-interval = 1000
 # values are integers
 nodes = {}
 
+# allow binding raft outgoing connnections to specific IP
+# default: not specified, so no bind happens
+# client-bind = "127.0.0.1:8138"
+
 [consul]
 # Start in disabled leader finding mode. This only works while consul is bootstrapping.
 # Can be helpful when there is a danger of agent being inaccessible.
