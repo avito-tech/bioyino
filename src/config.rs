@@ -286,11 +286,14 @@ pub struct Raft {
 
     /// List of Raft nodes, may include this_node
     pub nodes: HashMap<String, u64>,
+
+    /// Bind raft client to specific IP when connecting nodes
+    pub client_bind: Option<SocketAddr>,
 }
 
 impl Default for Raft {
     fn default() -> Self {
-        Self { start_delay: 0, heartbeat_timeout: 250, election_timeout_min: 500, election_timeout_max: 750, this_node: None, nodes: HashMap::new() }
+        Self { start_delay: 0, heartbeat_timeout: 250, election_timeout_min: 500, election_timeout_max: 750, this_node: None, nodes: HashMap::new(), client_bind: None }
     }
 }
 
