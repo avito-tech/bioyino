@@ -321,6 +321,7 @@ impl System {
     pub fn load() -> (Self, Command) {
         // This is a first copy of args - with the "config" option
         let app = app_from_crate!()
+            .long_version(concat!(crate_version!(), " ", env!("VERGEN_COMMIT_DATE"), " ", env!("VERGEN_SHA_SHORT")))
             .arg(Arg::with_name("config").help("configuration file path").long("config").short("c").required(true).takes_value(true).default_value("/etc/bioyino/bioyino.toml"))
             .arg(Arg::with_name("verbosity").short("v").help("logging level").takes_value(true))
             .subcommand(SubCommand::with_name("query").about("send a management command to running bioyino server").arg(Arg::with_name("host").short("h").default_value("127.0.0.1:8137")).subcommand(SubCommand::with_name("status").about("get server state")).subcommand(SubCommand::with_name("consensus").arg(Arg::with_name("action").index(1)).arg(Arg::with_name("leader_action").index(2).default_value("unchanged"))))

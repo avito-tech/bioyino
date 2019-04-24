@@ -4,6 +4,7 @@ version = "0.5.0"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
+build = "build.rs"
 
 [dependencies]
 lazy_static="^1.1"
@@ -40,3 +41,4 @@ metric = { path = "metric" }
 
 [build-dependencies]
 capnpc = "^0.9"
+vergen = "3"
