@@ -5,7 +5,7 @@ The most notable parameter here is the size of and array for a single metric. Th
 metrics, but when only few metrics come during the aggregation period, counting stats for all of them is fast and one
 thread will most probably be enough.
 
-## single threaded
+## Single threaded
 In this mode the whole array of metrics is counted in a single thread. Usually this is enough for a low-sized batches
 i.e. when only a few metrics with the same name are received during aggregation period. Another use case is when
 aggregation time is not important and it is ok to wait some time leaving all other cores for processing.
