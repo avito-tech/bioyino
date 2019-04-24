@@ -7,14 +7,14 @@ use bytes::{BufMut, Bytes, BytesMut};
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::oneshot;
 use futures::{Future, Sink};
-use slog::{Logger, warn, debug};
+use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
-use metric::Metric;
 use metric::parser::{MetricParser, ParseErrorHandler};
+use metric::Metric;
 
+use crate::aggregate::AggregateOptions;
 use crate::config::System;
-use crate::util::AggregateOptions;
 
 use crate::{Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
 
@@ -62,23 +62,13 @@ pub struct TaskRunner {
 
 impl TaskRunner {
     pub fn new(log: Logger, config: Arc<System>, cap: usize) -> Self {
-        Self {
-            long: HashMap::with_capacity(cap),
-            short: HashMap::with_capacity(cap),
-            buffers: HashMap::with_capacity(cap),
-            config,
-            log,
-        }
+        Self { long: HashMap::with_capacity(cap), short: HashMap::with_capacity(cap), buffers: HashMap::with_capacity(cap), config, log }
     }
 
     pub fn run(&mut self, task: Task) {
         match task {
             Task::Parse(addr, buf) => {
-                let log = if self.config.metrics.log_parse_errors {
-                    Some(self.log.clone())
-                } else {
-                    None
-                };
+                let log = if self.config.metrics.log_parse_errors { Some(self.log.clone()) } else { None };
                 let buf = {
                     let len = buf.len();
                     let (_, ref mut prev_buf) = self
@@ -87,7 +77,7 @@ impl TaskRunner {
                         .and_modify(|(times, _)| {
                             *times = 0;
                         })
-                    .or_insert((0, BytesMut::with_capacity(len)));
+                        .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf
@@ -102,15 +92,11 @@ impl TaskRunner {
             }
             Task::AddMetric(name, metric) => update_metric(&mut self.short, name, metric),
             Task::AddMetrics(mut list) => {
-                list.drain(..)
-                    .map(|(name, metric)| update_metric(&mut self.short, name, metric))
-                    .last();
+                list.drain(..).map(|(name, metric)| update_metric(&mut self.short, name, metric)).last();
             }
             Task::AddSnapshot(mut list) => {
                 // snapshots go to long cache to avoid being duplicated to other nodes
-                list.drain(..)
-                    .map(|(name, metric)| update_metric(&mut self.long, name, metric))
-                    .last();
+                list.drain(..).map(|(name, metric)| update_metric(&mut self.long, name, metric)).last();
             }
             Task::TakeSnapshot(channel) => {
                 // clone short cache for further sending
@@ -118,10 +104,7 @@ impl TaskRunner {
                 // join short cache to long cache removing data from short
                 {
                     let mut long = &mut self.long; // self.long cannot be borrowed in map, so we borrow it earlier
-                    self.short
-                        .drain()
-                        .map(|(name, metric)| update_metric(&mut long, name, metric))
-                        .last();
+                    self.short.drain().map(|(name, metric)| update_metric(&mut long, name, metric)).last();
                 }
 
                 // self.short now contains empty hashmap because of draining
@@ -160,13 +143,7 @@ impl TaskRunner {
 }
 
 pub fn aggregate_task(data: AggregateData) {
-    let AggregateData {
-        mut buf,
-        name,
-        metric,
-        options,
-        response,
-    } = data;
+    let AggregateData { mut buf, name, metric, options, response } = data;
     let upd = if let Some(options) = options.update_counter {
         if metric.update_counter > options.threshold {
             // + 2 is for dots
@@ -200,19 +177,19 @@ pub fn aggregate_task(data: AggregateData) {
             let name = buf.take().freeze();
             (name, value)
         })
-    .chain(upd)
+        .chain(upd)
         .map(|data| {
             spawn(
                 response
-                .clone()
-                .send(data)
-                .map_err(|_| {
-                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                })
-                .map(|_| ()),
-                );
+                    .clone()
+                    .send(data)
+                    .map_err(|_| {
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    })
+                    .map(|_| ()),
+            );
         })
-    .last();
+        .last();
 }
 
 struct TaskParseErrorHandler(Option<Logger>);
@@ -240,9 +217,7 @@ mod tests {
     #[test]
     fn parse_trashed_metric_buf() {
         let mut data = BytesMut::new();
-        data.extend_from_slice(
-            b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000|g|@0.5\nMORETrasH\nFUUU",
-            );
+        data.extend_from_slice(b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000|g|@0.5\nMORETrasH\nFUUU");
 
         let mut config = System::default();
         config.metrics.log_parse_errors = true;

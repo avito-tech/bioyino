@@ -1,5 +1,5 @@
-use std::net::SocketAddr;
 use failure_derive::Fail;
+use std::net::SocketAddr;
 
 #[derive(Fail, Debug)]
 pub enum GeneralError {
@@ -23,4 +23,7 @@ pub enum GeneralError {
 
     #[fail(display = "unknown consensus state")]
     UnknownState,
+
+    #[fail(display = "configuration error: {}", _0)]
+    Configuration(&'static str),
 }

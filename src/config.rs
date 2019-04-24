@@ -12,6 +12,7 @@ use serde_derive::{Deserialize, Serialize};
 
 use raft_tokio::RaftOptions;
 
+use crate::aggregate::AggregationMode;
 use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
 use crate::{ConsensusKind, ConsensusState};
 
@@ -96,9 +97,6 @@ pub struct Metrics {
     /// Minimal update count to be reported
     pub update_counter_threshold: u32,
 
-    /// Aggregate faster at the price or probably loosing some incoming metrics
-    pub fast_aggregation: bool,
-
     /// Consistent parsing
     pub consistent_parsing: bool,
 
@@ -108,6 +106,12 @@ pub struct Metrics {
     /// Maximum length of data parser can keep in buffer befor considering it trash and throwing
     /// away
     pub max_unparsed_buffer: usize,
+
+    /// Choose the way of aggregation
+    pub aggregation_mode: AggregationMode,
+
+    /// Number of threads when aggregating in "multi" mode
+    pub aggregation_threads: Option<usize>,
 }
 
 impl Default for Metrics {
@@ -118,10 +122,11 @@ impl Default for Metrics {
             update_counter_prefix: "resources.monitoring.bioyino.updates".to_string(),
             update_counter_suffix: String::new(),
             update_counter_threshold: 200,
-            fast_aggregation: true,
             consistent_parsing: true,
             log_parse_errors: false,
             max_unparsed_buffer: 10000,
+            aggregation_mode: AggregationMode::Single,
+            aggregation_threads: None,
         }
     }
 }

@@ -1,5 +1,6 @@
 // General
 //pub mod bigint;
+pub mod aggregate;
 pub mod carbon;
 pub mod config;
 pub mod consul;
@@ -35,6 +36,7 @@ use tokio::timer::{Delay, Interval};
 use crate::udp::{start_async_udp, start_sync_udp};
 use metric::metric::Metric;
 
+use crate::aggregate::{AggregateOptions, AggregationMode, Aggregator};
 use crate::carbon::CarbonBackend;
 use crate::config::{Command, Consul, Metrics, Network, System};
 use crate::consul::ConsulConsensus;
@@ -43,7 +45,7 @@ use crate::management::{MgmtClient, MgmtServer};
 use crate::peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use crate::raft::start_internal_raft;
 use crate::task::{Task, TaskRunner};
-use crate::util::{try_resolve, AggregateOptions, Aggregator, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
+use crate::util::{try_resolve, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
 // precision
@@ -127,7 +129,8 @@ fn main() {
             update_counter_prefix,
             update_counter_suffix,
             update_counter_threshold,
-            fast_aggregation,
+            aggregation_mode,
+            aggregation_threads,
             consistent_parsing: _,
             log_parse_errors: _,
             max_unparsed_buffer: _,
@@ -313,6 +316,16 @@ fn main() {
     let dur = Duration::from_millis(carbon.interval);
     let carbon_timer = Interval::new(Instant::now() + dur, dur);
     let carbon_config = config.carbon.clone();
+    let multi_threads = match aggregation_threads {
+        Some(value) if aggregation_mode == AggregationMode::Separate => value,
+        Some(_) => {
+            info!(carbon_log, "aggregation_threads parameter only works in \"separate\" mode and will be ignored");
+            0
+        }
+        None if aggregation_mode == AggregationMode::Separate => 0,
+        _ => 0,
+    };
+
     let carbon_timer = carbon_timer.map_err(|e| GeneralError::Timer(e)).for_each(move |_tick| {
         let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(|e| GeneralError::Time(e))?;
 
@@ -324,6 +337,7 @@ fn main() {
         let update_counter_prefix = update_counter_prefix.clone();
         let update_counter_suffix = update_counter_suffix.clone();
         let backend_opts = carbon_config.clone();
+        let aggregation_mode = aggregation_mode.clone();
         thread::Builder::new()
             .name("bioyino_carbon".into())
             .spawn(move || {
@@ -343,7 +357,8 @@ fn main() {
                 let options = AggregateOptions {
                     is_leader,
                     update_counter: if count_updates { Some(UpdateCounterOptions { threshold: update_counter_threshold, prefix: update_counter_prefix, suffix: update_counter_suffix }) } else { None },
-                    fast_aggregation,
+                    aggregation_mode,
+                    multi_threads,
                 };
 
                 if is_leader {
