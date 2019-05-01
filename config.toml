@@ -88,6 +88,11 @@ listen = "127.0.0.1:8125"
 # Address and port for replication server to listen on
 peer-listen = "127.0.0.1:8136"
 
+# Address for peer client to bind to
+# format is string with ip:port as with other addresses
+# Only binds if specified, doesn't do binding if not
+# peer-client-bind = <unspecified>
+
 # Address and port for management server to listen on
 mgmt-listen = "127.0.0.1:8137"
 

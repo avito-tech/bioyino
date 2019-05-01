@@ -108,6 +108,7 @@ fn main() {
         network: Network {
             listen,
             peer_listen,
+            peer_client_bind,
             mgmt_listen,
             bufsize,
             multimessage,
@@ -149,8 +150,6 @@ fn main() {
 
     let mut runtime = Runtime::new().expect("creating runtime for main thread");
 
-    let nodes = nodes.into_iter().map(|node| try_resolve(&node)).collect::<Vec<_>>();
-
     // Set logging
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
@@ -166,10 +165,10 @@ fn main() {
 
         runtime.block_on(command.into_future()).unwrap_or_else(|e| {
             warn!(rlog,
-            "error sending command";
-            "dest"=>format!("{}",  &dest),
-            "error"=> format!("{}", e),
-            )
+                  "error sending command";
+                  "dest"=>format!("{}",  &dest),
+                  "error"=> format!("{}", e),
+                  )
         });
         return;
     }
@@ -205,12 +204,12 @@ fn main() {
                         runner.run(task);
                         Ok(runner)
                     })
-                    .map(|_| ())
+                .map(|_| ())
                     .map_err(|_| ());
                 //        let future = rx.for_each(|task: Task| ok(runner.run(task)));
                 runtime.block_on(future).expect("worker thread failed");
             })
-            .expect("starting counting worker thread");
+        .expect("starting counting worker thread");
     }
 
     let stats_prefix = stats_prefix.trim_end_matches(".").to_string();
@@ -225,7 +224,8 @@ fn main() {
     info!(log, "starting snapshot sender");
     let snap_log = rlog.clone();
     let snap_err_log = rlog.clone();
-    let snapshot = NativeProtocolSnapshot::new(&snap_log, nodes.clone(), Duration::from_millis(snapshot_interval as u64), &chans).into_future().map_err(move |e| {
+
+    let snapshot = NativeProtocolSnapshot::new(&snap_log, nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &chans).into_future().map_err(move |e| {
         PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
         info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
     });
@@ -274,7 +274,7 @@ fn main() {
 
                     info!(flog, "consensus thread stopped");
                 })
-                .expect("starting counting worker thread");
+            .expect("starting counting worker thread");
         }
         ConsensusKind::Consul => {
             if start_as_leader {
@@ -373,7 +373,7 @@ fn main() {
                         .inspect(|_| {
                             EGRESS.fetch_add(1, Ordering::Relaxed);
                         })
-                        .collect()
+                    .collect()
                         .map(move |metrics| {
                             let carbon_log = carbon_log.clone();
                             let carbon = carbon.clone();
@@ -393,7 +393,7 @@ fn main() {
                                     });
                                     spawn(retrier);
                                 })
-                                .last();
+                            .last();
                         });
 
                     handle.spawn(carbon_sender).unwrap_or_else(|e| {
@@ -402,9 +402,9 @@ fn main() {
                     runtime.run().unwrap_or_else(|e| {
                         error!(runtime_log, "Failed to send to graphite"; "error"=>format!("{:?}", e));
                     });
-                // runtime.block_on(backend).unwrap_or_else(|e| {
-                //error!(carbon_log, "Failed to send to graphite"; "error"=>e);
-                // });
+                    // runtime.block_on(backend).unwrap_or_else(|e| {
+                    //error!(carbon_log, "Failed to send to graphite"; "error"=>e);
+                    // });
                 } else {
                     info!(carbon_log, "not leader, removing metrics");
                     let (backend_tx, _) = mpsc::unbounded();
@@ -412,7 +412,7 @@ fn main() {
                     runtime.block_on(aggregator.then(|_| Ok::<(), ()>(()))).unwrap_or_else(|e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e));
                 }
             })
-            .expect("starting thread for sending to graphite");
+        .expect("starting thread for sending to graphite");
         Ok(())
     });
 

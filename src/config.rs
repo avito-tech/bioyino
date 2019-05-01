@@ -187,6 +187,9 @@ pub struct Network {
     /// Address and port for replication server to listen on
     pub peer_listen: SocketAddr,
 
+    /// Snapshot client bind address
+    pub peer_client_bind: Option<SocketAddr>,
+
     /// Address and port for management server to listen on
     pub mgmt_listen: SocketAddr,
 
@@ -230,6 +233,7 @@ impl Default for Network {
         Self {
             listen: "127.0.0.1:8125".parse().unwrap(),
             peer_listen: "127.0.0.1:8136".parse().unwrap(),
+            peer_client_bind: None,
             mgmt_listen: "127.0.0.1:8137".parse().unwrap(),
             bufsize: 1500,
             multimessage: false,
