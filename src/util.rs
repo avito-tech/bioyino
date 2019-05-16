@@ -1,6 +1,6 @@
 use libc;
-use std::io;
 use std::ffi::CStr;
+use std::io;
 use std::net::SocketAddr;
 use std::net::TcpStream as StdTcpStream;
 use std::sync::atomic::Ordering;
@@ -10,11 +10,12 @@ use bytes::{BufMut, Bytes, BytesMut};
 use futures::future::Either;
 use futures::sync::mpsc::Sender;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
+use net2::TcpBuilder;
 use resolve::resolver;
 use slog::{info, o, warn, Drain, Logger};
 use tokio::executor::current_thread::spawn;
+use tokio::net::TcpListener;
 use tokio::timer::{Delay, Interval};
-use net2::TcpBuilder;
 
 use crate::task::Task;
 use crate::Float;
@@ -46,10 +47,21 @@ pub fn try_resolve(s: &str) -> SocketAddr {
     })
 }
 
-pub fn  bound_stream(addr: &SocketAddr) -> Result<StdTcpStream, io::Error> {
+pub fn bound_stream(addr: &SocketAddr) -> Result<StdTcpStream, io::Error> {
     let builder = TcpBuilder::new_v4()?;
     builder.bind(addr)?;
     builder.to_tcp_stream()
+}
+
+pub fn reusing_listener(addr: &SocketAddr) -> Result<TcpListener, io::Error> {
+    let builder = TcpBuilder::new_v4()?;
+    builder.reuse_address(true)?;
+    builder.bind(addr)?;
+
+    // backlog parameter will be limited by SOMAXCONN on Linux, which is usually set to 128
+    let listener = builder.listen(65536)?;
+    listener.set_nonblocking(true)?;
+    TcpListener::from_std(listener, &tokio::reactor::Handle::default())
 }
 
 // TODO impl this correctly and use instead of try_resolve
@@ -158,14 +170,14 @@ impl OwnStats {
             let s_interval = self.interval as f64 / 1000f64;
 
             info!(self.log, "stats";
-                  "egress" => format!("{:2}", egress / s_interval),
-                  "ingress" => format!("{:2}", ingress / s_interval),
-                  "ingress-m" => format!("{:2}", ingress_m / s_interval),
-                  "a-err" => format!("{:2}", agr_errors / s_interval),
-                  "p-err" => format!("{:2}", parse_errors / s_interval),
-                  "pe-err" => format!("{:2}", peer_errors / s_interval),
-                  "drops" => format!("{:2}", drops / s_interval),
-                  );
+            "egress" => format!("{:2}", egress / s_interval),
+            "ingress" => format!("{:2}", ingress / s_interval),
+            "ingress-m" => format!("{:2}", ingress_m / s_interval),
+            "a-err" => format!("{:2}", agr_errors / s_interval),
+            "p-err" => format!("{:2}", parse_errors / s_interval),
+            "pe-err" => format!("{:2}", peer_errors / s_interval),
+            "drops" => format!("{:2}", drops / s_interval),
+            );
         }
     }
 }
@@ -212,12 +224,12 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-        where
+    where
         F: IntoFuture + Clone,
-        {
-            let inner = Either::A(action.clone().into_future());
-            BackoffRetry { action, inner: inner, options: self }
-        }
+    {
+        let inner = Either::A(action.clone().into_future());
+        BackoffRetry { action, inner: inner, options: self }
+    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -229,7 +241,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-F: IntoFuture + Clone,
+    F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;

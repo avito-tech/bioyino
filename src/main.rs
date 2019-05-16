@@ -165,10 +165,10 @@ fn main() {
 
         runtime.block_on(command.into_future()).unwrap_or_else(|e| {
             warn!(rlog,
-                  "error sending command";
-                  "dest"=>format!("{}",  &dest),
-                  "error"=> format!("{}", e),
-                  )
+            "error sending command";
+            "dest"=>format!("{}",  &dest),
+            "error"=> format!("{}", e),
+            )
         });
         return;
     }
@@ -204,12 +204,12 @@ fn main() {
                         runner.run(task);
                         Ok(runner)
                     })
-                .map(|_| ())
+                    .map(|_| ())
                     .map_err(|_| ());
                 //        let future = rx.for_each(|task: Task| ok(runner.run(task)));
                 runtime.block_on(future).expect("worker thread failed");
             })
-        .expect("starting counting worker thread");
+            .expect("starting counting worker thread");
     }
 
     let stats_prefix = stats_prefix.trim_end_matches(".").to_string();
@@ -234,12 +234,13 @@ fn main() {
     // settings safe for asap restart
     info!(log, "starting snapshot receiver");
     let peer_server_ret = BackoffRetryBuilder { delay: 1, delay_mul: 1f32, delay_max: 1, retries: ::std::usize::MAX };
-    let serv_log = rlog.clone();
 
     let peer_server = NativeProtocolServer::new(rlog.clone(), peer_listen, chans.clone());
-    let peer_server = peer_server_ret.spawn(peer_server).map_err(move |e| {
-        warn!(serv_log, "shot server gone with error"; "error"=>format!("{:?}", e));
-    });
+    let peer_server = peer_server_ret
+        .spawn(peer_server)
+        // with unlimited number of retries, BackoffRetry will never return any error
+        // server logs all erros inside itself
+        .map_err(|_| ());
 
     runtime.spawn(peer_server);
 
@@ -274,7 +275,7 @@ fn main() {
 
                     info!(flog, "consensus thread stopped");
                 })
-            .expect("starting counting worker thread");
+                .expect("starting counting worker thread");
         }
         ConsensusKind::Consul => {
             if start_as_leader {
@@ -373,7 +374,7 @@ fn main() {
                         .inspect(|_| {
                             EGRESS.fetch_add(1, Ordering::Relaxed);
                         })
-                    .collect()
+                        .collect()
                         .map(move |metrics| {
                             let carbon_log = carbon_log.clone();
                             let carbon = carbon.clone();
@@ -393,7 +394,7 @@ fn main() {
                                     });
                                     spawn(retrier);
                                 })
-                            .last();
+                                .last();
                         });
 
                     handle.spawn(carbon_sender).unwrap_or_else(|e| {
@@ -402,9 +403,9 @@ fn main() {
                     runtime.run().unwrap_or_else(|e| {
                         error!(runtime_log, "Failed to send to graphite"; "error"=>format!("{:?}", e));
                     });
-                    // runtime.block_on(backend).unwrap_or_else(|e| {
-                    //error!(carbon_log, "Failed to send to graphite"; "error"=>e);
-                    // });
+                // runtime.block_on(backend).unwrap_or_else(|e| {
+                //error!(carbon_log, "Failed to send to graphite"; "error"=>e);
+                // });
                 } else {
                     info!(carbon_log, "not leader, removing metrics");
                     let (backend_tx, _) = mpsc::unbounded();
@@ -412,7 +413,7 @@ fn main() {
                     runtime.block_on(aggregator.then(|_| Ok::<(), ()>(()))).unwrap_or_else(|e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e));
                 }
             })
-        .expect("starting thread for sending to graphite");
+            .expect("starting thread for sending to graphite");
         Ok(())
     });
 
