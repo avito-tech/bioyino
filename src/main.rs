@@ -316,7 +316,10 @@ fn main() {
 
     let dur = Duration::from_millis(carbon.interval);
     let carbon_timer = Interval::new(Instant::now() + dur, dur);
-    let carbon_config = config.carbon.clone();
+    let mut carbon_config = carbon.clone();
+    if carbon_config.chunks == 0 {
+        carbon_config.chunks = 1
+    }
     let multi_threads = match aggregation_threads {
         Some(value) if aggregation_mode == AggregationMode::Separate => value,
         Some(_) => {
@@ -333,7 +336,6 @@ fn main() {
         let backend_addr = try_resolve(&carbon.address);
         let tchans = tchans.clone();
         let carbon_log = carbon_log.clone();
-        let carbon = carbon.clone();
 
         let update_counter_prefix = update_counter_prefix.clone();
         let update_counter_suffix = update_counter_suffix.clone();
@@ -377,7 +379,7 @@ fn main() {
                         .collect()
                         .map(move |metrics| {
                             let carbon_log = carbon_log.clone();
-                            let carbon = carbon.clone();
+                            let carbon = backend_opts.clone();
                             let chunk_size = metrics.len() / carbon.chunks;
                             // TODO we could do this without allocations
                             // but in rust it's not so easy with these types
