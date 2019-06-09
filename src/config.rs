@@ -140,6 +140,9 @@ pub struct Carbon {
     /// IP and port of the carbon-protocol backend to send aggregated data to
     pub address: String,
 
+    /// client bind address
+    pub bind_address: Option<SocketAddr>,
+
     /// How often to send metrics to this backend, ms
     pub interval: u64,
 
@@ -168,6 +171,7 @@ impl Default for Carbon {
         Self {
             //            enabled: true,
             address: "127.0.0.1:2003".to_string(),
+            bind_address: None,
             interval: 30000,
             connect_delay: 250,
             connect_delay_multiplier: 2f32,

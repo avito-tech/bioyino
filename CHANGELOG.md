@@ -1,3 +1,16 @@
+# Release 0.5.0 #
+
+## Significant changes
+* set metric type is now available
+* metric parser has been rewritten and now considers many corner cases and limits
+* all TCP clients now support binding to specific address/interface for complicated ip/interface configurations
+
+## Less significant changes
+* some documentation has beed added
+* snapshot sending now has retries if sends get unsuccessful
+* carbon client now has an option to send metrics in many parallel connections
+* code migrated to Rust 2018
+
 # Release 0.4.0 #
 
 This release is notable by internal Raft implementation and schema-based node interconnection, opening a route for large, cluster-aware installations.

@@ -37,7 +37,7 @@ use crate::udp::{start_async_udp, start_sync_udp};
 use metric::metric::Metric;
 
 use crate::aggregate::{AggregateOptions, AggregationMode, Aggregator};
-use crate::carbon::CarbonBackend;
+use crate::carbon::{CarbonBackend, CarbonClientOptions};
 use crate::config::{Command, Consul, Metrics, Network, System};
 use crate::consul::ConsulConsensus;
 use crate::errors::GeneralError;
@@ -388,7 +388,8 @@ fn main() {
                             metrics
                                 .chunks(chunk_size)
                                 .map(move |metrics| {
-                                    let backend = CarbonBackend::new(backend_addr, ts, Arc::new(metrics.to_vec()), carbon_log.clone());
+                                    let options = CarbonClientOptions { addr: backend_addr, bind: backend_opts.bind_address };
+                                    let backend = CarbonBackend::new(options, ts, Arc::new(metrics.to_vec()), carbon_log.clone());
                                     let retrier = BackoffRetryBuilder { delay: backend_opts.connect_delay, delay_mul: backend_opts.connect_delay_multiplier, delay_max: backend_opts.connect_delay_max, retries: backend_opts.send_retries };
                                     let carbon_log = carbon_log.clone();
                                     let retrier = retrier.spawn(backend).map_err(move |e| {

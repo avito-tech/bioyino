@@ -64,6 +64,10 @@ update-counter-threshold = 200
 # IP and port of the carbon-protocol backend to send aggregated data to
 address = "127.0.0.1:2003"
 
+# Address to bind carbon client to when connecting
+# default: not specified, so no bind happens
+#bind_address = "127.0.0.1:2003"
+
 # How often to send metrics to carbon backend, ms
 interval = 30000
 

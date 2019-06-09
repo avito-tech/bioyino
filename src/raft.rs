@@ -73,7 +73,6 @@ pub(crate) fn start_internal_raft(options: Raft, logger: Logger) {
         .collect::<HashMap<_, _>>();
 
     //let id = this_id/.expect("list of nodes must contain own hostname");
-    use raft_tokio::raft_consensus::ServerId;
     let id = this_id.unwrap_or_else(|| {
         let id: ServerId = random::<u64>().into();
         nodes.insert(id, this);
