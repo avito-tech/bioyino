@@ -10,8 +10,8 @@ use futures::{Future, Sink};
 use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
-use metric::parser::{MetricParser, ParseErrorHandler};
-use metric::Metric;
+use bioyino_metric::parser::{MetricParser, ParseErrorHandler};
+use bioyino_metric::Metric;
 
 use crate::aggregate::AggregateOptions;
 use crate::config::System;
@@ -77,7 +77,7 @@ impl TaskRunner {
                         .and_modify(|(times, _)| {
                             *times = 0;
                         })
-                        .or_insert((0, BytesMut::with_capacity(len)));
+                    .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf
@@ -177,19 +177,19 @@ pub fn aggregate_task(data: AggregateData) {
             let name = buf.take().freeze();
             (name, value)
         })
-        .chain(upd)
+    .chain(upd)
         .map(|data| {
             spawn(
                 response
-                    .clone()
-                    .send(data)
-                    .map_err(|_| {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    })
-                    .map(|_| ()),
-            );
+                .clone()
+                .send(data)
+                .map_err(|_| {
+                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                })
+                .map(|_| ()),
+                );
         })
-        .last();
+    .last();
 }
 
 struct TaskParseErrorHandler(Option<Logger>);

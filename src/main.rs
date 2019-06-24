@@ -34,7 +34,7 @@ use tokio::runtime::current_thread::{spawn, Runtime};
 use tokio::timer::{Delay, Interval};
 
 use crate::udp::{start_async_udp, start_sync_udp};
-use metric::metric::Metric;
+use bioyino_metric::metric::Metric;
 
 use crate::aggregate::{AggregateOptions, AggregationMode, Aggregator};
 use crate::carbon::{CarbonBackend, CarbonClientOptions};
@@ -165,10 +165,10 @@ fn main() {
 
         runtime.block_on(command.into_future()).unwrap_or_else(|e| {
             warn!(rlog,
-            "error sending command";
-            "dest"=>format!("{}",  &dest),
-            "error"=> format!("{}", e),
-            )
+                  "error sending command";
+                  "dest"=>format!("{}",  &dest),
+                  "error"=> format!("{}", e),
+                  )
         });
         return;
     }
@@ -204,12 +204,12 @@ fn main() {
                         runner.run(task);
                         Ok(runner)
                     })
-                    .map(|_| ())
+                .map(|_| ())
                     .map_err(|_| ());
                 //        let future = rx.for_each(|task: Task| ok(runner.run(task)));
                 runtime.block_on(future).expect("worker thread failed");
             })
-            .expect("starting counting worker thread");
+        .expect("starting counting worker thread");
     }
 
     let stats_prefix = stats_prefix.trim_end_matches(".").to_string();
@@ -275,7 +275,7 @@ fn main() {
 
                     info!(flog, "consensus thread stopped");
                 })
-                .expect("starting counting worker thread");
+            .expect("starting counting worker thread");
         }
         ConsensusKind::Consul => {
             if start_as_leader {
@@ -376,7 +376,7 @@ fn main() {
                         .inspect(|_| {
                             EGRESS.fetch_add(1, Ordering::Relaxed);
                         })
-                        .collect()
+                    .collect()
                         .map(move |metrics| {
                             let carbon_log = carbon_log.clone();
                             let carbon = backend_opts.clone();
@@ -397,7 +397,7 @@ fn main() {
                                     });
                                     spawn(retrier);
                                 })
-                                .last();
+                            .last();
                         });
 
                     handle.spawn(carbon_sender).unwrap_or_else(|e| {
@@ -406,9 +406,9 @@ fn main() {
                     runtime.run().unwrap_or_else(|e| {
                         error!(runtime_log, "Failed to send to graphite"; "error"=>format!("{:?}", e));
                     });
-                // runtime.block_on(backend).unwrap_or_else(|e| {
-                //error!(carbon_log, "Failed to send to graphite"; "error"=>e);
-                // });
+                    // runtime.block_on(backend).unwrap_or_else(|e| {
+                    //error!(carbon_log, "Failed to send to graphite"; "error"=>e);
+                    // });
                 } else {
                     info!(carbon_log, "not leader, removing metrics");
                     let (backend_tx, _) = mpsc::unbounded();
@@ -416,7 +416,7 @@ fn main() {
                     runtime.block_on(aggregator.then(|_| Ok::<(), ()>(()))).unwrap_or_else(|e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e));
                 }
             })
-            .expect("starting thread for sending to graphite");
+        .expect("starting thread for sending to graphite");
         Ok(())
     });
 
