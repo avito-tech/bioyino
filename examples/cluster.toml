@@ -1,0 +1,75 @@
+# This is a full example of configuration for clustered setup with 3 nodes on raft.
+# It was taken directly from working production server with minimal changes.
+# The IPs of nodes in this example are 127.0.0.1, 127.0.0.2 and 127.0.0.3
+# the example is provided for node with IP=127.0.0.1
+
+# The parameters which should be modified are commented as TODO
+# Between other parameters only the most important ones are commented
+# For other comments, see config.toml
+
+verbosity = "debug"
+n-threads = 26
+w-threads = 26
+task-queue-size = 2024
+start-as-leader = false
+stats-interval = 1000
+stats-prefix = "resources.monitoring.bioyino.bioyino01"
+
+# Force built-in internal Raft between nodes
+consensus = "internal"
+
+[metrics]
+# in prod we want to gather bioyino's own metrics and find who is sending too much of them
+# (more than 200 per aggregation period)
+count-updates = true
+# TODO probably include node name instead of `test-server` here
+update-counter-prefix = "resources.monitoring.bioyino.test-server.updates"
+update-counter-suffix = ""
+update-counter-threshold = 200
+# this can be changed to true if you suspect someone sending incorrect metrics
+log-parse-errors = false
+
+[carbon]
+# TODO where to send results to
+address = "my-carbon:2003"
+interval = 30000
+connect-delay = 250
+connect-delay-multiplier = 2
+connect-delay-max = 10000
+send-retries = 30
+# the batch to send will be split to 8 parallel connections to workaround carbon-c-relay threading model
+# can be safely set to 0
+chunks = 8
+
+[network]
+listen = "0.0.0.0:8126"
+# this is the port the node will receive snapshots from other nodes
+# TODO think about security of listening on 0.0.0.0
+peer-listen = "0.0.0.0:8136"
+mgmt-listen = "0.0.0.0:8137"
+bufsize = 1500
+# we want to receive metrics fast and we don't care about pity 1000 of them to probably stuck in buffer
+multimessage = true
+mm-packets = 1000
+mm-async = false
+buffer-flush-time = 10000
+# we setup a large buffer for incoming metrics
+buffer-flush-length = 655360
+# TODO:
+# This is the most meaningful part config
+# each node should have the other two nodes in this array
+# i.e for 127.0.0.1 this should look ike this:
+# nodes = ["127.0.0.2:8136","127.0.0.3:8136"]
+snapshot-interval = 1000
+
+[raft]
+# we want raft to start a bit later than the server itself, so the node would not become leader too early
+start-delay=25000
+# TODO:
+# this is a config of Raft cluster
+# `this-node` must be set to IP of current node as other nodes see it
+this-node="127.0.0.1:8138"
+
+# map ( not list!) of nodes must contain ALL(!) node IDs with some unique ID assigned to them
+# MUST include current node, IDs mean nothing, but they MUST BE THE SAME on all nodes
+nodes = {"127.0.0.1:8138" = 1,"127.0.0.2:8138" = 2,"127.0.0.3:8138" = 3}

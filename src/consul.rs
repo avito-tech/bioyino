@@ -8,11 +8,14 @@ use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
 use hyper::{Method, StatusCode};
 use mime::WWW_FORM_URLENCODED;
 use serde_json::{self, from_slice};
-use slog::Logger;
+use slog::{Logger,o, warn, debug} ;
 use tokio::timer::{self, Delay, Interval};
-use util::switch_leader;
 
-use {ConsensusState, CONSENSUS_STATE};
+use failure_derive::Fail;
+use serde_derive::Deserialize;
+
+use crate::util::switch_leader;
+use crate::{ConsensusState, CONSENSUS_STATE};
 
 #[derive(Fail, Debug)]
 pub enum ConsulError {
@@ -24,9 +27,9 @@ pub enum ConsulError {
         _0,
         _1
     )]
-    HttpStatus(hyper::StatusCode, String),
+        HttpStatus(hyper::StatusCode, String),
 
-    #[fail(display = "agent connection timed out")]
+        #[fail(display = "agent connection timed out")]
     ConnectionTimeout,
 
     #[fail(display = "Http error: {}", _0)]
@@ -140,10 +143,10 @@ impl IntoFuture for ConsulConsensus {
                             let new_session = new_session.clone();
                             Box::new(
                                 Delay::new(Instant::now() + error_pause)
-                                    .then(move |_| Ok(Loop::Continue(new_session))),
-                            )
+                                .then(move |_| Ok(Loop::Continue(new_session))),
+                                )
                                 as Box<Future<Item = Loop<_, _>, Error = _>>
-                            //ok(Loop::Continue(new_session))
+                                //ok(Loop::Continue(new_session))
                         }
                         Ok(None) => {
                             warn!(log, "timed out getting consul session");
@@ -154,8 +157,8 @@ impl IntoFuture for ConsulConsensus {
                 } else {
                     Either::B(
                         Delay::new(Instant::now() + error_pause)
-                            .then(move |_| Ok(Loop::Continue(new_session))),
-                    )
+                        .then(move |_| Ok(Loop::Continue(new_session))),
+                        )
                 }
             });
 
@@ -246,11 +249,11 @@ impl IntoFuture for ConsulSession {
         session_req.headers_mut().insert(
             CONTENT_LENGTH,
             HeaderValue::from_str(&format!("{}", bodylen)).unwrap(),
-        );
+            );
         session_req.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap(),
-        );
+            );
 
         let c_session = client
             .request(session_req)
@@ -264,7 +267,8 @@ impl IntoFuture for ConsulSession {
                         .map_err(|e| ConsulError::Http(e))
                         .and_then(move |body| {
                             let resp: ConsulSessionResponse =
-                                try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                                //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                                from_slice(&body).map_err(|e| ConsulError::Parsing(e))?;
                             debug!(log, "new session"; "id"=>format!("{}", resp.id));
                             Ok(Some(resp.id))
                         });
@@ -276,9 +280,9 @@ impl IntoFuture for ConsulSession {
                         .map_err(|e| ConsulError::Timer(e));
                     let future = sleep.join(body).then(move |res| match res {
                         Ok((_, body)) => Err::<Option<String>, _>(ConsulError::HttpStatus(
-                            status,
-                            format!("{:?}", String::from_utf8(body.to_vec())),
-                        )),
+                                status,
+                                format!("{:?}", String::from_utf8(body.to_vec())),
+                                )),
                         Err(e) => Err(e),
                     });
                     Box::new(future)
@@ -323,11 +327,11 @@ impl IntoFuture for ConsulRenew {
         renew_req.headers_mut().insert(
             CONTENT_LENGTH,
             HeaderValue::from_str(&format!("{}", bodylen)).unwrap(),
-        );
+            );
         renew_req.headers_mut().insert(
             CONTENT_TYPE,
             HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap(),
-        );
+            );
 
         let renew_client = hyper::Client::new();
         let future = renew_client.request(renew_req).then(move |res| match res {
@@ -395,7 +399,8 @@ impl IntoFuture for ConsulAcquire {
                     .map_err(|e| ConsulError::Http(e))
                     .and_then(move |body| {
                         let acquired: bool =
-                            try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                            //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                            from_slice(&body).map_err(|e| ConsulError::Parsing(e))?;
 
                         switch_leader(acquired, &log);
                         // let should_set = {

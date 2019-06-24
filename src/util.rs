@@ -1,27 +1,28 @@
 use libc;
-use std::collections::HashMap;
 use std::ffi::CStr;
+use std::io;
 use std::net::SocketAddr;
+use std::net::TcpStream as StdTcpStream;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::future::Either;
-use futures::stream::futures_unordered;
-use futures::sync::mpsc::{Sender, UnboundedSender};
-use futures::sync::oneshot;
+use futures::sync::mpsc::Sender;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
+use net2::TcpBuilder;
 use resolve::resolver;
-use slog::{Drain, Logger};
+use slog::{info, o, warn, Drain, Logger};
 use tokio::executor::current_thread::spawn;
+use tokio::net::TcpListener;
 use tokio::timer::{Delay, Interval};
 
-use metric::{Metric, MetricType};
-use task::{aggregate_task, AggregateData, Task};
-use {Cache, Float};
-use {AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
+use crate::task::Task;
+use crate::Float;
+use crate::{AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
+use bioyino_metric::{Metric, MetricType};
 
-use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
+use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
 
 pub fn prepare_log(root: &'static str) -> Logger {
     // Set logging
@@ -41,12 +42,26 @@ pub fn try_resolve(s: &str) -> SocketAddr {
         let port = split.next().expect("port not found");
         let port = port.parse().expect("bad port value");
 
-        let first_ip = resolver::resolve_host(host)
-            .expect(&format!("failed resolving {:}", &host))
-            .next()
-            .expect("at least one IP address required");
+        let first_ip = resolver::resolve_host(host).expect(&format!("failed resolving {:}", &host)).next().expect("at least one IP address required");
         SocketAddr::new(first_ip, port)
     })
+}
+
+pub fn bound_stream(addr: &SocketAddr) -> Result<StdTcpStream, io::Error> {
+    let builder = TcpBuilder::new_v4()?;
+    builder.bind(addr)?;
+    builder.to_tcp_stream()
+}
+
+pub fn reusing_listener(addr: &SocketAddr) -> Result<TcpListener, io::Error> {
+    let builder = TcpBuilder::new_v4()?;
+    builder.reuse_address(true)?;
+    builder.bind(addr)?;
+
+    // backlog parameter will be limited by SOMAXCONN on Linux, which is usually set to 128
+    let listener = builder.listen(65536)?;
+    listener.set_nonblocking(true)?;
+    TcpListener::from_std(listener, &tokio::reactor::Handle::default())
 }
 
 // TODO impl this correctly and use instead of try_resolve
@@ -123,14 +138,8 @@ impl OwnStats {
     pub fn new(interval: u64, prefix: String, chan: Sender<Task>, log: Logger) -> Self {
         let log = log.new(o!("source"=>"stats"));
         let now = Instant::now();
-        let dur = Duration::from_millis(interval);
-        Self {
-            interval,
-            prefix,
-            timer: Interval::new(now + dur, dur),
-            chan,
-            log,
-        }
+        let dur = Duration::from_millis(if interval < 100 { 1000 } else { interval }); // exclude too small intervals
+        Self { interval, prefix, timer: Interval::new(now + dur, dur), chan, log }
     }
 
     pub fn get_stats(&mut self) {
@@ -145,12 +154,7 @@ impl OwnStats {
                     let name = buf.take().freeze();
                     let metric = Metric::new($value, MetricType::Counter, None, None).unwrap();
                     let log = self.log.clone();
-                    let sender = self
-                        .chan
-                        .clone()
-                        .send(Task::AddMetric(name, metric))
-                        .map(|_| ())
-                        .map_err(move |_| warn!(log, "stats future could not send metric to task"));
+                    let sender = self.chan.clone().send(Task::AddMetric(name, metric)).map(|_| ()).map_err(move |_| warn!(log, "stats future could not send metric to task"));
                     spawn(sender);
                 }
             };
@@ -203,158 +207,8 @@ pub struct UpdateCounterOptions {
     pub suffix: Bytes,
 }
 
-#[derive(Debug, Clone)]
-pub struct AggregateOptions {
-    pub is_leader: bool,
-    pub update_counter: Option<UpdateCounterOptions>,
-    pub fast_aggregation: bool,
-}
-
-pub struct Aggregator {
-    options: AggregateOptions,
-    chans: Vec<Sender<Task>>,
-    // a channel where we receive rotated metrics from tasks
-    //rx: UnboundedReceiver<Cache>,
-    // a channel(supposedly from a backend) where we pass aggregated metrics to
-    // TODO this probably needs to be generic stream
-    tx: UnboundedSender<(Bytes, Float)>,
-    log: Logger,
-}
-
-impl Aggregator {
-    pub fn new(
-        options: AggregateOptions,
-        chans: Vec<Sender<Task>>,
-        tx: UnboundedSender<(Bytes, Float)>,
-        log: Logger,
-    ) -> Self {
-        Self {
-            options,
-            chans,
-            tx,
-            log,
-        }
-    }
-}
-
-impl IntoFuture for Aggregator {
-    type Item = ();
-    type Error = ();
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
-
-    fn into_future(self) -> Self::Future {
-        let Self {
-            options,
-            chans,
-            tx,
-            log,
-        } = self;
-        let metrics = chans.clone().into_iter().map(|chan| {
-            let (tx, rx) = oneshot::channel();
-            // TODO: change oneshots to single channel
-            // to do that, task must run in new tokio, then we will not have to pass handle to it
-            //handle.spawn(chan.send(Task::Rotate(tx)).then(|_| Ok(())));
-            chan.send(Task::Rotate(tx))
-                .map_err(|_| ())
-                .and_then(|_| rx.and_then(|m| Ok(m)).map_err(|_| ()))
-        });
-
-        if options.is_leader {
-            info!(log, "leader accumulating metrics");
-            let accumulate =
-                futures_unordered(metrics).fold(HashMap::new(), move |mut acc: Cache, metrics| {
-                    metrics
-                        .into_iter()
-                        .map(|(name, metric)| {
-                            if acc.contains_key(&name) {
-                                acc.get_mut(&name)
-                                    .unwrap()
-                                    .aggregate(metric)
-                                    .unwrap_or_else(|_| {
-                                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                                    });
-                            } else {
-                                acc.insert(name, metric);
-                            }
-                        }).last();
-                    Ok(acc)
-                });
-
-            let aggregate = accumulate.and_then(move |accumulated| {
-                debug!(log, "leader aggregating metrics");
-                accumulated
-                    .into_iter()
-                    .inspect(|_| {
-                        EGRESS.fetch_add(1, Ordering::Relaxed);
-                    }).enumerate()
-                    .map(move |(num, (name, metric))| {
-                        let buf = BytesMut::with_capacity(1024);
-                        let task_data = AggregateData {
-                            buf,
-                            name: Bytes::from(name),
-                            metric,
-                            options: options.clone(),
-                            response: tx.clone(),
-                        };
-                        if options.fast_aggregation {
-                            spawn(
-                                chans[num % chans.len()]
-                                    .clone()
-                                    .send(Task::Aggregate(task_data))
-                                    .map(|_| ())
-                                    .map_err(|_| {
-                                        DROPS.fetch_add(1, Ordering::Relaxed);
-                                    }),
-                            );
-                        } else {
-                            aggregate_task(task_data);
-                        }
-                    }).last();
-                Ok(())
-                //});
-                    /*
-                     * TODO: this was an expermient for multithreade aggregation in separate threadpol with rayon
-                     * it worked, but needs more work to be in prod
-                     let aggregate = accumulate.and_then(move |accumulated| {
-                     info!(log, "leader aggregating metrics");
-                     use rayon::iter::IntoParallelIterator;
-                     use rayon::iter::ParallelIterator;
-                     use rayon::ThreadPoolBuilder;
-
-                     let pool = ThreadPoolBuilder::new()
-                     .thread_name(|i| format!("bioyino_crb{}", i).into())
-                     .num_threads(8)
-                     .build()
-                     .unwrap();
-                     pool.install(|| {
-                     accumulated
-                     .into_par_iter()
-                     .inspect(|_| {
-                     EGRESS.fetch_add(1, Ordering::Relaxed);
-                     }).for_each(move |(name, metric)| {
-                     let buf = BytesMut::with_capacity(1024);
-                     let task = Task::Aggregate(AggregateData {
-                     buf,
-                     name: Bytes::from(name),
-                     metric,
-                     options: options.clone(),
-                     response: tx.clone(),
-                     });
-                     task.run();
-                     }); //.last();
-                     });
-                     Ok(())
-                     */            });
-            Box::new(aggregate)
-        } else {
-            // only get metrics from threads
-            let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
-            Box::new(not_leader)
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
+/// Builder for `BackoffRetry`, delays are specified in milliseconds
 pub struct BackoffRetryBuilder {
     pub delay: u64,
     pub delay_mul: f32,
@@ -364,27 +218,18 @@ pub struct BackoffRetryBuilder {
 
 impl Default for BackoffRetryBuilder {
     fn default() -> Self {
-        Self {
-            delay: 250,
-            delay_mul: 2f32,
-            delay_max: 5000,
-            retries: 25,
-        }
+        Self { delay: 250, delay_mul: 2f32, delay_max: 5000, retries: 25 }
     }
 }
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-    where
+        where
         F: IntoFuture + Clone,
-    {
-        let inner = Either::A(action.clone().into_future());
-        BackoffRetry {
-            action,
-            inner: inner,
-            options: self,
+        {
+            let inner = Either::A(action.clone().into_future());
+            BackoffRetry { action, inner: inner, options: self }
         }
-    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -396,7 +241,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-    F: IntoFuture + Clone,
+F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;
@@ -431,11 +276,7 @@ where
             if rotate_f {
                 self.options.retries -= 1;
                 let delay = self.options.delay as f32 * self.options.delay_mul;
-                let delay = if delay <= self.options.delay_max as f32 {
-                    delay as u64
-                } else {
-                    self.options.delay_max as u64
-                };
+                let delay = if delay <= self.options.delay_max as f32 { delay as u64 } else { self.options.delay_max as u64 };
                 let delay = Delay::new(Instant::now() + Duration::from_millis(delay));
                 self.inner = Either::B(delay);
             } else if rotate_t {

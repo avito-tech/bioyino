@@ -5,13 +5,16 @@ use std::net::SocketAddr;
 use std::ops::Range;
 use std::time::Duration;
 
-use clap::{Arg, SubCommand};
+use clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, value_t, Arg, SubCommand};
 use toml;
 
-use management::{ConsensusAction, LeaderAction, MgmtCommand};
+use serde_derive::{Deserialize, Serialize};
 
 use raft_tokio::RaftOptions;
-use {ConsensusKind, ConsensusState};
+
+use crate::aggregate::AggregationMode;
+use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
+use crate::{ConsensusKind, ConsensusState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -94,14 +97,21 @@ pub struct Metrics {
     /// Minimal update count to be reported
     pub update_counter_threshold: u32,
 
-    /// Aggregate faster at the price or probably loosing some incoming metrics
-    pub fast_aggregation: bool,
-
     /// Consistent parsing
     pub consistent_parsing: bool,
 
     /// Whether we should spam parsing errors in logs
     pub log_parse_errors: bool,
+
+    /// Maximum length of data parser can keep in buffer befor considering it trash and throwing
+    /// away
+    pub max_unparsed_buffer: usize,
+
+    /// Choose the way of aggregation
+    pub aggregation_mode: AggregationMode,
+
+    /// Number of threads when aggregating in "multi" mode
+    pub aggregation_threads: Option<usize>,
 }
 
 impl Default for Metrics {
@@ -112,9 +122,11 @@ impl Default for Metrics {
             update_counter_prefix: "resources.monitoring.bioyino.updates".to_string(),
             update_counter_suffix: String::new(),
             update_counter_threshold: 200,
-            fast_aggregation: true,
             consistent_parsing: true,
             log_parse_errors: false,
+            max_unparsed_buffer: 10000,
+            aggregation_mode: AggregationMode::Single,
+            aggregation_threads: None,
         }
     }
 }
@@ -127,6 +139,9 @@ pub struct Carbon {
     //pub enabled: bool,
     /// IP and port of the carbon-protocol backend to send aggregated data to
     pub address: String,
+
+    /// client bind address
+    pub bind_address: Option<SocketAddr>,
 
     /// How often to send metrics to this backend, ms
     pub interval: u64,
@@ -143,6 +158,12 @@ pub struct Carbon {
     /// How much times to retry when sending data to backend before giving up and dropping all metrics
     /// note, that 0 means 1 try
     pub send_retries: usize,
+
+    /// The whole metrica array can be split into smaller chunks for each chunk to be sent
+    /// in a separate connection. This is a workaround for go-carbon and carbon-c-relay doing
+    /// per-connection processing and working ineffectively when lots of metrics is sent in one
+    /// connection
+    pub chunks: usize,
 }
 
 impl Default for Carbon {
@@ -150,11 +171,13 @@ impl Default for Carbon {
         Self {
             //            enabled: true,
             address: "127.0.0.1:2003".to_string(),
+            bind_address: None,
             interval: 30000,
             connect_delay: 250,
             connect_delay_multiplier: 2f32,
             connect_delay_max: 10000,
             send_retries: 30,
+            chunks: 1,
         }
     }
 }
@@ -167,6 +190,9 @@ pub struct Network {
 
     /// Address and port for replication server to listen on
     pub peer_listen: SocketAddr,
+
+    /// Snapshot client bind address
+    pub peer_client_bind: Option<SocketAddr>,
 
     /// Address and port for management server to listen on
     pub mgmt_listen: SocketAddr,
@@ -211,6 +237,7 @@ impl Default for Network {
         Self {
             listen: "127.0.0.1:8125".parse().unwrap(),
             peer_listen: "127.0.0.1:8136".parse().unwrap(),
+            peer_client_bind: None,
             mgmt_listen: "127.0.0.1:8137".parse().unwrap(),
             bufsize: 1500,
             multimessage: false,
@@ -248,13 +275,7 @@ pub struct Consul {
 
 impl Default for Consul {
     fn default() -> Self {
-        Self {
-            start_as: ConsensusState::Disabled,
-            agent: "127.0.0.1:8500".parse().unwrap(),
-            session_ttl: 11000,
-            renew_time: 1000,
-            key_name: "service/bioyino/lock".to_string(),
-        }
+        Self { start_as: ConsensusState::Disabled, agent: "127.0.0.1:8500".parse().unwrap(), session_ttl: 11000, renew_time: 1000, key_name: "service/bioyino/lock".to_string() }
     }
 }
 
@@ -278,18 +299,14 @@ pub struct Raft {
 
     /// List of Raft nodes, may include this_node
     pub nodes: HashMap<String, u64>,
+
+    /// Bind raft client to specific IP when connecting nodes
+    pub client_bind: Option<SocketAddr>,
 }
 
 impl Default for Raft {
     fn default() -> Self {
-        Self {
-            start_delay: 0,
-            heartbeat_timeout: 250,
-            election_timeout_min: 500,
-            election_timeout_max: 750,
-            this_node: None,
-            nodes: HashMap::new(),
-        }
+        Self { start_delay: 0, heartbeat_timeout: 250, election_timeout_min: 500, election_timeout_max: 750, this_node: None, nodes: HashMap::new(), client_bind: None }
     }
 }
 
@@ -297,10 +314,7 @@ impl Raft {
     pub fn get_raft_options(&self) -> RaftOptions {
         RaftOptions {
             heartbeat_timeout: Duration::from_millis(self.heartbeat_timeout),
-            election_timeout: Range {
-                start: Duration::from_millis(self.election_timeout_min),
-                end: Duration::from_millis(self.election_timeout_max),
-            },
+            election_timeout: Range { start: Duration::from_millis(self.election_timeout_min), end: Duration::from_millis(self.election_timeout_max) },
         }
     }
 }
@@ -315,43 +329,16 @@ impl System {
     pub fn load() -> (Self, Command) {
         // This is a first copy of args - with the "config" option
         let app = app_from_crate!()
-            .arg(
-                Arg::with_name("config")
-                    .help("configuration file path")
-                    .long("config")
-                    .short("c")
-                    .required(true)
-                    .takes_value(true)
-                    .default_value("/etc/bioyino/bioyino.toml"),
-            ).arg(
-                Arg::with_name("verbosity")
-                    .short("v")
-                    .help("logging level")
-                    .takes_value(true),
-            ).subcommand(
-                SubCommand::with_name("query")
-                    .about("send a management command to running bioyino server")
-                    .arg(
-                        Arg::with_name("host")
-                            .short("h")
-                            .default_value("127.0.0.1:8137"),
-                    ).subcommand(SubCommand::with_name("status").about("get server state"))
-                    .subcommand(
-                        SubCommand::with_name("consensus")
-                            .arg(Arg::with_name("action").index(1))
-                            .arg(
-                                Arg::with_name("leader_action")
-                                    .index(2)
-                                    .default_value("unchanged"),
-                            ),
-                    ),
-            ).get_matches();
+            .long_version(concat!(crate_version!(), " ", env!("VERGEN_COMMIT_DATE"), " ", env!("VERGEN_SHA_SHORT")))
+            .arg(Arg::with_name("config").help("configuration file path").long("config").short("c").required(true).takes_value(true).default_value("/etc/bioyino/bioyino.toml"))
+            .arg(Arg::with_name("verbosity").short("v").help("logging level").takes_value(true))
+            .subcommand(SubCommand::with_name("query").about("send a management command to running bioyino server").arg(Arg::with_name("host").short("h").default_value("127.0.0.1:8137")).subcommand(SubCommand::with_name("status").about("get server state")).subcommand(SubCommand::with_name("consensus").arg(Arg::with_name("action").index(1)).arg(Arg::with_name("leader_action").index(2).default_value("unchanged"))))
+            .get_matches();
 
         let config = value_t!(app.value_of("config"), String).expect("config file must be string");
         let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
         let mut config_str = String::new();
-        file.read_to_string(&mut config_str)
-            .expect("reading config file");
+        file.read_to_string(&mut config_str).expect("reading config file");
         let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
 
         if let Some(v) = app.value_of("verbosity") {
@@ -363,14 +350,9 @@ impl System {
             if let Some(_) = query.subcommand_matches("status") {
                 (system, Command::Query(MgmtCommand::Status, server))
             } else if let Some(args) = query.subcommand_matches("consensus") {
-                let c_action = value_t!(args.value_of("action"), ConsensusAction)
-                    .expect("bad consensus action");
-                let l_action = value_t!(args.value_of("leader_action"), LeaderAction)
-                    .expect("bad leader action");
-                (
-                    system,
-                    Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server),
-                )
+                let c_action = value_t!(args.value_of("action"), ConsensusAction).expect("bad consensus action");
+                let l_action = value_t!(args.value_of("leader_action"), LeaderAction).expect("bad leader action");
+                (system, Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server))
             } else {
                 // shold be unreachable
                 unreachable!("clap bug?")

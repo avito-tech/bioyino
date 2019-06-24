@@ -1,8 +1,5 @@
-extern crate capnpc;
+use vergen::{generate_cargo_keys, ConstantsFlags};
 
 fn main() {
-    capnpc::CompilerCommand::new()
-        .file("schema/protocol.capnp")
-        .run()
-        .expect("Failed compiling messages schema");
+    generate_cargo_keys(ConstantsFlags::all()).expect("Unable to generate cargo keys!");
 }

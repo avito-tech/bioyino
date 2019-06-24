@@ -5,13 +5,16 @@ use std::sync::atomic::Ordering;
 use futures::future::{err, ok, Future, IntoFuture};
 use futures::Stream;
 use serde_json;
-use slog::Logger;
+use slog::{Logger, warn, o, info};
 
 use hyper::service::Service;
 use hyper::{self, Body, Method, Request, Response, StatusCode};
 
-use failure::{Compat, Fail};
-use {ConsensusState, CONSENSUS_STATE, IS_LEADER};
+use failure_derive::Fail;
+use serde_derive::{Serialize, Deserialize};
+
+use failure::{Compat, Fail as FailTrait};
+use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
 
 #[derive(Fail, Debug)]
 pub enum MgmtError {
@@ -138,7 +141,7 @@ impl Service for MgmtServer {
                     "Available endpoints:
     status - will show server status
     consensus - posting will change consensus state",
-                );
+    );
                 Box::new(ok(response))
             }
             (&Method::GET, "/status") => {
@@ -226,8 +229,8 @@ impl MgmtClient {
         Self {
             log: log
                 .new(o!("source"=>"management-client", "server"=>format!("{}", address.clone()))),
-            address,
-            command,
+                address,
+                command,
         }
     }
 }
@@ -279,8 +282,8 @@ impl IntoFuture for MgmtClient {
                             Box::new(body) as Box<Future<Item = (), Error = MgmtError>>
                         } else {
                             Box::new(ok(warn!(
-                                clog,
-                                "Bad status returned from server: {:?}", resp
+                                        clog,
+                                        "Bad status returned from server: {:?}", resp
                             )))
                         }
                     }
@@ -321,8 +324,8 @@ impl IntoFuture for MgmtClient {
                             Box::new(body) as Box<Future<Item = (), Error = MgmtError>>
                         } else {
                             Box::new(ok(warn!(
-                                clog,
-                                "Bad status returned from server: {:?}", resp
+                                        clog,
+                                        "Bad status returned from server: {:?}", resp
                             )))
                         }
                     }
@@ -340,8 +343,7 @@ mod test {
     use std::time::{Duration, Instant};
     use {slog, slog_async, slog_term};
 
-    use slog::Drain;
-    use slog::Logger;
+    use slog::{Drain, Logger};
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 

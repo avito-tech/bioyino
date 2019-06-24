@@ -1,10 +1,14 @@
 use std::collections::HashMap;
+use std::io;
+use std::net::TcpStream as StdTcpStream;
+use std::os::unix::io::{AsRawFd, FromRawFd};
 
 use rand::random;
 
-use slog::Logger;
+use slog::{warn, Logger};
 
 use futures::future::lazy;
+use net2::TcpBuilder;
 use tokio::runtime::current_thread::spawn;
 
 use raft_tokio::raft_consensus::persistent_log::mem::MemLog;
@@ -13,11 +17,12 @@ use raft_tokio::raft_consensus::state_machine::null::NullStateMachine;
 use raft_tokio::raft_consensus::ServerId;
 
 ////use raft_tokio::raft::RaftPeerProtocol;
-use config::Raft;
 use raft_tokio::raft::{BiggerIdSolver, ConnectionSolver};
 use raft_tokio::start_raft_tcp;
 use raft_tokio::Notifier;
-use util::{get_hostname, switch_leader, try_resolve};
+
+use crate::config::Raft;
+use crate::util::{get_hostname, switch_leader, try_resolve};
 
 #[derive(Clone)]
 pub struct LeaderNotifier(Logger);
@@ -51,10 +56,7 @@ pub(crate) fn start_internal_raft(options: Raft, logger: Logger) {
 
     let mut this_id = None;
     if options.nodes.len() < 3 {
-        warn!(
-            logger,
-            "raft requires at least 3 nodes, this may work not as intended"
-        );
+        warn!(logger, "raft requires at least 3 nodes, this may work not as intended");
     }
 
     // resolve nodes and generate random ServerId
@@ -67,10 +69,10 @@ pub(crate) fn start_internal_raft(options: Raft, logger: Logger) {
                 this_id = Some(ServerId::from(*id))
             }
             (ServerId::from(*id), addr)
-        }).collect::<HashMap<_, _>>();
+        })
+        .collect::<HashMap<_, _>>();
 
     //let id = this_id/.expect("list of nodes must contain own hostname");
-    use raft_tokio::raft_consensus::ServerId;
     let id = this_id.unwrap_or_else(|| {
         let id: ServerId = random::<u64>().into();
         nodes.insert(id, this);
@@ -81,11 +83,20 @@ pub(crate) fn start_internal_raft(options: Raft, logger: Logger) {
     let sm = NullStateMachine;
     let notifier = LeaderNotifier(logger.clone());
     let solver = notifier.clone();
+    let client_bind = options.client_bind;
     let options = options.get_raft_options();
 
+    let conn_hook = move |socket: &mut StdTcpStream| -> Result<(), io::Error> {
+        if let Some(listen) = client_bind {
+            let builder = unsafe { TcpBuilder::from_raw_fd(socket.as_raw_fd()) };
+            builder.bind(listen)?;
+            *socket = builder.to_tcp_stream()?; // ensure the ownership is passed back from builder
+        }
+        Ok(())
+    };
     // Create the raft runtime
     let raft = lazy(move || {
-        start_raft_tcp(id, nodes, raft_log, sm, notifier, options, logger, solver);
+        start_raft_tcp(id, nodes, raft_log, sm, notifier, options, logger, solver, conn_hook);
         Ok(())
     });
 
