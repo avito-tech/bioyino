@@ -2,14 +2,18 @@
 
 ## Significant changes
 * set metric type is now available
-* metric parser has been rewritten and now considers many corner cases and limits
+* metric parser has been rewritten, battle-tested, and now considers many corner cases and limits
 * all TCP clients now support binding to specific address/interface for complicated ip/interface configurations
+* aggregation can now be done in different parallelization modes depending on incoming metric workloads
 
 ## Less significant changes
-* some documentation has beed added
+* some documentation and examples has beed added
 * snapshot sending now has retries if sends get unsuccessful
 * carbon client now has an option to send metrics in many parallel connections
+* some very core functionality is in a separate crate now and can be used in products willing to deliver metrics faster
 * code migrated to Rust 2018
+* code modularity, readability and documentation has been improved
+* obviously a pack of bug fixes have been done based on production usage
 
 # Release 0.4.0 #
 
