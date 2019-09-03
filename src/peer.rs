@@ -109,20 +109,20 @@ impl IntoFuture for NativeProtocolServer {
                             PeerError::Metric(e)
                         })
                     })
-                .map_err(move |e| {
-                    warn!(elog, "snapshot server client error"; "error"=>format!("{:?}", e));
-                })
-                .for_each(|_| {
-                    // Consume all messages from the stream
-                    Ok(())
-                });
+                    .map_err(move |e| {
+                        warn!(elog, "snapshot server client error"; "error"=>format!("{:?}", e));
+                    })
+                    .for_each(|_| {
+                        // Consume all messages from the stream
+                        Ok(())
+                    });
                 spawn(receiver);
                 Ok(())
             })
-        .map_err(move |e| {
-            log_error!(serv_log, "snapshot server gone with error"; "error"=>format!("{:?}", e));
-            e
-        });
+            .map_err(move |e| {
+                log_error!(serv_log, "snapshot server gone with error"; "error"=>format!("{:?}", e));
+                e
+            });
         Box::new(future)
     }
 }
@@ -208,17 +208,17 @@ impl IntoFuture for NativeProtocolSnapshot {
                     spawn(chan.send(Task::TakeSnapshot(tx)).then(|_| Ok(())));
                     rx
                 })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
             let get_metrics = join_all(metrics)
                 .map_err(|_| {
                     PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
                     PeerError::TaskSend
                 })
-            .and_then(move |mut metrics| {
-                metrics.retain(|m| m.len() > 0);
-                Ok(Arc::new(metrics))
-            });
+                .and_then(move |mut metrics| {
+                    metrics.retain(|m| m.len() > 0);
+                    Ok(Arc::new(metrics))
+                });
 
             // All nodes have to receive the same metrics
             // so we don't parallel connections and metrics fetching
@@ -236,7 +236,7 @@ impl IntoFuture for NativeProtocolSnapshot {
                             warn!(log, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e));
                         }));
                     })
-                .last();
+                    .last();
                 Ok(())
             })
         });
@@ -299,18 +299,18 @@ impl IntoFuture for SnapshotSender {
                             c_metric.set_name(name);
                             metric.fill_capnp(&mut c_metric);
                         })
-                    .last();
+                        .last();
                 }
                 codec.send(snapshot_message).map(|_| ()).map_err(move |e| {
                     debug!(log, "codec error"; "error"=>e.to_string());
                     PeerError::Capnp(e)
                 })
             })
-        .map_err(move |e| {
-            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-            debug!(elog, "error sending snapshot: {}", e);
-            e
-        });
+            .map_err(move |e| {
+                PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                debug!(elog, "error sending snapshot: {}", e);
+                e
+            });
         Box::new(sender)
     }
 }
@@ -329,7 +329,7 @@ mod test {
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 
-    use metric::{Metric, MetricType};
+    use bioyino_metric::{Metric, MetricType};
 
     use crate::config::System;
     use crate::task::TaskRunner;
@@ -379,57 +379,57 @@ mod test {
                 runner.run(task);
                 Ok(runner)
             })
-        .and_then(move |runner| {
-            let single_name: Bytes = "complex.test.bioyino_single".into();
-            let multi_name: Bytes = "complex.test.bioyino_multi".into();
-            let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
-            assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
-            assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
-            assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
+            .and_then(move |runner| {
+                let single_name: Bytes = "complex.test.bioyino_single".into();
+                let multi_name: Bytes = "complex.test.bioyino_multi".into();
+                let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
+                assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
+                assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
+                assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
 
-            Ok(())
-        })
-        .map_err(|_| panic!("error in the future"));
+                Ok(())
+            })
+            .map_err(|_| panic!("error in the future"));
         runtime.spawn(future);
 
         let sender = TcpStream::connect(&address)
             .map_err(|e| {
                 panic!("connection err: {:?}", e);
             })
-        .and_then(move |conn| {
-            let codec = ::capnp_futures::serialize::Transport::new(conn, CAPNP_READER_OPTIONS);
+            .and_then(move |conn| {
+                let codec = ::capnp_futures::serialize::Transport::new(conn, CAPNP_READER_OPTIONS);
 
-            let mut single_message = Builder::new_default();
-            {
-                let builder = single_message.init_root::<CBuilder>();
-                let mut c_metric = builder.init_single();
-                c_metric.set_name("complex.test.bioyino_single");
-                metric.fill_capnp(&mut c_metric);
-            }
+                let mut single_message = Builder::new_default();
+                {
+                    let builder = single_message.init_root::<CBuilder>();
+                    let mut c_metric = builder.init_single();
+                    c_metric.set_name("complex.test.bioyino_single");
+                    metric.fill_capnp(&mut c_metric);
+                }
 
-            let mut multi_message = Builder::new_default();
-            {
-                let builder = multi_message.init_root::<CBuilder>();
-                let multi_metric = builder.init_multi(1);
-                let mut new_metric = multi_metric.get(0);
-                new_metric.set_name("complex.test.bioyino_multi");
-                metric.fill_capnp(&mut new_metric);
-            }
+                let mut multi_message = Builder::new_default();
+                {
+                    let builder = multi_message.init_root::<CBuilder>();
+                    let multi_metric = builder.init_multi(1);
+                    let mut new_metric = multi_metric.get(0);
+                    new_metric.set_name("complex.test.bioyino_multi");
+                    metric.fill_capnp(&mut new_metric);
+                }
 
-            let mut snapshot_message = Builder::new_default();
-            {
-                let builder = snapshot_message.init_root::<CBuilder>();
-                let multi_metric = builder.init_snapshot(1);
-                let mut new_metric = multi_metric.get(0);
-                new_metric.set_name("complex.test.bioyino_snapshot");
-                metric.fill_capnp(&mut new_metric);
-            }
-            codec.send(single_message).and_then(|codec| codec.send(multi_message).and_then(|codec| codec.send(snapshot_message))).map(|_| ()).map_err(|e| println!("codec error: {:?}", e))
-        })
-        .map_err(move |e| {
-            debug!(log, "error sending snapshot: {:?}", e);
-            panic!("failed sending snapshot");
-        });
+                let mut snapshot_message = Builder::new_default();
+                {
+                    let builder = snapshot_message.init_root::<CBuilder>();
+                    let multi_metric = builder.init_snapshot(1);
+                    let mut new_metric = multi_metric.get(0);
+                    new_metric.set_name("complex.test.bioyino_snapshot");
+                    metric.fill_capnp(&mut new_metric);
+                }
+                codec.send(single_message).and_then(|codec| codec.send(multi_message).and_then(|codec| codec.send(snapshot_message))).map(|_| ()).map_err(|e| println!("codec error: {:?}", e))
+            })
+            .map_err(move |e| {
+                debug!(log, "error sending snapshot: {:?}", e);
+                panic!("failed sending snapshot");
+            });
 
         let d = Delay::new(Instant::now() + Duration::from_secs(1));
         let delayed = d.map_err(|_| ()).and_then(|_| sender);

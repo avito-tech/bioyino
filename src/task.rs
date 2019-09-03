@@ -10,6 +10,7 @@ use futures::{Future, Sink};
 use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
+use bioyino_metric::name::MetricName;
 use bioyino_metric::parser::{MetricParser, ParseErrorHandler};
 use bioyino_metric::Metric;
 
@@ -38,7 +39,7 @@ pub enum Task {
     Aggregate(AggregateData),
 }
 
-fn update_metric(cache: &mut Cache, name: Bytes, metric: Metric<Float>) {
+fn update_metric(cache: &mut Cache, name: MetricName, metric: Metric<Float>) {
     match cache.entry(name) {
         Entry::Occupied(ref mut entry) => {
             entry.get_mut().aggregate(metric).unwrap_or_else(|_| {
@@ -77,7 +78,7 @@ impl TaskRunner {
                         .and_modify(|(times, _)| {
                             *times = 0;
                         })
-                    .or_insert((0, BytesMut::with_capacity(len)));
+                        .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf
@@ -177,19 +178,19 @@ pub fn aggregate_task(data: AggregateData) {
             let name = buf.take().freeze();
             (name, value)
         })
-    .chain(upd)
+        .chain(upd)
         .map(|data| {
             spawn(
                 response
-                .clone()
-                .send(data)
-                .map_err(|_| {
-                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                })
-                .map(|_| ()),
-                );
+                    .clone()
+                    .send(data)
+                    .map_err(|_| {
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    })
+                    .map(|_| ()),
+            );
         })
-    .last();
+        .last();
 }
 
 struct TaskParseErrorHandler(Option<Logger>);
@@ -210,7 +211,7 @@ impl ParseErrorHandler for TaskParseErrorHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use metric::MetricType;
+    use bioyino_metric::MetricType;
 
     use crate::util::prepare_log;
 
