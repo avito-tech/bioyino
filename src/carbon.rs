@@ -61,7 +61,7 @@ impl CarbonBackend {
 impl IntoFuture for CarbonBackend {
     type Item = ();
     type Error = GeneralError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { options, metrics, log } = self;
@@ -135,7 +135,7 @@ impl Encoder for CarbonCodec {
         let len = m.0.len() + 1 + m.1.len() + 1 + m.2.len() + 1;
         buf.reserve(len);
         buf.put(m.0);
-        buf.put(" ");
+        buf.put(" .");
         buf.put(m.1);
         buf.put(" ");
         buf.put(m.2);
