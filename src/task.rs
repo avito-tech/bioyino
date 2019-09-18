@@ -11,7 +11,7 @@ use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
 use bioyino_metric::name::MetricName;
-use bioyino_metric::parser::{MetricParser, ParseErrorHandler};
+use bioyino_metric::parser::{MetricParser, MetricParsingError, ParseErrorHandler};
 use bioyino_metric::Metric;
 
 use crate::aggregate::AggregateOptions;
@@ -22,7 +22,7 @@ use crate::{Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER
 #[derive(Debug)]
 pub struct AggregateData {
     pub buf: BytesMut,
-    pub name: Bytes,
+    pub name: MetricName,
     pub metric: Metric<Float>,
     pub options: AggregateOptions,
     pub response: UnboundedSender<(Bytes, Float)>,
@@ -196,13 +196,14 @@ pub fn aggregate_task(data: AggregateData) {
 struct TaskParseErrorHandler(Option<Logger>);
 
 impl ParseErrorHandler for TaskParseErrorHandler {
-    fn handle(&self, input: &[u8], pos: usize) {
+    fn handle(&self, input: &[u8], pos: usize, e: MetricParsingError) {
         PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
         if let Some(ref log) = self.0 {
             if let Ok(string) = std::str::from_utf8(input) {
-                warn!(log, "parsing error"; "buffer"=> format!("{:?}", string), "position"=>format!("{}", pos));
+                // TODO better error formatting instead of Debug
+                warn!(log, "parsing error"; "buffer"=> format!("{:?}", string), "position"=>format!("{}", pos), "error"=>format!("{:?}", e));
             } else {
-                warn!(log, "parsing error (bad unicode)"; "buffer"=> format!("{:?}", input), "position"=>format!("{}", pos));
+                warn!(log, "parsing error (bad unicode)"; "buffer"=> format!("{:?}", input), "position"=>format!("{}", pos), "error"=>format!("{:?}", e));
             }
         }
     }

@@ -71,7 +71,7 @@ impl NativeProtocolServer {
 impl IntoFuture for NativeProtocolServer {
     type Item = ();
     type Error = PeerError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { log, listen, chans } = self;
@@ -191,7 +191,7 @@ impl NativeProtocolSnapshot {
 impl IntoFuture for NativeProtocolSnapshot {
     type Item = ();
     type Error = PeerError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { log, nodes, client_bind, interval, chans } = self;
@@ -266,7 +266,7 @@ impl SnapshotSender {
 impl IntoFuture for SnapshotSender {
     type Item = ();
     type Error = PeerError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { metrics, log, options } = self;
