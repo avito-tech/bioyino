@@ -103,7 +103,7 @@ impl IntoFuture for Aggregator {
                         })
                         .map(move |(name, metric)| {
                             let buf = BytesMut::with_capacity(1024);
-                            let task_data = AggregateData { buf, name: Bytes::from(name), metric, options: options.clone(), response: tx.clone() };
+                            let task_data = AggregateData { buf, name, metric, options: options.clone(), response: tx.clone() };
                             aggregate_task(task_data);
                         })
                         .last();
@@ -117,7 +117,7 @@ impl IntoFuture for Aggregator {
                         .enumerate()
                         .map(move |(num, (name, metric))| {
                             let buf = BytesMut::with_capacity(1024);
-                            let task_data = AggregateData { buf, name: Bytes::from(name), metric, options: options.clone(), response: tx.clone() };
+                            let task_data = AggregateData { buf, name, metric, options: options.clone(), response: tx.clone() };
                             spawn(chans[num % chans.len()].clone().send(Task::Aggregate(task_data)).map(|_| ()).map_err(|_| {
                                 DROPS.fetch_add(1, Ordering::Relaxed);
                             }));
@@ -134,7 +134,7 @@ impl IntoFuture for Aggregator {
                             })
                             .for_each(move |(name, metric)| {
                                 let buf = BytesMut::with_capacity(1024);
-                                let task_data = AggregateData { buf, name: Bytes::from(name), metric, options: options.clone(), response: tx.clone() };
+                                let task_data = AggregateData { buf, name, metric, options: options.clone(), response: tx.clone() };
                                 aggregate_task(task_data);
                             });
                     });

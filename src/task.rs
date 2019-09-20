@@ -31,9 +31,9 @@ pub struct AggregateData {
 #[derive(Debug)]
 pub enum Task {
     Parse(u64, BytesMut),
-    AddMetric(Bytes, Metric<Float>),
-    AddMetrics(Vec<(Bytes, Metric<Float>)>),
-    AddSnapshot(Vec<(Bytes, Metric<Float>)>),
+    AddMetric(MetricName, Metric<Float>),
+    AddMetrics(Vec<(MetricName, Metric<Float>)>),
+    AddSnapshot(Vec<(MetricName, Metric<Float>)>),
     TakeSnapshot(oneshot::Sender<Cache>),
     Rotate(oneshot::Sender<Cache>),
     Aggregate(AggregateData),
@@ -54,8 +54,8 @@ fn update_metric(cache: &mut Cache, name: MetricName, metric: Metric<Float>) {
 
 #[derive(Debug)]
 pub struct TaskRunner {
-    long: HashMap<Bytes, Metric<Float>>,
-    short: HashMap<Bytes, Metric<Float>>,
+    long: HashMap<MetricName, Metric<Float>>,
+    short: HashMap<MetricName, Metric<Float>>,
     buffers: HashMap<u64, (usize, BytesMut)>,
     config: Arc<System>,
     log: Logger,
@@ -84,7 +84,7 @@ impl TaskRunner {
                     prev_buf
                 };
 
-                let parser = MetricParser::new(buf, self.config.metrics.max_unparsed_buffer, TaskParseErrorHandler(log));
+                let parser = MetricParser::new(buf, self.config.metrics.max_unparsed_buffer, self.config.metrics.max_tags_len, TaskParseErrorHandler(log));
 
                 for (name, metric) in parser {
                     INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);

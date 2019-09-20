@@ -136,6 +136,7 @@ fn main() {
             consistent_parsing: _,
             log_parse_errors: _,
             max_unparsed_buffer: _,
+            max_tags_len: _,
         },
         carbon,
         n_threads,

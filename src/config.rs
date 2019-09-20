@@ -107,6 +107,9 @@ pub struct Metrics {
     /// away
     pub max_unparsed_buffer: usize,
 
+    /// Maximum length of tags part of a metric
+    pub max_tags_len: usize,
+
     /// Choose the way of aggregation
     pub aggregation_mode: AggregationMode,
 
@@ -125,6 +128,7 @@ impl Default for Metrics {
             consistent_parsing: true,
             log_parse_errors: false,
             max_unparsed_buffer: 10000,
+            max_tags_len: 9000,
             aggregation_mode: AggregationMode::Single,
             aggregation_threads: None,
         }

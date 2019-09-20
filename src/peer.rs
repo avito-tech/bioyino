@@ -295,7 +295,7 @@ impl IntoFuture for SnapshotSender {
                         .enumerate()
                         .map(|(idx, (name, metric))| {
                             let mut c_metric = multi_metric.reborrow().get(idx as u32);
-                            let name = unsafe { ::std::str::from_utf8_unchecked(&name) };
+                            let name = unsafe { ::std::str::from_utf8_unchecked(name.name_with_tags()) };
                             c_metric.set_name(name);
                             metric.fill_capnp(&mut c_metric);
                         })
