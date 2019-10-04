@@ -135,10 +135,10 @@ impl TaskRunner {
     }
 
     // used in tests in peer.rs
-    pub fn get_long_entry(&self, e: &Bytes) -> Option<&Metric<Float>> {
+    pub fn get_long_entry(&self, e: &MetricName) -> Option<&Metric<Float>> {
         self.long.get(e)
     }
-    pub fn get_short_entry(&self, e: &Bytes) -> Option<&Metric<Float>> {
+    pub fn get_short_entry(&self, e: &MetricName) -> Option<&Metric<Float>> {
         self.short.get(e)
     }
 }
@@ -148,18 +148,20 @@ pub fn aggregate_task(data: AggregateData) {
     let upd = if let Some(options) = options.update_counter {
         if metric.update_counter > options.threshold {
             // + 2 is for dots
-            let cut_len = options.prefix.len() + name.len() + options.suffix.len() + 2;
+            let cut_len = options.prefix.len() + name.name.len() + options.suffix.len() + 2;
             buf.reserve(cut_len);
             if options.prefix.len() > 0 {
                 buf.put_slice(&options.prefix);
                 buf.put_slice(b".");
             }
 
-            buf.put_slice(&name);
+            buf.put_slice(name.name_without_tags());
             if options.suffix.len() > 0 {
                 buf.put_slice(b".");
                 buf.put_slice(&options.suffix);
             }
+
+            buf.put_slice(name.tags_without_name());
 
             let counter = buf.take().freeze();
             Some((counter, metric.update_counter.into()))
@@ -219,20 +221,21 @@ mod tests {
     #[test]
     fn parse_trashed_metric_buf() {
         let mut data = BytesMut::new();
-        data.extend_from_slice(b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000|g|@0.5\nMORETrasH\nFUUU");
+        data.extend_from_slice(b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000;tag3=shit;t2=fuck|g|@0.5\nMORETrasH\nFUUU");
 
         let mut config = System::default();
         config.metrics.log_parse_errors = true;
         let mut runner = TaskRunner::new(prepare_log("parse_trashed"), Arc::new(config), 16);
         runner.run(Task::Parse(2, data));
 
-        let key: Bytes = "gorets1".into();
+        let key = MetricName::new("gorets1".into(), None);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(1i8)));
         assert_eq!(metric.sampling, None);
 
-        let key: Bytes = "gorets2".into();
+        // expect tags to be sorted after parsing
+        let mut key = MetricName::new("gorets2;t2=fuck;t3=shit".into(), None);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(-1i8)));

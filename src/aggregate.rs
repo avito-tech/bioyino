@@ -27,11 +27,22 @@ pub enum AggregationMode {
     Separate,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum AggregationDestination {
+    Smart,
+    Name,
+    Tags,
+    Both,
+}
+
 #[derive(Debug, Clone)]
 pub struct AggregateOptions {
     pub is_leader: bool,
     pub update_counter: Option<UpdateCounterOptions>,
     pub aggregation_mode: AggregationMode,
+    pub destination: AggregationDestination,
+    pub replacements: HashMap<String, String>,
     pub multi_threads: usize,
 }
 

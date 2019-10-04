@@ -109,12 +109,6 @@ pub struct Metrics {
 
     /// Maximum length of tags part of a metric
     pub max_tags_len: usize,
-
-    /// Choose the way of aggregation
-    pub aggregation_mode: AggregationMode,
-
-    /// Number of threads when aggregating in "multi" mode
-    pub aggregation_threads: Option<usize>,
 }
 
 impl Default for Metrics {
@@ -133,6 +127,22 @@ impl Default for Metrics {
             aggregation_threads: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct Aggregation {
+    /// Choose the way of aggregation
+    pub mode: AggregationMode,
+
+    /// Number of threads when aggregating in "multi" mode
+    pub threads: Option<usize>,
+
+    /// Where to put aggregate suffix
+    pub destination: AggregationDestination,
+
+    /// replacements for aggregate suffixes
+    pub replacements: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

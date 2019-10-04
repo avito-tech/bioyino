@@ -322,13 +322,14 @@ mod test {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use bytes::Bytes;
+    use bytes::BytesMut;
     use capnp::message::Builder;
     use futures::sync::mpsc::{self, Receiver};
     use slog::Logger;
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 
+    use bioyino_metric::name::{MetricName, TagFormat};
     use bioyino_metric::{Metric, MetricType};
 
     use crate::config::System;
@@ -380,12 +381,17 @@ mod test {
                 Ok(runner)
             })
             .and_then(move |runner| {
-                let single_name: Bytes = "complex.test.bioyino_single".into();
-                let multi_name: Bytes = "complex.test.bioyino_multi".into();
-                let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
+                let single_name = MetricName::new("complex.test.bioyino_single".into(), None);
+                let multi_name = MetricName::new("complex.test.bioyino_multi".into(), None);
+                let shot_name = MetricName::new("complex.test.bioyino_snapshot".into(), None);
+                let mut tagged_name = MetricName::new("complex.test.bioyino_tagged;tag2=val2;tag1=value1".into(), None);
+                let mut interm = BytesMut::with_capacity(tagged_name.name.len());
+                interm.resize(tagged_name.name.len(), 0u8);
+                tagged_name.sort_tags(TagFormat::Graphite, &mut interm);
                 assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
                 assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
                 assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
+                assert_eq!(runner.get_short_entry(&tagged_name), Some(&outmetric));
 
                 Ok(())
             })
@@ -404,6 +410,14 @@ mod test {
                     let builder = single_message.init_root::<CBuilder>();
                     let mut c_metric = builder.init_single();
                     c_metric.set_name("complex.test.bioyino_single");
+                    metric.fill_capnp(&mut c_metric);
+                }
+
+                let mut tagged_message = Builder::new_default();
+                {
+                    let builder = tagged_message.init_root::<CBuilder>();
+                    let mut c_metric = builder.init_single();
+                    c_metric.set_name("complex.test.bioyino_tagged;tag2=val2;tag1=value1");
                     metric.fill_capnp(&mut c_metric);
                 }
 

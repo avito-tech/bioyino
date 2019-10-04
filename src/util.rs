@@ -20,7 +20,7 @@ use tokio::timer::{Delay, Interval};
 use crate::task::Task;
 use crate::Float;
 use crate::{AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
-use bioyino_metric::{Metric, MetricType};
+use bioyino_metric::{name::MetricName, Metric, MetricType};
 
 use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
 
@@ -151,7 +151,7 @@ impl OwnStats {
                     buf.put(&self.prefix);
                     buf.put(".");
                     buf.put(&$suffix);
-                    let name = buf.take().freeze();
+                    let name = MetricName::new(buf.take(), None);
                     let metric = Metric::new($value, MetricType::Counter, None, None).unwrap();
                     let log = self.log.clone();
                     let sender = self.chan.clone().send(Task::AddMetric(name, metric)).map(|_| ()).map_err(move |_| warn!(log, "stats future could not send metric to task"));
@@ -170,14 +170,14 @@ impl OwnStats {
             let s_interval = self.interval as f64 / 1000f64;
 
             info!(self.log, "stats";
-                  "egress" => format!("{:2}", egress / s_interval),
-                  "ingress" => format!("{:2}", ingress / s_interval),
-                  "ingress-m" => format!("{:2}", ingress_m / s_interval),
-                  "a-err" => format!("{:2}", agr_errors / s_interval),
-                  "p-err" => format!("{:2}", parse_errors / s_interval),
-                  "pe-err" => format!("{:2}", peer_errors / s_interval),
-                  "drops" => format!("{:2}", drops / s_interval),
-                  );
+            "egress" => format!("{:2}", egress / s_interval),
+            "ingress" => format!("{:2}", ingress / s_interval),
+            "ingress-m" => format!("{:2}", ingress_m / s_interval),
+            "a-err" => format!("{:2}", agr_errors / s_interval),
+            "p-err" => format!("{:2}", parse_errors / s_interval),
+            "pe-err" => format!("{:2}", peer_errors / s_interval),
+            "drops" => format!("{:2}", drops / s_interval),
+            );
         }
     }
 }
@@ -224,12 +224,12 @@ impl Default for BackoffRetryBuilder {
 
 impl BackoffRetryBuilder {
     pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-        where
+    where
         F: IntoFuture + Clone,
-        {
-            let inner = Either::A(action.clone().into_future());
-            BackoffRetry { action, inner: inner, options: self }
-        }
+    {
+        let inner = Either::A(action.clone().into_future());
+        BackoffRetry { action, inner: inner, options: self }
+    }
 }
 
 /// TCP client that is able to reconnect with customizable settings
@@ -241,7 +241,7 @@ pub struct BackoffRetry<F: IntoFuture> {
 
 impl<F> Future for BackoffRetry<F>
 where
-F: IntoFuture + Clone,
+    F: IntoFuture + Clone,
 {
     type Item = F::Item;
     type Error = Option<F::Error>;
