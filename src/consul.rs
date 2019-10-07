@@ -94,7 +94,7 @@ impl ConsulConsensus {
 impl IntoFuture for ConsulConsensus {
     type Item = ();
     type Error = ConsulError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self {
@@ -145,7 +145,7 @@ impl IntoFuture for ConsulConsensus {
                                 Delay::new(Instant::now() + error_pause)
                                 .then(move |_| Ok(Loop::Continue(new_session))),
                                 )
-                                as Box<Future<Item = Loop<_, _>, Error = _>>
+                                as Box<dyn Future<Item = Loop<_, _>, Error = _>>
                                 //ok(Loop::Continue(new_session))
                         }
                         Ok(None) => {
@@ -226,7 +226,7 @@ pub struct ConsulSession {
 impl IntoFuture for ConsulSession {
     type Item = Option<String>;
     type Error = ConsulError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { log, agent, ttl } = self;
@@ -272,7 +272,7 @@ impl IntoFuture for ConsulSession {
                             debug!(log, "new session"; "id"=>format!("{}", resp.id));
                             Ok(Some(resp.id))
                         });
-                    Box::new(body) as Box<Future<Item = Option<String>, Error = ConsulError>>
+                    Box::new(body) as Box<dyn Future<Item = Option<String>, Error = ConsulError>>
                 } else {
                     let body = resp.into_body().concat2().map_err(|e| ConsulError::Http(e));
                     // TODO make this into option
@@ -308,7 +308,7 @@ pub struct ConsulRenew {
 impl IntoFuture for ConsulRenew {
     type Item = ();
     type Error = ConsulError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { agent, sid, ttl } = self;
@@ -351,7 +351,7 @@ impl IntoFuture for ConsulRenew {
                             );
                             Err(ConsulError::Renew(msg))
                         });
-                    Box::new(body) as Box<Future<Item = (), Error = ConsulError>>
+                    Box::new(body) as Box<dyn Future<Item = (), Error = ConsulError>>
                 } else {
                     Box::new(ok(()))
                 }
@@ -371,7 +371,7 @@ pub struct ConsulAcquire {
 impl IntoFuture for ConsulAcquire {
     type Item = ();
     type Error = ConsulError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self {

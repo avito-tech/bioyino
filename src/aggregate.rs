@@ -55,7 +55,7 @@ impl Aggregator {
 impl IntoFuture for Aggregator {
     type Item = ();
     type Error = ();
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
         let Self { options, chans, tx, log } = self;

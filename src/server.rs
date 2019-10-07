@@ -60,7 +60,7 @@ impl StatsdServer {
 impl IntoFuture for StatsdServer {
     type Item = ();
     type Error = ();
-    type Future = Box<Future<Item = Self::Item, Error = ()>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = ()>>;
 
     fn into_future(self) -> Self::Future {
         let Self {

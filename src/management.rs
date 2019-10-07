@@ -5,16 +5,16 @@ use std::sync::atomic::Ordering;
 use futures::future::{err, ok, Future, IntoFuture};
 use futures::Stream;
 use serde_json;
-use slog::{Logger, warn, o, info};
+use slog::{info, o, warn, Logger};
 
 use hyper::service::Service;
 use hyper::{self, Body, Method, Request, Response, StatusCode};
 
 use failure_derive::Fail;
-use serde_derive::{Serialize, Deserialize};
+use serde_derive::{Deserialize, Serialize};
 
-use failure::{Compat, Fail as FailTrait};
 use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
+use failure::{Compat, Fail as FailTrait};
 
 #[derive(Fail, Debug)]
 pub enum MgmtError {
@@ -107,10 +107,7 @@ struct ServerStatus {
 impl ServerStatus {
     fn new() -> Self {
         let state = &*CONSENSUS_STATE.lock().unwrap();
-        Self {
-            leader_status: IS_LEADER.load(Ordering::SeqCst),
-            consensus_status: state.clone(),
-        }
+        Self { leader_status: IS_LEADER.load(Ordering::SeqCst), consensus_status: state.clone() }
     }
 }
 
@@ -120,9 +117,7 @@ pub struct MgmtServer {
 
 impl MgmtServer {
     pub fn new(log: Logger, address: &SocketAddr) -> Self {
-        Self {
-            log: log.new(o!("source"=>"management-server", "server"=>format!("{}", address))),
-        }
+        Self { log: log.new(o!("source"=>"management-server", "server"=>format!("{}", address))) }
     }
 }
 
@@ -130,7 +125,7 @@ impl Service for MgmtServer {
     type ReqBody = Body;
     type ResBody = Body;
     type Error = hyper::Error;
-    type Future = Box<Future<Item = Response<Self::ResBody>, Error = Self::Error> + Send>;
+    type Future = Box<dyn Future<Item = Response<Self::ResBody>, Error = Self::Error> + Send>;
     fn call(&mut self, req: Request<Self::ReqBody>) -> Self::Future {
         let mut response = Response::new(Body::empty());
 
@@ -141,7 +136,7 @@ impl Service for MgmtServer {
                     "Available endpoints:
     status - will show server status
     consensus - posting will change consensus state",
-    );
+                );
                 Box::new(ok(response))
             }
             (&Method::GET, "/status") => {
@@ -226,35 +221,24 @@ pub struct MgmtClient {
 
 impl MgmtClient {
     pub fn new(log: Logger, address: SocketAddr, command: MgmtCommand) -> Self {
-        Self {
-            log: log
-                .new(o!("source"=>"management-client", "server"=>format!("{}", address.clone()))),
-                address,
-                command,
-        }
+        Self { log: log.new(o!("source"=>"management-client", "server"=>format!("{}", address.clone()))), address, command }
     }
 }
 
 impl IntoFuture for MgmtClient {
     type Item = ();
     type Error = MgmtError;
-    type Future = Box<Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self {
-            log,
-            address,
-            command,
-        } = self;
+        let Self { log, address, command } = self;
         let mut req = hyper::Request::default();
 
         info!(log, "received command {:?}", command);
         match command {
             MgmtCommand::Status => {
                 *req.method_mut() = Method::GET;
-                *req.uri_mut() = format!("http://{}/status", address)
-                    .parse()
-                    .expect("creating url for management command ");
+                *req.uri_mut() = format!("http://{}/status", address).parse().expect("creating url for management command ");
 
                 let client = hyper::Client::new();
                 let clog = log.clone();
@@ -262,29 +246,17 @@ impl IntoFuture for MgmtClient {
                     Err(e) => Box::new(err(MgmtError::Http(e))),
                     Ok(resp) => {
                         if resp.status() == StatusCode::OK {
-                            let body = resp
-                                .into_body()
-                                .concat2()
-                                .map_err(|e| MgmtError::Http(e))
-                                .map(move |body| {
-                                    match serde_json::from_slice::<ServerStatus>(&*body) {
-                                        Ok(status) => {
-                                            println!("{:?}", status);
-                                        }
-                                        Err(e) => {
-                                            println!(
-                                                "Error parsing server response: {}",
-                                                e.to_string()
-                                            );
-                                        }
-                                    }
-                                });
-                            Box::new(body) as Box<Future<Item = (), Error = MgmtError>>
+                            let body = resp.into_body().concat2().map_err(|e| MgmtError::Http(e)).map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
+                                Ok(status) => {
+                                    println!("{:?}", status);
+                                }
+                                Err(e) => {
+                                    println!("Error parsing server response: {}", e.to_string());
+                                }
+                            });
+                            Box::new(body) as Box<dyn Future<Item = (), Error = MgmtError>>
                         } else {
-                            Box::new(ok(warn!(
-                                        clog,
-                                        "Bad status returned from server: {:?}", resp
-                            )))
+                            Box::new(ok(warn!(clog, "Bad status returned from server: {:?}", resp)))
                         }
                     }
                 });
@@ -292,9 +264,7 @@ impl IntoFuture for MgmtClient {
             }
             command @ MgmtCommand::ConsensusCommand(_, _) => {
                 *req.method_mut() = Method::POST;
-                *req.uri_mut() = format!("http://{}/consensus", address)
-                    .parse()
-                    .expect("creating url for management command");
+                *req.uri_mut() = format!("http://{}/consensus", address).parse().expect("creating url for management command");
                 let body = serde_json::to_vec_pretty(&command).unwrap();
                 *req.body_mut() = Body::from(body);
 
@@ -304,29 +274,17 @@ impl IntoFuture for MgmtClient {
                     Err(e) => Box::new(err(MgmtError::Http(e))),
                     Ok(resp) => {
                         if resp.status() == StatusCode::OK {
-                            let body = resp
-                                .into_body()
-                                .concat2()
-                                .map_err(|e| MgmtError::Http(e))
-                                .map(move |body| {
-                                    match serde_json::from_slice::<ServerStatus>(&*body) {
-                                        Ok(status) => {
-                                            println!("New server state: {:?}", status);
-                                        }
-                                        Err(e) => {
-                                            println!(
-                                                "Error parsing server response: {}",
-                                                e.to_string()
-                                            );
-                                        }
-                                    }
-                                });
-                            Box::new(body) as Box<Future<Item = (), Error = MgmtError>>
+                            let body = resp.into_body().concat2().map_err(|e| MgmtError::Http(e)).map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
+                                Ok(status) => {
+                                    println!("New server state: {:?}", status);
+                                }
+                                Err(e) => {
+                                    println!("Error parsing server response: {}", e.to_string());
+                                }
+                            });
+                            Box::new(body) as Box<dyn Future<Item = (), Error = MgmtError>>
                         } else {
-                            Box::new(ok(warn!(
-                                        clog,
-                                        "Bad status returned from server: {:?}", resp
-                            )))
+                            Box::new(ok(warn!(clog, "Bad status returned from server: {:?}", resp)))
                         }
                     }
                 });
@@ -367,11 +325,9 @@ mod test {
         let c_serv_log = rlog.clone();
         let c_serv_err_log = rlog.clone();
         let s_addr = address.clone();
-        let server = hyper::Server::bind(&address)
-            .serve(move || ok::<_, hyper::Error>(MgmtServer::new(c_serv_log.clone(), &s_addr)))
-            .map_err(move |e| {
-                warn!(c_serv_err_log, "management server gone with error: {:?}", e);
-            });
+        let server = hyper::Server::bind(&address).serve(move || ok::<_, hyper::Error>(MgmtServer::new(c_serv_log.clone(), &s_addr))).map_err(move |e| {
+            warn!(c_serv_err_log, "management server gone with error: {:?}", e);
+        });
 
         runtime.spawn(server);
 
@@ -389,32 +345,20 @@ mod test {
         // let server some time to settle
         // then test the status command
         let d = Delay::new(Instant::now() + Duration::from_secs(1));
-        let delayed = d
-            .map_err(|_| ())
-            .and_then(move |_| client.into_future().map_err(|e| panic!(e)));
+        let delayed = d.map_err(|_| ()).and_then(move |_| client.into_future().map_err(|e| panic!(e)));
         runtime.spawn(delayed);
 
         // then send a status change command
         let d = Delay::new(Instant::now() + Duration::from_secs(2));
         let delayed = d.map_err(|_| ()).and_then(move |_| {
-            let command =
-                MgmtCommand::ConsensusCommand(ConsensusAction::Enable, LeaderAction::Enable);
+            let command = MgmtCommand::ConsensusCommand(ConsensusAction::Enable, LeaderAction::Enable);
             let client = MgmtClient::new(log.clone(), address, command);
 
-            client
-                .into_future()
-                .map_err(|e| panic!("{:?}", e))
-                .map(move |_| {
-                    // ensure state has changed
-                    let state = ServerStatus::new();
-                    assert_eq!(
-                        state,
-                        ServerStatus {
-                            consensus_status: ConsensusState::Enabled,
-                            leader_status: true,
-                        }
-                    )
-                })
+            client.into_future().map_err(|e| panic!("{:?}", e)).map(move |_| {
+                // ensure state has changed
+                let state = ServerStatus::new();
+                assert_eq!(state, ServerStatus { consensus_status: ConsensusState::Enabled, leader_status: true })
+            })
         });
         runtime.spawn(delayed);
 
