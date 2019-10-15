@@ -1,3 +1,7 @@
+# Release 0.5.1 #
+
+* fixed bug with parallel aggregation not working in separate thread pool mode
+
 # Release 0.5.0 #
 
 ## Significant changes
