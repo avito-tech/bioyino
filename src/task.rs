@@ -13,7 +13,7 @@ use tokio::runtime::current_thread::spawn;
 use bioyino_metric::parser::{MetricParser, ParseErrorHandler};
 use bioyino_metric::Metric;
 
-use crate::aggregate::AggregateOptions;
+use crate::aggregate::{AggregateOptions, AggregationMode};
 use crate::config::System;
 
 use crate::{Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
@@ -77,7 +77,7 @@ impl TaskRunner {
                         .and_modify(|(times, _)| {
                             *times = 0;
                         })
-                    .or_insert((0, BytesMut::with_capacity(len)));
+                        .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf
@@ -169,6 +169,7 @@ pub fn aggregate_task(data: AggregateData) {
         None
     };
 
+    let mode = options.aggregation_mode;
     metric
         .into_iter()
         .map(move |(suffix, value)| {
@@ -177,19 +178,26 @@ pub fn aggregate_task(data: AggregateData) {
             let name = buf.take().freeze();
             (name, value)
         })
-    .chain(upd)
+        .chain(upd)
         .map(|data| {
-            spawn(
-                response
+            let respond = response
                 .clone()
                 .send(data)
                 .map_err(|_| {
                     AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
                 })
-                .map(|_| ()),
-                );
+                .map(|_| ());
+
+            match mode {
+                AggregationMode::Separate => {
+                    // In the separate mode there is no tokio runtime, so we just run future
+                    // synchronously
+                    respond.wait().unwrap()
+                }
+                _ => spawn(respond),
+            }
         })
-    .last();
+        .last();
 }
 
 struct TaskParseErrorHandler(Option<Logger>);
@@ -210,7 +218,7 @@ impl ParseErrorHandler for TaskParseErrorHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use metric::MetricType;
+    use bioyino_metric::MetricType;
 
     use crate::util::prepare_log;
 
