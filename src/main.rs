@@ -131,13 +131,12 @@ fn main() {
             update_counter_prefix,
             update_counter_suffix,
             update_counter_threshold,
-            aggregation_mode,
-            aggregation_threads,
             consistent_parsing: _,
             log_parse_errors: _,
             max_unparsed_buffer: _,
             max_tags_len: _,
         },
+        aggregation,
         carbon,
         n_threads,
         w_threads,
@@ -322,13 +321,13 @@ fn main() {
     if carbon_config.chunks == 0 {
         carbon_config.chunks = 1
     }
-    let multi_threads = match aggregation_threads {
-        Some(value) if aggregation_mode == AggregationMode::Separate => value,
+    let multi_threads = match aggregation.threads {
+        Some(value) if aggregation.mode == AggregationMode::Separate => value,
         Some(_) => {
             info!(carbon_log, "aggregation_threads parameter only works in \"separate\" mode and will be ignored");
             0
         }
-        None if aggregation_mode == AggregationMode::Separate => 0,
+        None if aggregation.mode == AggregationMode::Separate => 0,
         _ => 0,
     };
 
@@ -342,7 +341,16 @@ fn main() {
         let update_counter_prefix = update_counter_prefix.clone();
         let update_counter_suffix = update_counter_suffix.clone();
         let backend_opts = carbon_config.clone();
-        let aggregation_mode = aggregation_mode.clone();
+        let agg_opts = AggregateOptions {
+            is_leader: false,
+            update_counter: None,
+            mode: aggregation.mode.clone(),
+            destination: aggregation.destination.clone(),
+            replacements: Arc::new(aggregation.replacements.clone()),
+            multi_threads,
+        };
+        let aggregation_mode = aggregation.mode.clone();
+        let aggregation_destination = aggregation.destination.clone();
         thread::Builder::new()
             .name("bioyino_carbon".into())
             .spawn(move || {
@@ -359,12 +367,9 @@ fn main() {
 
                 let is_leader = IS_LEADER.load(Ordering::SeqCst);
 
-                let options = AggregateOptions {
-                    is_leader,
-                    update_counter: if count_updates { Some(UpdateCounterOptions { threshold: update_counter_threshold, prefix: update_counter_prefix, suffix: update_counter_suffix }) } else { None },
-                    aggregation_mode,
-                    multi_threads,
-                };
+                let mut options = agg_opts.clone();
+                options.is_leader = is_leader;
+                options.update_counter = if count_updates { Some(UpdateCounterOptions { threshold: update_counter_threshold, prefix: update_counter_prefix, suffix: update_counter_suffix }) } else { None };
 
                 if is_leader {
                     info!(carbon_log, "leader sending metrics");

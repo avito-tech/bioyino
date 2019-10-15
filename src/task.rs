@@ -42,7 +42,7 @@ pub enum Task {
 fn update_metric(cache: &mut Cache, name: MetricName, metric: Metric<Float>) {
     match cache.entry(name) {
         Entry::Occupied(ref mut entry) => {
-            entry.get_mut().aggregate(metric).unwrap_or_else(|_| {
+            entry.get_mut().accumulate(metric).unwrap_or_else(|_| {
                 AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
             });
         }

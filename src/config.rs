@@ -12,9 +12,10 @@ use serde_derive::{Deserialize, Serialize};
 
 use raft_tokio::RaftOptions;
 
-use crate::aggregate::AggregationMode;
+use crate::aggregate::{AggregationDestination, AggregationMode};
 use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
-use crate::{ConsensusKind, ConsensusState};
+use crate::{ConsensusKind, ConsensusState, Float};
+use bioyino_metric::metric::Aggregate;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -33,6 +34,9 @@ pub struct System {
 
     /// Metric settings
     pub metrics: Metrics,
+
+    /// Aggregation settings
+    pub aggregation: Aggregation,
 
     /// Carbon backend settings
     pub carbon: Carbon,
@@ -68,6 +72,7 @@ impl Default for System {
             raft: Raft::default(),
             consul: Consul::default(),
             metrics: Metrics::default(),
+            aggregation: Aggregation::default(),
             carbon: Carbon::default(),
             n_threads: 4,
             w_threads: 4,
@@ -123,8 +128,6 @@ impl Default for Metrics {
             log_parse_errors: false,
             max_unparsed_buffer: 10000,
             max_tags_len: 9000,
-            aggregation_mode: AggregationMode::Single,
-            aggregation_threads: None,
         }
     }
 }
@@ -142,7 +145,32 @@ pub struct Aggregation {
     pub destination: AggregationDestination,
 
     /// replacements for aggregate suffixes
-    pub replacements: HashMap<String, String>,
+    pub replacements: HashMap<Aggregate<Float>, String>,
+}
+
+impl Default for Aggregation {
+    fn default() -> Self {
+        let mut replacements = HashMap::new();
+        replacements.insert(Aggregate::Count, "count");
+        replacements.insert(Aggregate::Last, "last");
+        replacements.insert(Aggregate::Min, "min");
+        replacements.insert(Aggregate::Max, "max");
+        replacements.insert(Aggregate::Sum, "sum");
+        replacements.insert(Aggregate::Median, "median");
+        replacements.insert(Aggregate::Mean, "mean");
+        replacements.insert(Aggregate::Percentile(0.75), "percentile.75");
+        replacements.insert(Aggregate::Percentile(0.95), "percentile.95");
+        replacements.insert(Aggregate::Percentile(0.98), "percentile.98");
+        replacements.insert(Aggregate::Percentile(0.99), "percentile.99");
+        replacements.insert(Aggregate::Percentile(0.999), "percentile.999");
+        Self {
+            //
+            mode: AggregationMode::Single,
+            threads: None,
+            destination: AggregationDestination::Smart,
+            replacements: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,5 +402,20 @@ impl System {
         } else {
             (system, Command::Daemon)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parsing_example_config() {
+        let config = "config.toml".to_string();
+        let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
+        let mut config_str = String::new();
+        file.read_to_string(&mut config_str).expect("reading config file");
+        //let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
+        let _: System = toml::de::from_str(&config_str).expect("parsing config");
     }
 }

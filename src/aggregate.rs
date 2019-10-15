@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use futures::stream::futures_unordered;
 use futures::sync::mpsc::{Sender, UnboundedSender};
@@ -11,6 +12,8 @@ use bytes::{Bytes, BytesMut};
 use rayon::{iter::IntoParallelIterator, iter::ParallelIterator, ThreadPoolBuilder};
 use serde_derive::{Deserialize, Serialize};
 use slog::{debug, info, Logger};
+
+use bioyino_metric::Aggregate;
 
 use crate::task::{aggregate_task, AggregateData, Task};
 use crate::util::UpdateCounterOptions;
@@ -40,9 +43,9 @@ pub enum AggregationDestination {
 pub struct AggregateOptions {
     pub is_leader: bool,
     pub update_counter: Option<UpdateCounterOptions>,
-    pub aggregation_mode: AggregationMode,
+    pub mode: AggregationMode,
     pub destination: AggregationDestination,
-    pub replacements: HashMap<String, String>,
+    pub replacements: Arc<HashMap<Aggregate<Float>, String>>,
     pub multi_threads: usize,
 }
 
@@ -91,7 +94,7 @@ impl IntoFuture for Aggregator {
                 .into_iter()
                 .map(|(name, metric)| {
                     if acc.contains_key(&name) {
-                        acc.get_mut(&name).unwrap().aggregate(metric).unwrap_or_else(|_| {
+                        acc.get_mut(&name).unwrap().accumulate(metric).unwrap_or_else(|_| {
                             AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
                         });
                     } else {
@@ -105,7 +108,7 @@ impl IntoFuture for Aggregator {
         let aggregate = accumulate.and_then(move |accumulated| {
             debug!(log, "leader aggregating metrics");
 
-            match options.aggregation_mode {
+            match options.mode {
                 AggregationMode::Single => {
                     accumulated
                         .into_iter()
