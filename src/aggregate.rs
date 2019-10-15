@@ -17,7 +17,7 @@ use crate::util::UpdateCounterOptions;
 use crate::{Cache, Float};
 use crate::{AGG_ERRORS, DROPS, EGRESS};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Copy)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub enum AggregationMode {
     Single,
@@ -144,5 +144,71 @@ impl IntoFuture for Aggregator {
             Ok(())
         });
         Box::new(aggregate)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    use crate::util::prepare_log;
+
+    use futures::sync::mpsc;
+    use tokio::runtime::current_thread::Runtime;
+    use tokio::timer::Delay;
+
+    use bioyino_metric::{Metric, MetricType};
+
+    #[test]
+    fn parallel_aggregation_rayon() {
+        let log = prepare_log("test_parallel_aggregation");
+        let mut chans = Vec::new();
+        let (tx, rx) = mpsc::channel(5);
+        chans.push(tx);
+
+        let mut runtime = Runtime::new().expect("creating runtime for main thread");
+
+        let options = AggregateOptions {
+            //
+            is_leader: true,
+            update_counter: None,
+            aggregation_mode: AggregationMode::Separate,
+            multi_threads: 2,
+        };
+
+        let (backend_tx, backend_rx) = mpsc::unbounded();
+
+        let aggregator = Aggregator::new(options, chans, backend_tx, log.clone()).into_future();
+
+        // Emulate rotation in task
+        let counter = std::sync::atomic::AtomicUsize::new(0);
+        let rotate = rx.for_each(move |task| {
+            if let Task::Rotate(response) = task {
+                let mut cache = HashMap::new();
+                for i in 0..10 {
+                    let mut metric = Metric::new(0f64, MetricType::Timer(Vec::new()), None, None).unwrap();
+                    for j in 1..100 {
+                        let new_metric = Metric::new(j.into(), MetricType::Timer(Vec::new()), None, None).unwrap();
+                        metric.aggregate(new_metric).unwrap();
+                    }
+
+                    let counter = counter.fetch_add(1, Ordering::Relaxed);
+                    cache.insert(Bytes::from(format!("some.test.metric.{}.{}", i, counter)), metric);
+                }
+                response.send(cache).unwrap();
+            }
+            Ok(())
+        });
+
+        runtime.spawn(rotate);
+        runtime.spawn(aggregator);
+
+        let receive = backend_rx.collect().map(|result| assert_eq!(result.len(), 120));
+        runtime.spawn(receive);
+
+        let test_timeout = Instant::now() + Duration::from_secs(1);
+        let test_delay = Delay::new(test_timeout);
+        runtime.block_on(test_delay).expect("runtime");
     }
 }
