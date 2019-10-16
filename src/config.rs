@@ -148,27 +148,31 @@ pub struct Aggregation {
     pub replacements: HashMap<Aggregate<Float>, String>,
 }
 
+pub fn default_replacements() -> HashMap<Aggregate<Float>, String> {
+    let mut replacements = HashMap::new();
+    replacements.insert(Aggregate::Count, "count".to_string());
+    replacements.insert(Aggregate::Last, "last".to_string());
+    replacements.insert(Aggregate::Min, "min".to_string());
+    replacements.insert(Aggregate::Max, "max".to_string());
+    replacements.insert(Aggregate::Sum, "sum".to_string());
+    replacements.insert(Aggregate::Median, "median".to_string());
+    replacements.insert(Aggregate::Mean, "mean".to_string());
+    replacements.insert(Aggregate::Percentile(0.75), "percentile.75".to_string());
+    replacements.insert(Aggregate::Percentile(0.95), "percentile.95".to_string());
+    replacements.insert(Aggregate::Percentile(0.98), "percentile.98".to_string());
+    replacements.insert(Aggregate::Percentile(0.99), "percentile.99".to_string());
+    replacements.insert(Aggregate::Percentile(0.999), "percentile.999".to_string());
+    replacements
+}
+
 impl Default for Aggregation {
     fn default() -> Self {
-        let mut replacements = HashMap::new();
-        replacements.insert(Aggregate::Count, "count");
-        replacements.insert(Aggregate::Last, "last");
-        replacements.insert(Aggregate::Min, "min");
-        replacements.insert(Aggregate::Max, "max");
-        replacements.insert(Aggregate::Sum, "sum");
-        replacements.insert(Aggregate::Median, "median");
-        replacements.insert(Aggregate::Mean, "mean");
-        replacements.insert(Aggregate::Percentile(0.75), "percentile.75");
-        replacements.insert(Aggregate::Percentile(0.95), "percentile.95");
-        replacements.insert(Aggregate::Percentile(0.98), "percentile.98");
-        replacements.insert(Aggregate::Percentile(0.99), "percentile.99");
-        replacements.insert(Aggregate::Percentile(0.999), "percentile.999");
         Self {
             //
             mode: AggregationMode::Single,
             threads: None,
             destination: AggregationDestination::Smart,
-            replacements: HashMap::new(),
+            replacements: default_replacements(),
         }
     }
 }

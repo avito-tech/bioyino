@@ -14,7 +14,7 @@ use bioyino_metric::name::MetricName;
 use bioyino_metric::parser::{MetricParser, MetricParsingError, ParseErrorHandler};
 use bioyino_metric::Metric;
 
-use crate::aggregate::AggregateOptions;
+use crate::aggregate::{AggregateOptions, AggregationMode};
 use crate::config::System;
 
 use crate::{Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
@@ -171,7 +171,7 @@ pub fn aggregate_task(data: AggregateData) {
     } else {
         None
     };
-
+    let mode = options.mode;
     metric
         .into_iter()
         .map(move |(suffix, value)| {
@@ -182,15 +182,21 @@ pub fn aggregate_task(data: AggregateData) {
         })
         .chain(upd)
         .map(|data| {
-            spawn(
-                response
-                    .clone()
-                    .send(data)
-                    .map_err(|_| {
-                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    })
-                    .map(|_| ()),
-            );
+            let respond = response
+                .clone()
+                .send(data)
+                .map_err(|_| {
+                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                })
+                .map(|_| ());
+            match mode {
+                AggregationMode::Separate => {
+                    // In the separate mode there is no tokio runtime, so we just run future
+                    // synchronously
+                    respond.wait().unwrap()
+                }
+                _ => spawn(respond),
+            }
         })
         .last();
 }
