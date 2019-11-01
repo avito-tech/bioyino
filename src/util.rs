@@ -6,7 +6,7 @@ use std::net::TcpStream as StdTcpStream;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, BytesMut};
 use futures::future::Either;
 use futures::sync::mpsc::Sender;
 use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
@@ -198,13 +198,6 @@ impl Future for OwnStats {
             }
         }
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct UpdateCounterOptions {
-    pub threshold: u32,
-    pub prefix: Bytes,
-    pub suffix: Bytes,
 }
 
 #[derive(Clone, Debug)]

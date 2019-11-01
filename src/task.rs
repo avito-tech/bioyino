@@ -3,30 +3,20 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{BufMut, BytesMut};
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::oneshot;
 use futures::{Future, Sink};
 use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
-use bioyino_metric::name::MetricName;
 use bioyino_metric::parser::{MetricParser, MetricParsingError, ParseErrorHandler};
-use bioyino_metric::Metric;
+use bioyino_metric::{name::MetricName, Metric};
 
-use crate::aggregate::{AggregateOptions, AggregationMode};
+use crate::aggregate::{aggregate_task, AggregationData};
 use crate::config::System;
 
 use crate::{Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
-
-#[derive(Debug)]
-pub struct AggregateData {
-    pub buf: BytesMut,
-    pub name: MetricName,
-    pub metric: Metric<Float>,
-    pub options: AggregateOptions,
-    pub response: UnboundedSender<(Bytes, Float)>,
-}
 
 #[derive(Debug)]
 pub enum Task {
@@ -35,8 +25,8 @@ pub enum Task {
     AddMetrics(Vec<(MetricName, Metric<Float>)>),
     AddSnapshot(Vec<(MetricName, Metric<Float>)>),
     TakeSnapshot(oneshot::Sender<Cache>),
-    Rotate(oneshot::Sender<Cache>),
-    Aggregate(AggregateData),
+    Rotate(Option<UnboundedSender<Cache>>),
+    Aggregate(AggregationData),
 }
 
 fn update_metric(cache: &mut Cache, name: MetricName, metric: Metric<Float>) {
@@ -116,12 +106,26 @@ impl TaskRunner {
                 });
             }
             Task::Rotate(channel) => {
-                let rotated = self.long.clone();
-                self.long.clear();
+                // this was the code before and it probably was not optimal because of copying lots
+                // of data potentially
+                //let rotated = self.long.clone();
+                //self.long.clear();
+                //self.long = HashMap::with_capacity(rotated.len());
+
+                // we need our long cache to be sent for processing
+                // in place of it we need a new cache with most probably the same size
+                // BUT if we use exactly the same size, it may grow infinitely in long term
+                // so we use a half of it
+                let mut rotated = HashMap::with_capacity(self.long.len() / 2);
+                std::mem::swap(&mut self.long, &mut rotated);
                 let log = self.log.clone();
-                channel.send(rotated).unwrap_or_else(|_| {
-                    debug!(log, "rotated data not sent");
-                    DROPS.fetch_add(1, Ordering::Relaxed);
+                channel.map(|c| {
+                    let log = log.clone();
+                    let respond = c.send(rotated).map(|_| ()).map_err(move |_| {
+                        debug!(log, "rotated data not sent");
+                        DROPS.fetch_add(1, Ordering::Relaxed);
+                    });
+                    spawn(respond);
                 });
 
                 self.buffers.retain(|_, (ref mut times, _)| {
@@ -141,64 +145,6 @@ impl TaskRunner {
     pub fn get_short_entry(&self, e: &MetricName) -> Option<&Metric<Float>> {
         self.short.get(e)
     }
-}
-
-pub fn aggregate_task(data: AggregateData) {
-    let AggregateData { mut buf, name, metric, options, response } = data;
-    let upd = if let Some(options) = options.update_counter {
-        if metric.update_counter > options.threshold {
-            // + 2 is for dots
-            let cut_len = options.prefix.len() + name.name.len() + options.suffix.len() + 2;
-            buf.reserve(cut_len);
-            if options.prefix.len() > 0 {
-                buf.put_slice(&options.prefix);
-                buf.put_slice(b".");
-            }
-
-            buf.put_slice(name.name_without_tags());
-            if options.suffix.len() > 0 {
-                buf.put_slice(b".");
-                buf.put_slice(&options.suffix);
-            }
-
-            buf.put_slice(name.tags_without_name());
-
-            let counter = buf.take().freeze();
-            Some((counter, metric.update_counter.into()))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let mode = options.mode;
-    metric
-        .into_iter()
-        .map(move |(suffix, value)| {
-            buf.extend_from_slice(&name);
-            buf.extend_from_slice(suffix.as_bytes());
-            let name = buf.take().freeze();
-            (name, value)
-        })
-        .chain(upd)
-        .map(|data| {
-            let respond = response
-                .clone()
-                .send(data)
-                .map_err(|_| {
-                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                })
-                .map(|_| ());
-            match mode {
-                AggregationMode::Separate => {
-                    // In the separate mode there is no tokio runtime, so we just run future
-                    // synchronously
-                    respond.wait().unwrap()
-                }
-                _ => spawn(respond),
-            }
-        })
-        .last();
 }
 
 struct TaskParseErrorHandler(Option<Logger>);
@@ -241,7 +187,7 @@ mod tests {
         assert_eq!(metric.sampling, None);
 
         // expect tags to be sorted after parsing
-        let mut key = MetricName::new("gorets2;t2=fuck;t3=shit".into(), None);
+        let key = MetricName::new("gorets2;t2=fuck;t3=shit".into(), None);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(-1i8)));

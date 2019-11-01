@@ -12,10 +12,10 @@ use serde_derive::{Deserialize, Serialize};
 
 use raft_tokio::RaftOptions;
 
-use crate::aggregate::{AggregationDestination, AggregationMode};
+use crate::aggregate::AggregationMode;
 use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
 use crate::{ConsensusKind, ConsensusState, Float};
-use bioyino_metric::metric::Aggregate;
+use bioyino_metric::{aggregate::Aggregate, name::AggregationDestination};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -93,15 +93,6 @@ pub struct Metrics {
     /// Should we provide metrics with top update numbers
     pub count_updates: bool,
 
-    /// Prefix for metric update statistics
-    pub update_counter_prefix: String,
-
-    /// Suffix for metric update statistics
-    pub update_counter_suffix: String,
-
-    /// Minimal update count to be reported
-    pub update_counter_threshold: u32,
-
     /// Consistent parsing
     pub consistent_parsing: bool,
 
@@ -121,9 +112,6 @@ impl Default for Metrics {
         Self {
             //           max_metrics: 0,
             count_updates: true,
-            update_counter_prefix: "resources.monitoring.bioyino.updates".to_string(),
-            update_counter_suffix: String::new(),
-            update_counter_threshold: 200,
             consistent_parsing: true,
             log_parse_errors: false,
             max_unparsed_buffer: 10000,
@@ -141,11 +129,35 @@ pub struct Aggregation {
     /// Number of threads when aggregating in "multi" mode
     pub threads: Option<usize>,
 
+    /// Minimal update count to be reported
+    pub update_count_threshold: u32,
+
     /// Where to put aggregate suffix
     pub destination: AggregationDestination,
 
     /// replacements for aggregate suffixes
     pub replacements: HashMap<Aggregate<Float>, String>,
+
+    /// list of aggregates to gather for timer metrics
+    pub ms_aggregates: Vec<Aggregate<Float>>,
+}
+
+pub fn default_ms_aggregates() -> Vec<Aggregate<Float>> {
+    let mut aggregates = Vec::new();
+    aggregates.push(Aggregate::Count);
+    aggregates.push(Aggregate::Last);
+    aggregates.push(Aggregate::Min);
+    aggregates.push(Aggregate::Max);
+    aggregates.push(Aggregate::Sum);
+    aggregates.push(Aggregate::Median);
+    aggregates.push(Aggregate::Mean);
+    aggregates.push(Aggregate::UpdateCount);
+    aggregates.push(Aggregate::Percentile(0.75));
+    aggregates.push(Aggregate::Percentile(0.95));
+    aggregates.push(Aggregate::Percentile(0.98));
+    aggregates.push(Aggregate::Percentile(0.99));
+    aggregates.push(Aggregate::Percentile(0.999));
+    aggregates
 }
 
 pub fn default_replacements() -> HashMap<Aggregate<Float>, String> {
@@ -157,6 +169,8 @@ pub fn default_replacements() -> HashMap<Aggregate<Float>, String> {
     replacements.insert(Aggregate::Sum, "sum".to_string());
     replacements.insert(Aggregate::Median, "median".to_string());
     replacements.insert(Aggregate::Mean, "mean".to_string());
+    replacements.insert(Aggregate::UpdateCount, "updates".to_string());
+    replacements.insert(Aggregate::AggregateTag, "aggregate".to_string());
     replacements.insert(Aggregate::Percentile(0.75), "percentile.75".to_string());
     replacements.insert(Aggregate::Percentile(0.95), "percentile.95".to_string());
     replacements.insert(Aggregate::Percentile(0.98), "percentile.98".to_string());
@@ -171,8 +185,10 @@ impl Default for Aggregation {
             //
             mode: AggregationMode::Single,
             threads: None,
+            update_count_threshold: 200,
             destination: AggregationDestination::Smart,
             replacements: default_replacements(),
+            ms_aggregates: default_ms_aggregates(),
         }
     }
 }

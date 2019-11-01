@@ -2,21 +2,23 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use futures::stream::futures_unordered;
-use futures::sync::mpsc::{Sender, UnboundedSender};
-use futures::sync::oneshot;
+use futures::sync::mpsc::{self, Sender, UnboundedSender};
 use futures::{Future, IntoFuture, Sink, Stream};
 use tokio::executor::current_thread::spawn;
 
 use bytes::{Bytes, BytesMut};
 use rayon::{iter::IntoParallelIterator, iter::ParallelIterator, ThreadPoolBuilder};
 use serde_derive::{Deserialize, Serialize};
-use slog::{debug, info, Logger};
+use slog::{info, warn, Logger};
 
-use bioyino_metric::Aggregate;
+use bioyino_metric::{
+    aggregate::Aggregate,
+    name::{AggregationDestination, MetricName},
+    Metric,
+};
 
-use crate::task::{aggregate_task, AggregateData, Task};
-use crate::util::UpdateCounterOptions;
+use crate::config::Aggregation;
+use crate::task::Task;
 use crate::{Cache, Float};
 use crate::{AGG_ERRORS, DROPS, EGRESS};
 
@@ -30,27 +32,35 @@ pub enum AggregationMode {
     Separate,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub enum AggregationDestination {
-    Smart,
-    Name,
-    Tags,
-    Both,
-}
-
 #[derive(Debug, Clone)]
-pub struct AggregateOptions {
-    pub is_leader: bool,
-    pub update_counter: Option<UpdateCounterOptions>,
+pub struct AggregationOptions {
+    pub update_count_threshold: u32,
     pub mode: AggregationMode,
     pub destination: AggregationDestination,
-    pub replacements: Arc<HashMap<Aggregate<Float>, String>>,
+    pub ms_aggregates: Vec<Aggregate<Float>>,
+    pub replacements: HashMap<Aggregate<Float>, String>,
     pub multi_threads: usize,
 }
 
+impl AggregationOptions {
+    pub(crate) fn from_config(config: Aggregation, log: Logger) -> Arc<Self> {
+        let Aggregation { update_count_threshold, mode, destination, ms_aggregates, replacements, threads } = config;
+        let multi_threads = match threads {
+            Some(value) if mode == AggregationMode::Separate => value,
+            Some(_) => {
+                info!(log, "aggregation.threads parameter only works in \"separate\" mode and will be ignored");
+                0
+            }
+            None if mode == AggregationMode::Separate => 0,
+            _ => 0,
+        };
+        Arc::new(AggregationOptions { update_count_threshold, mode, destination, ms_aggregates, replacements, multi_threads })
+    }
+}
+
 pub struct Aggregator {
-    options: AggregateOptions,
+    is_leader: bool,
+    options: Arc<AggregationOptions>,
     chans: Vec<Sender<Task>>,
     // a channel where we receive rotated metrics from tasks
     //rx: UnboundedReceiver<Cache>,
@@ -61,8 +71,8 @@ pub struct Aggregator {
 }
 
 impl Aggregator {
-    pub fn new(options: AggregateOptions, chans: Vec<Sender<Task>>, tx: UnboundedSender<(Bytes, Float)>, log: Logger) -> Self {
-        Self { options, chans, tx, log }
+    pub fn new(is_leader: bool, options: Arc<AggregationOptions>, chans: Vec<Sender<Task>>, tx: UnboundedSender<(Bytes, Float)>, log: Logger) -> Self {
+        Self { is_leader, options, chans, tx, log }
     }
 }
 
@@ -72,24 +82,42 @@ impl IntoFuture for Aggregator {
     type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { options, chans, tx, log } = self;
-        let metrics = chans.clone().into_iter().map(|chan| {
-            let (tx, rx) = oneshot::channel();
-            // TODO: change oneshots to single channel
-            // to do that, task must run in new tokio, then we will not have to pass handle to it
-            //handle.spawn(chan.send(Task::Rotate(tx)).then(|_| Ok(())));
-            chan.send(Task::Rotate(tx)).map_err(|_| ()).and_then(|_| rx.and_then(|m| Ok(m)).map_err(|_| ()))
-        });
+        let Self { is_leader, options, chans, tx, log } = self;
+        let (task_tx, task_rx) = mpsc::unbounded();
 
-        if !options.is_leader {
+        let response_chan = if is_leader {
+            Some(task_tx)
+        } else {
             info!(log, "not leader - clearing metrics");
-            // only get metrics from threads
-            let not_leader = futures_unordered(metrics).for_each(|_| Ok(()));
-            return Box::new(not_leader);
+            None
+        };
+
+        // regardless of leader state send rotate tasks with or without response channel
+        let send_log = log.clone();
+        chans
+            .clone()
+            .into_iter()
+            .map(|chan| {
+                let send_log = send_log.clone();
+                let sender = chan
+                    .send(Task::Rotate(response_chan.clone()))
+                    .map_err(move |_| {
+                        warn!(send_log, "could not send data to task, most probably the task thread is dead");
+                    })
+                    .map(|_| ());
+                spawn(sender);
+            })
+            .last();
+
+        // when we are not leader the aggregator job is done here: tasks will delete merics
+        if !is_leader {
+            return Box::new(futures::future::ok(()));
         }
 
+        // from now we consider us being a leader
+
         info!(log, "leader accumulating metrics");
-        let accumulate = futures_unordered(metrics).fold(HashMap::new(), move |mut acc: Cache, metrics| {
+        let accumulate = task_rx.fold(HashMap::new(), move |mut acc: Cache, metrics| {
             metrics
                 .into_iter()
                 .map(|(name, metric)| {
@@ -106,7 +134,7 @@ impl IntoFuture for Aggregator {
         });
 
         let aggregate = accumulate.and_then(move |accumulated| {
-            debug!(log, "leader aggregating metrics");
+            info!(log, "leader aggregating metrics");
 
             match options.mode {
                 AggregationMode::Single => {
@@ -117,7 +145,7 @@ impl IntoFuture for Aggregator {
                         })
                         .map(move |(name, metric)| {
                             let buf = BytesMut::with_capacity(1024);
-                            let task_data = AggregateData { buf, name, metric, options: options.clone(), response: tx.clone() };
+                            let task_data = AggregationData { buf, name, metric, options: options.clone(), response: tx.clone() };
                             aggregate_task(task_data);
                         })
                         .last();
@@ -131,7 +159,7 @@ impl IntoFuture for Aggregator {
                         .enumerate()
                         .map(move |(num, (name, metric))| {
                             let buf = BytesMut::with_capacity(1024);
-                            let task_data = AggregateData { buf, name, metric, options: options.clone(), response: tx.clone() };
+                            let task_data = AggregationData { buf, name, metric, options: options.clone(), response: tx.clone() };
                             spawn(chans[num % chans.len()].clone().send(Task::Aggregate(task_data)).map(|_| ()).map_err(|_| {
                                 DROPS.fetch_add(1, Ordering::Relaxed);
                             }));
@@ -148,7 +176,7 @@ impl IntoFuture for Aggregator {
                             })
                             .for_each(move |(name, metric)| {
                                 let buf = BytesMut::with_capacity(1024);
-                                let task_data = AggregateData { buf, name, metric, options: options.clone(), response: tx.clone() };
+                                let task_data = AggregationData { buf, name, metric, options: options.clone(), response: tx.clone() };
                                 aggregate_task(task_data);
                             });
                     });
@@ -159,6 +187,58 @@ impl IntoFuture for Aggregator {
         });
         Box::new(aggregate)
     }
+}
+
+#[derive(Debug)]
+pub struct AggregationData {
+    pub buf: BytesMut,
+    pub name: MetricName,
+    pub metric: Metric<Float>,
+    pub options: Arc<AggregationOptions>,
+    pub response: UnboundedSender<(Bytes, Float)>,
+}
+
+pub fn aggregate_task(data: AggregationData) {
+    let AggregationData { mut buf, name, metric, options, response } = data;
+
+    let mode = options.mode;
+    metric
+        .into_iter()
+        .filter_map(|(aggregate, value)| {
+            //buf.extend_from_slice(&name);
+            //buf.extend_from_slice(suffix.as_bytes());
+            if let Some(aggregate) = aggregate {
+                if aggregate == Aggregate::UpdateCount && value < Float::from(options.update_count_threshold) {
+                    // skip aggregates below update counter threshold
+                    return None;
+                }
+                if name.put_with_aggregate(&mut buf, options.destination, aggregate, &options.replacements).is_err() {
+                    // TODO log error
+                    return None;
+                };
+            } else {
+                buf.extend_from_slice(&name.name[..]);
+            }
+            Some((buf.take().freeze(), value))
+        })
+        .map(|data| {
+            let respond = response
+                .clone()
+                .send(data)
+                .map_err(|_| {
+                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                })
+                .map(|_| ());
+            match mode {
+                AggregationMode::Separate => {
+                    // In the separate mode there is no tokio runtime, so we just run future
+                    // synchronously
+                    respond.wait().unwrap()
+                }
+                _ => spawn(respond),
+            }
+        })
+        .last();
 }
 
 #[cfg(test)]
@@ -174,6 +254,8 @@ mod tests {
 
     use bioyino_metric::{name::MetricName, Metric, MetricType};
 
+    use crate::config;
+
     #[test]
     fn parallel_aggregation_rayon() {
         let log = prepare_log("test_parallel_aggregation");
@@ -183,24 +265,25 @@ mod tests {
 
         let mut runtime = Runtime::new().expect("creating runtime for main thread");
 
-        let options = AggregateOptions {
+        let options = AggregationOptions {
             //
-            is_leader: true,
-            update_counter: None,
+            update_count_threshold: 1,
             mode: AggregationMode::Separate,
             destination: AggregationDestination::Smart,
-            replacements: Arc::new(crate::config::default_replacements()),
+            ms_aggregates: config::default_ms_aggregates(),
+            replacements: config::default_replacements(),
             multi_threads: 2,
         };
+        let options = Arc::new(options);
 
         let (backend_tx, backend_rx) = mpsc::unbounded();
 
-        let aggregator = Aggregator::new(options, chans, backend_tx, log.clone()).into_future();
+        let aggregator = Aggregator::new(true, options, chans, backend_tx, log.clone()).into_future();
 
         // Emulate rotation in task
         let counter = std::sync::atomic::AtomicUsize::new(0);
         let rotate = rx.for_each(move |task| {
-            if let Task::Rotate(response) = task {
+            if let Task::Rotate(Some(response)) = task {
                 let mut cache = HashMap::new();
                 for i in 0..10 {
                     let mut metric = Metric::new(0f64, MetricType::Timer(Vec::new()), None, None).unwrap();
@@ -212,7 +295,7 @@ mod tests {
                     let counter = counter.fetch_add(1, Ordering::Relaxed);
                     cache.insert(MetricName::new(format!("some.test.metric.{}.{}", i, counter).into(), None), metric);
                 }
-                response.send(cache).unwrap();
+                spawn(response.send(cache).map(|_| ()).map_err(|_| panic!("send error")));
             }
             Ok(())
         });

@@ -387,7 +387,7 @@ mod test {
                 let mut tagged_name = MetricName::new("complex.test.bioyino_tagged;tag2=val2;tag1=value1".into(), None);
                 let mut interm = BytesMut::with_capacity(tagged_name.name.len());
                 interm.resize(tagged_name.name.len(), 0u8);
-                tagged_name.sort_tags(TagFormat::Graphite, &mut interm);
+                tagged_name.sort_tags(TagFormat::Graphite, &mut interm).unwrap();
                 assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
                 assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
                 assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));

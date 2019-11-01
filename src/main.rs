@@ -22,7 +22,6 @@ use std::time::{self, Duration, Instant, SystemTime};
 
 use slog::{error, info, o, Drain, Level};
 
-use bytes::Bytes;
 use futures::future::{empty, ok};
 use futures::sync::mpsc;
 use futures::{Future, IntoFuture, Stream};
@@ -37,16 +36,16 @@ use crate::udp::{start_async_udp, start_sync_udp};
 use bioyino_metric::metric::Metric;
 use bioyino_metric::name::MetricName;
 
-use crate::aggregate::{AggregateOptions, AggregationMode, Aggregator};
+use crate::aggregate::{AggregationOptions, Aggregator};
 use crate::carbon::{CarbonBackend, CarbonClientOptions};
-use crate::config::{Command, Consul, Metrics, Network, System};
+use crate::config::{Command, Consul, Network, System};
 use crate::consul::ConsulConsensus;
 use crate::errors::GeneralError;
 use crate::management::{MgmtClient, MgmtServer};
 use crate::peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use crate::raft::start_internal_raft;
 use crate::task::{Task, TaskRunner};
-use crate::util::{try_resolve, BackoffRetryBuilder, OwnStats, UpdateCounterOptions};
+use crate::util::{try_resolve, BackoffRetryBuilder, OwnStats};
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
 // precision
@@ -125,17 +124,7 @@ fn main() {
         },
         raft,
         consul: Consul { start_as: consul_start_as, agent, session_ttl: consul_session_ttl, renew_time: consul_renew_time, key_name: consul_key },
-        metrics: Metrics {
-            //           max_metrics,
-            mut count_updates,
-            update_counter_prefix,
-            update_counter_suffix,
-            update_counter_threshold,
-            consistent_parsing: _,
-            log_parse_errors: _,
-            max_unparsed_buffer: _,
-            max_tags_len: _,
-        },
+        metrics: _,
         aggregation,
         carbon,
         n_threads,
@@ -173,14 +162,6 @@ fn main() {
         });
         return;
     }
-
-    if count_updates && update_counter_prefix.len() == 0 && update_counter_suffix.len() == 0 {
-        warn!(rlog, "update counting suffix and prefix are empty, update counting disabled to avoid metric rewriting");
-        count_updates = false;
-    }
-
-    let update_counter_prefix: Bytes = update_counter_prefix.into();
-    let update_counter_suffix: Bytes = update_counter_suffix.into();
 
     let config = Arc::new(config);
     let log = rlog.new(o!("thread" => "main"));
@@ -321,16 +302,8 @@ fn main() {
     if carbon_config.chunks == 0 {
         carbon_config.chunks = 1
     }
-    let multi_threads = match aggregation.threads {
-        Some(value) if aggregation.mode == AggregationMode::Separate => value,
-        Some(_) => {
-            info!(carbon_log, "aggregation_threads parameter only works in \"separate\" mode and will be ignored");
-            0
-        }
-        None if aggregation.mode == AggregationMode::Separate => 0,
-        _ => 0,
-    };
 
+    let agg_opts = AggregationOptions::from_config(aggregation, carbon_log.clone());
     let carbon_timer = carbon_timer.map_err(|e| GeneralError::Timer(e)).for_each(move |_tick| {
         let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(|e| GeneralError::Time(e))?;
 
@@ -338,19 +311,11 @@ fn main() {
         let tchans = tchans.clone();
         let carbon_log = carbon_log.clone();
 
-        let update_counter_prefix = update_counter_prefix.clone();
-        let update_counter_suffix = update_counter_suffix.clone();
         let backend_opts = carbon_config.clone();
-        let agg_opts = AggregateOptions {
-            is_leader: false,
-            update_counter: None,
-            mode: aggregation.mode.clone(),
-            destination: aggregation.destination.clone(),
-            replacements: Arc::new(aggregation.replacements.clone()),
-            multi_threads,
-        };
-        let aggregation_mode = aggregation.mode.clone();
-        let aggregation_destination = aggregation.destination.clone();
+        let agg_opts = agg_opts.clone();
+
+        //let aggregation_mode = aggregation.mode.clone();
+        //let aggregation_destination = aggregation.destination.clone();
         thread::Builder::new()
             .name("bioyino_carbon".into())
             .spawn(move || {
@@ -367,14 +332,12 @@ fn main() {
 
                 let is_leader = IS_LEADER.load(Ordering::SeqCst);
 
-                let mut options = agg_opts.clone();
-                options.is_leader = is_leader;
-                options.update_counter = if count_updates { Some(UpdateCounterOptions { threshold: update_counter_threshold, prefix: update_counter_prefix, suffix: update_counter_suffix }) } else { None };
+                let options = agg_opts.clone();
 
                 if is_leader {
                     info!(carbon_log, "leader sending metrics");
                     let (backend_tx, backend_rx) = mpsc::unbounded();
-                    let aggregator = Aggregator::new(options, tchans, backend_tx, carbon_log.clone()).into_future();
+                    let aggregator = Aggregator::new(is_leader, options, tchans, backend_tx, carbon_log.clone()).into_future();
 
                     runtime.spawn(aggregator);
 
@@ -419,7 +382,7 @@ fn main() {
                 } else {
                     info!(carbon_log, "not leader, removing metrics");
                     let (backend_tx, _) = mpsc::unbounded();
-                    let aggregator = Aggregator::new(options, tchans, backend_tx, carbon_log.clone()).into_future();
+                    let aggregator = Aggregator::new(is_leader, options, tchans, backend_tx, carbon_log.clone()).into_future();
                     runtime.block_on(aggregator.then(|_| Ok::<(), ()>(()))).unwrap_or_else(|e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e));
                 }
             })

@@ -1,3 +1,20 @@
+# Release 0.6.0 #
+
+## Incompatible changes ##
+* update counter is now an aggregate, all related options are changed
+
+## Major changes ##
+* graphite-style tags are now supported:
+    * one can use tags instead of postfixes
+    * postfix and tag names can be customized now
+* a list of aggregates is now customizable for ms-type metrics
+
+## Minor changes
+
+
+# Release 0.5.1 #
+* Fixed bug where parallel aggregation was panicking if turned on
+
 # Release 0.5.0 #
 
 ## Significant changes
