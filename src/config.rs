@@ -90,9 +90,6 @@ impl Default for System {
 pub struct Metrics {
     // TODO: Maximum metric array size, 0 for unlimited
     //  max_metrics: usize,
-    /// Should we provide metrics with top update numbers
-    pub count_updates: bool,
-
     /// Consistent parsing
     pub consistent_parsing: bool,
 
@@ -111,7 +108,6 @@ impl Default for Metrics {
     fn default() -> Self {
         Self {
             //           max_metrics: 0,
-            count_updates: true,
             consistent_parsing: true,
             log_parse_errors: false,
             max_unparsed_buffer: 10000,

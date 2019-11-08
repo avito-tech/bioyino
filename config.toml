@@ -27,17 +27,8 @@ stats-prefix = "resources.monitoring.bioyino"
 consensus = "none"
 
 [metrics]
-# Should we provide metrics that update more than update-counter-threshold times diring aggregation interval
-count-updates = true
-
 # Prefix for metric update statistics (no trailing dot!)
-update-counter-prefix = "resources.monitoring.bioyino.updates"
-
-# Suffix for metric update statistics (no leading dot!)
-update-counter-suffix = ""
-
-# Minimal update counter to be reported
-update-counter-threshold = 200
+#update-counter-prefix = "resources.monitoring.bioyino.updates"
 
 # Aggregation can be made in two ways giving a tradeoff between the aggregation speed and
 # the probability of loosing metrics. See doc/aggregation.md for more information.
@@ -144,6 +135,12 @@ nodes = []
 
 # Interval to send snapshots to nodes, ms
 snapshot-interval = 1000
+
+[aggregation]
+mode = "single"
+update-count-threshold = 200
+ms-aggregates = [ "count", "min", "percentile-90", "percentile-999", "percentile-98", "percentile-50" ]
+replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
 
 # Settings for internal Raft
 [raft]
