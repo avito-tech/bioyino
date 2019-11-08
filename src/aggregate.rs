@@ -306,7 +306,7 @@ mod tests {
         let receive = backend_rx.collect().map(|result| assert_eq!(result.len(), 120));
         runtime.spawn(receive);
 
-        let test_timeout = Instant::now() + Duration::from_secs(1);
+        let test_timeout = Instant::now() + Duration::from_secs(2);
         let test_delay = Delay::new(test_timeout);
         runtime.block_on(test_delay).expect("runtime");
     }

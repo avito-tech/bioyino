@@ -11,7 +11,10 @@ use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
 use bioyino_metric::parser::{MetricParser, MetricParsingError, ParseErrorHandler};
-use bioyino_metric::{name::MetricName, Metric};
+use bioyino_metric::{
+    name::{MetricName, TagFormat},
+    Metric,
+};
 
 use crate::aggregate::{aggregate_task, AggregationData};
 use crate::config::System;
@@ -47,13 +50,14 @@ pub struct TaskRunner {
     long: HashMap<MetricName, Metric<Float>>,
     short: HashMap<MetricName, Metric<Float>>,
     buffers: HashMap<u64, (usize, BytesMut)>,
+    sort_buf: Vec<u8>,
     config: Arc<System>,
     log: Logger,
 }
 
 impl TaskRunner {
     pub fn new(log: Logger, config: Arc<System>, cap: usize) -> Self {
-        Self { long: HashMap::with_capacity(cap), short: HashMap::with_capacity(cap), buffers: HashMap::with_capacity(cap), config, log }
+        Self { long: HashMap::with_capacity(cap), short: HashMap::with_capacity(cap), buffers: HashMap::with_capacity(cap), sort_buf: Vec::with_capacity(config.metrics.max_tags_len), config, log }
     }
 
     pub fn run(&mut self, task: Task) {
@@ -76,8 +80,16 @@ impl TaskRunner {
 
                 let parser = MetricParser::new(buf, self.config.metrics.max_unparsed_buffer, self.config.metrics.max_tags_len, TaskParseErrorHandler(log));
 
-                for (name, metric) in parser {
+                for (mut name, metric) in parser {
                     INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
+                    name.find_tag_pos(false);
+                    if self.sort_buf.len() < name.name.len() {
+                        self.sort_buf.resize(name.name.len(), 0u8);
+                    }
+                    name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
+                        dbg!("WTF");
+                        PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    });
                     update_metric(&mut self.short, name, metric);
                 }
             }
@@ -115,7 +127,8 @@ impl TaskRunner {
                 // we need our long cache to be sent for processing
                 // in place of it we need a new cache with most probably the same size
                 // BUT if we use exactly the same size, it may grow infinitely in long term
-                // so we use a half of it
+                // so we halve the size so it could be reduced if ingress flow amounts
+                // become lower
                 let mut rotated = HashMap::with_capacity(self.long.len() / 2);
                 std::mem::swap(&mut self.long, &mut rotated);
                 let log = self.log.clone();
@@ -171,9 +184,41 @@ mod tests {
     use crate::util::prepare_log;
 
     #[test]
+    fn aggregate_tagged_metrics() {
+        let mut data = BytesMut::new();
+
+        // ensure metrics with same tags (going probably in different orders) go to same aggregate
+        data.extend_from_slice(b"gorets;t2=v2;t1=v1:1000|c");
+        data.extend_from_slice(b"\ngorets;t1=v1;t2=v2:1000|c");
+
+        // ensure metrics with same name but different tags go to different aggregates
+        data.extend_from_slice(b"\ngorets;t1=v1;t2=v3:1000|c");
+
+        let mut config = System::default();
+        config.metrics.log_parse_errors = true;
+        let mut runner = TaskRunner::new(prepare_log("aggregate_tagged"), Arc::new(config), 16);
+        runner.run(Task::Parse(2, data));
+
+        dbg!(&runner.short);
+        // must be aggregated into two as sum
+        let key = MetricName::new("gorets;t1=v1;t2=v2".into(), None);
+        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+        let metric = runner.short.get(&key).unwrap().clone();
+        assert_eq!(metric.value, 2000f64);
+        assert_eq!(metric.mtype, MetricType::Counter);
+
+        // must be aggregated into separate
+        let key = MetricName::new("gorets;t1=v1;t2=v3".into(), None);
+        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+        let metric = runner.short.get(&key).unwrap().clone();
+        assert_eq!(metric.value, 1000f64);
+        assert_eq!(metric.mtype, MetricType::Counter);
+    }
+
+    #[test]
     fn parse_trashed_metric_buf() {
         let mut data = BytesMut::new();
-        data.extend_from_slice(b"trash\ngorets1:+1000|g\nTRASH\ngorets2:-1000;tag3=shit;t2=fuck|g|@0.5\nMORETrasH\nFUUU");
+        data.extend_from_slice(b"trash\ngorets1:+1000|g\nTRASH\ngorets2;tag3=shit;t2=fuck:-1000|g|@0.5\nMORE;tra=sh;|TrasH\nFUUU");
 
         let mut config = System::default();
         config.metrics.log_parse_errors = true;
@@ -187,7 +232,7 @@ mod tests {
         assert_eq!(metric.sampling, None);
 
         // expect tags to be sorted after parsing
-        let key = MetricName::new("gorets2;t2=fuck;t3=shit".into(), None);
+        let key = MetricName::new("gorets2;t2=fuck;tag3=shit".into(), None);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(-1i8)));

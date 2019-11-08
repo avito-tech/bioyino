@@ -372,7 +372,7 @@ fn main() {
 
                     handle.spawn(carbon_sender).unwrap_or_else(|e| {
                         error!(runtime_log, "spawning sender"; "error"=>format!("{:?}", e));
-                    });           ;
+                    });
                     runtime.run().unwrap_or_else(|e| {
                         error!(runtime_log, "Failed to send to graphite"; "error"=>format!("{:?}", e));
                     });
