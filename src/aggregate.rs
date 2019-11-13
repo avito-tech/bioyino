@@ -38,13 +38,14 @@ pub struct AggregationOptions {
     pub mode: AggregationMode,
     pub destination: AggregationDestination,
     pub ms_aggregates: Vec<Aggregate<Float>>,
-    pub replacements: HashMap<Aggregate<Float>, String>,
+    pub postfix_replacements: HashMap<Aggregate<Float>, String>,
+    pub tag_replacements: HashMap<Aggregate<Float>, String>,
     pub multi_threads: usize,
 }
 
 impl AggregationOptions {
     pub(crate) fn from_config(config: Aggregation, log: Logger) -> Arc<Self> {
-        let Aggregation { update_count_threshold, mode, destination, ms_aggregates, replacements, threads } = config;
+        let Aggregation { update_count_threshold, mode, destination, ms_aggregates, mut postfix_replacements, mut tag_replacements, threads, tag_name } = config;
         let multi_threads = match threads {
             Some(value) if mode == AggregationMode::Separate => value,
             Some(_) => {
@@ -54,7 +55,14 @@ impl AggregationOptions {
             None if mode == AggregationMode::Separate => 0,
             _ => 0,
         };
-        Arc::new(AggregationOptions { update_count_threshold, mode, destination, ms_aggregates, replacements, multi_threads })
+
+        // to avoid parameters inconsistency remove the tag where it is not needed
+        postfix_replacements.remove(&Aggregate::AggregateTag);
+
+        // and place the configured value to aggregates
+        tag_replacements.insert(Aggregate::AggregateTag, tag_name);
+
+        Arc::new(AggregationOptions { update_count_threshold, mode, destination, ms_aggregates, postfix_replacements, tag_replacements, multi_threads })
     }
 }
 
@@ -88,49 +96,48 @@ impl IntoFuture for Aggregator {
         let response_chan = if is_leader {
             Some(task_tx)
         } else {
-            info!(log, "not leader - clearing metrics");
+            info!(log, "not leader, clearing metrics");
             None
         };
 
+        let ext_log = log.clone();
         // regardless of leader state send rotate tasks with or without response channel
         let send_log = log.clone();
-        chans
-            .clone()
-            .into_iter()
-            .map(|chan| {
-                let send_log = send_log.clone();
-                let sender = chan
-                    .send(Task::Rotate(response_chan.clone()))
-                    .map_err(move |_| {
-                        warn!(send_log, "could not send data to task, most probably the task thread is dead");
-                    })
-                    .map(|_| ());
-                spawn(sender);
+        let send_tasks = futures::future::join_all(chans.clone().into_iter().map(move |chan| {
+            let send_log = send_log.clone();
+            chan.send(Task::Rotate(response_chan.clone())).map_err(move |_| {
+                warn!(send_log, "could not send data to task, most probably the task thread is dead");
             })
-            .last();
+        }))
+        .map(|_| ());
 
-        // when we are not leader the aggregator job is done here: tasks will delete merics
+        // when we are not leader the aggregator job is done here: send_tasks will delete metrics
         if !is_leader {
-            return Box::new(futures::future::ok(()));
+            return Box::new(send_tasks);
         }
 
         // from now we consider us being a leader
 
         info!(log, "leader accumulating metrics");
-        let accumulate = task_rx.fold(HashMap::new(), move |mut acc: Cache, metrics| {
-            metrics
-                .into_iter()
-                .map(|(name, metric)| {
-                    if acc.contains_key(&name) {
-                        acc.get_mut(&name).unwrap().accumulate(metric).unwrap_or_else(|_| {
-                            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                        });
-                    } else {
-                        acc.insert(name, metric);
-                    }
-                })
-                .last();
-            Ok(acc)
+
+        let acc_log = log.clone();
+        let accumulate = send_tasks.and_then(move |_| {
+            info!(acc_log, "collecting responses from tasks");
+            task_rx.fold(HashMap::new(), move |mut acc: Cache, metrics| {
+                metrics
+                    .into_iter()
+                    .map(|(name, metric)| {
+                        if acc.contains_key(&name) {
+                            acc.get_mut(&name).unwrap().accumulate(metric).unwrap_or_else(|_| {
+                                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                            });
+                        } else {
+                            acc.insert(name, metric);
+                        }
+                    })
+                    .last();
+                Ok(acc)
+            })
         });
 
         let aggregate = accumulate.and_then(move |accumulated| {
@@ -183,6 +190,7 @@ impl IntoFuture for Aggregator {
                 }
             };
 
+            info!(ext_log, "done aggregating");
             Ok(())
         });
         Box::new(aggregate)
@@ -202,24 +210,35 @@ pub fn aggregate_task(data: AggregationData) {
     let AggregationData { mut buf, name, metric, options, response } = data;
 
     let mode = options.mode;
-    metric
-        .into_iter()
+    let mut cached_sum = None;
+    // take all required aggregates
+    options
+        .ms_aggregates
+        .iter()
+        // count all of them that are countable (filtering None) and leaving the aggregate itself
+        .filter_map(|aggregate| aggregate.calculate(&metric, &mut cached_sum).map(|res| (aggregate, res)))
+        // set corresponding name
         .filter_map(|(aggregate, value)| {
-            //buf.extend_from_slice(&name);
-            //buf.extend_from_slice(suffix.as_bytes());
-            if let Some(aggregate) = aggregate {
-                if aggregate == Aggregate::UpdateCount && value < Float::from(options.update_count_threshold) {
+            match aggregate {
+                &Aggregate::UpdateCount if value < Float::from(options.update_count_threshold) => {
                     // skip aggregates below update counter threshold
-                    return None;
+                    None
                 }
-                if name.put_with_aggregate(&mut buf, options.destination, aggregate, &options.replacements).is_err() {
-                    // TODO log error
-                    return None;
-                };
-            } else {
-                buf.extend_from_slice(&name.name[..]);
+                &Aggregate::Value => {
+                    // do not change the name for value aggregates
+                    Some((buf.take().freeze(), value))
+                }
+                _ => {
+                    if name.put_with_aggregate(&mut buf, options.destination, aggregate, &options.postfix_replacements, &options.tag_replacements).is_err() {
+                        // TODO log error or count metric
+                        AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        return None;
+                    };
+
+                    //buf.extend_from_slice(&name.name[..]);
+                    Some((buf.take().freeze(), value))
+                }
             }
-            Some((buf.take().freeze(), value))
         })
         .map(|data| {
             let respond = response
@@ -229,6 +248,7 @@ pub fn aggregate_task(data: AggregationData) {
                     AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
                 })
                 .map(|_| ());
+
             match mode {
                 AggregationMode::Separate => {
                     // In the separate mode there is no tokio runtime, so we just run future
@@ -265,37 +285,45 @@ mod tests {
 
         let mut runtime = Runtime::new().expect("creating runtime for main thread");
 
-        let options = AggregationOptions {
+        let mut options = AggregationOptions {
             //
             update_count_threshold: 1,
             mode: AggregationMode::Separate,
             destination: AggregationDestination::Smart,
             ms_aggregates: config::default_ms_aggregates(),
-            replacements: config::default_replacements(),
+            postfix_replacements: config::default_replacements(),
+            tag_replacements: config::default_replacements(),
             multi_threads: 2,
         };
+        options.ms_aggregates.push(Aggregate::Percentile(0.8f64));
+        options.postfix_replacements.insert(Aggregate::Percentile(0.8f64), "percentile80".to_string());
+        // TODO: check tag replacements
+        //options.tag_replacements.insert(Aggregate::Percentile(0.8f64), "p80".to_string());
+        options.postfix_replacements.insert(Aggregate::Min, "lower".to_string());
         let options = Arc::new(options);
 
         let (backend_tx, backend_rx) = mpsc::unbounded();
 
         let aggregator = Aggregator::new(true, options, chans, backend_tx, log.clone()).into_future();
 
-        // Emulate rotation in task
         let counter = std::sync::atomic::AtomicUsize::new(0);
+        let mut cache = HashMap::new();
+        for i in 0..10 {
+            let mut metric = Metric::new(0f64, MetricType::Timer(Vec::new()), None, None).unwrap();
+            for j in 1..100 {
+                let new_metric = Metric::new(j.into(), MetricType::Timer(Vec::new()), None, None).unwrap();
+                metric.accumulate(new_metric).unwrap();
+            }
+
+            let counter = counter.fetch_add(1, Ordering::Relaxed);
+            cache.insert(MetricName::new(format!("some.test.metric.{}.{}", i, counter).into(), None), metric);
+        }
+
+        let sent_cache = cache.clone();
         let rotate = rx.for_each(move |task| {
             if let Task::Rotate(Some(response)) = task {
-                let mut cache = HashMap::new();
-                for i in 0..10 {
-                    let mut metric = Metric::new(0f64, MetricType::Timer(Vec::new()), None, None).unwrap();
-                    for j in 1..100 {
-                        let new_metric = Metric::new(j.into(), MetricType::Timer(Vec::new()), None, None).unwrap();
-                        metric.accumulate(new_metric).unwrap();
-                    }
-
-                    let counter = counter.fetch_add(1, Ordering::Relaxed);
-                    cache.insert(MetricName::new(format!("some.test.metric.{}.{}", i, counter).into(), None), metric);
-                }
-                spawn(response.send(cache).map(|_| ()).map_err(|_| panic!("send error")));
+                // Emulate rotation in task
+                spawn(response.send(sent_cache.clone()).map(|_| ()).map_err(|_| panic!("send error")));
             }
             Ok(())
         });
@@ -303,7 +331,42 @@ mod tests {
         runtime.spawn(rotate);
         runtime.spawn(aggregator);
 
-        let receive = backend_rx.collect().map(|result| assert_eq!(result.len(), 120));
+        let required_aggregates = vec![
+            "count",
+            "last",
+            "lower", // min is replaced with lower
+            "max",
+            "median",
+            "mean",
+            "sum",
+            "updates",
+            "percentile80", // custom percentile
+            "percentile.75",
+            "percentile.95",
+            "percentile.98",
+            "percentile.99",
+            "percentile.999",
+        ]; //.map(|a|a.to_string().collect();
+        let required_len = required_aggregates.len();
+        let receive = backend_rx.collect().map(move |result| {
+            // ensure aggregated data has ONLY required aggregates and no other shit
+            for (n, _) in cache {
+                // each metric should have all aggregates
+                for agg in &required_aggregates {
+                    let mut required_name = BytesMut::new();
+                    required_name.extend_from_slice(&n.name[..]);
+                    required_name.extend_from_slice(&b"."[..]);
+                    required_name.extend_from_slice(agg.as_bytes());
+                    let required_name = required_name.freeze();
+                    assert!(result.iter().position(|(n, _)| n == &required_name).is_some(), "could not find {:?}", required_name);
+                }
+
+                // length should match the length of aggregates
+                let prefix_len = result.iter().filter(|(res_n, _)| res_n.starts_with(&n.name[..])).count();
+
+                assert_eq!(prefix_len, required_len, "found other than required aggregates for {}: {:?}", String::from_utf8_lossy(&n.name), result.iter().filter(|(res_n, _)| res_n.starts_with(&n.name[..])).collect::<Vec<_>>());
+            }
+        });
         runtime.spawn(receive);
 
         let test_timeout = Instant::now() + Duration::from_secs(2);

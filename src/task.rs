@@ -87,18 +87,31 @@ impl TaskRunner {
                         self.sort_buf.resize(name.name.len(), 0u8);
                     }
                     name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
-                        dbg!("WTF");
                         PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
                     });
                     update_metric(&mut self.short, name, metric);
                 }
             }
-            Task::AddMetric(name, metric) => update_metric(&mut self.short, name, metric),
+            Task::AddMetric(mut name, metric) => {
+                name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
+                    PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
+                });
+                update_metric(&mut self.short, name, metric)
+            }
             Task::AddMetrics(mut list) => {
-                list.drain(..).map(|(name, metric)| update_metric(&mut self.short, name, metric)).last();
+                list.drain(..)
+                    .map(|(mut name, metric)| {
+                        name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
+                            PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        });
+                        update_metric(&mut self.short, name, metric)
+                    })
+                    .last();
             }
             Task::AddSnapshot(mut list) => {
                 // snapshots go to long cache to avoid being duplicated to other nodes
+                // we also skip sorting tags in this mode, considering them being already sorted by
+                // other node
                 list.drain(..).map(|(name, metric)| update_metric(&mut self.long, name, metric)).last();
             }
             Task::TakeSnapshot(channel) => {
@@ -199,7 +212,6 @@ mod tests {
         let mut runner = TaskRunner::new(prepare_log("aggregate_tagged"), Arc::new(config), 16);
         runner.run(Task::Parse(2, data));
 
-        dbg!(&runner.short);
         // must be aggregated into two as sum
         let key = MetricName::new("gorets;t1=v1;t2=v2".into(), None);
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
@@ -238,4 +250,39 @@ mod tests {
         assert_eq!(metric.mtype, MetricType::Gauge(Some(-1i8)));
         assert_eq!(metric.sampling, Some(0.5f32));
     }
+
+    /*
+    TODO: e2e for tasks
+    #[test]
+    fn parse_then_aggregate() {
+        let mut data = BytesMut::new();
+
+        // ensure metrics with same tags (going probably in different orders) go to same aggregate
+        data.extend_from_slice(b"gorets;t2=v2;t1=v1:1000|c");
+        data.extend_from_slice(b"\ngorets;t1=v1;t2=v2:1000|c");
+
+        // ensure metrics with same name but different tags go to different aggregates
+        data.extend_from_slice(b"\ngorets;t1=v1;t2=v3:1000|c");
+
+        let mut config = System::default();
+        config.metrics.log_parse_errors = true;
+        let mut runner = TaskRunner::new(prepare_log("aggregate_tagged"), Arc::new(config), 16);
+        runner.run(Task::Parse(2, data));
+
+        dbg!(&runner.short);
+        // must be aggregated into two as sum
+        let key = MetricName::new("gorets;t1=v1;t2=v2".into(), None);
+        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+        let metric = runner.short.get(&key).unwrap().clone();
+        assert_eq!(metric.value, 2000f64);
+        assert_eq!(metric.mtype, MetricType::Counter);
+
+        // must be aggregated into separate
+        let key = MetricName::new("gorets;t1=v1;t2=v3".into(), None);
+        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+        let metric = runner.short.get(&key).unwrap().clone();
+        assert_eq!(metric.value, 1000f64);
+        assert_eq!(metric.mtype, MetricType::Counter);
+    }
+    */
 }

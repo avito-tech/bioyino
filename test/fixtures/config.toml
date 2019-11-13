@@ -1,0 +1,68 @@
+# this is config used in some unit testso
+# TODO: should contain all the possible values to check parsing
+
+verbosity = "warn"
+n-threads = 4
+w-threads = 4
+task-queue-size = 1024
+start-as-leader = true
+stats-interval = 10000
+stats-prefix = "resources.monitoring.bioyino"
+consensus = "none"
+
+[metrics]
+consistent-parsing = true
+log-parse-errors = false
+max-unparsed-buffer = 10000
+max-tags-len = 9000
+
+[aggregation]
+mode = "single"
+destination = "smart"
+update-count-threshold = 200
+ms-aggregates = [ "count", "min", "percentile-90", "percentile-999", "percentile-98", "percentile-50" ]
+postfix-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+tag-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+tag-name = "agg"
+
+[carbon]
+address = "127.0.0.1:2003"
+bind-address = "127.0.0.1:2003"
+interval = 30000
+connect-delay = 250
+connect-delay-multiplier = 2
+connect-delay-max = 10000
+send-retries = 30
+
+[network]
+listen = "127.0.0.1:8125"
+peer-listen = "127.0.0.1:8136"
+peer-client-bind = "127.0.0.1:8000"
+mgmt-listen = "127.0.0.1:8137"
+bufsize = 1500
+multimessage = false
+mm-packets = 100
+mm-async = false
+mm-timeout = 0
+buffer-flush-time = 0
+buffer-flush-length = 65536
+greens = 4
+async-sockets = 4
+nodes = []
+snapshot-interval = 1000
+
+[raft]
+start-delay = 1
+heartbeat-timeout = 251
+election-timeout-min = 501
+election-timeout-max = 751
+this-node = "some-node"
+nodes = {"127.0.0.1:8138" = 1}
+client-bind = "127.0.0.1:8138"
+
+[consul]
+start-as = "disabled"
+agent = "127.0.0.1:8500"
+session-ttl = 11000
+renew-time = 1000
+key-name = "service/bioyino/lock"

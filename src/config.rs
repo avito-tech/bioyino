@@ -128,18 +128,25 @@ pub struct Aggregation {
     /// Minimal update count to be reported
     pub update_count_threshold: u32,
 
-    /// Where to put aggregate suffix
+    /// Where to put aggregate postfix
     pub destination: AggregationDestination,
-
-    /// replacements for aggregate suffixes
-    pub replacements: HashMap<Aggregate<Float>, String>,
 
     /// list of aggregates to gather for timer metrics
     pub ms_aggregates: Vec<Aggregate<Float>>,
+
+    /// replacements for aggregate postfixes
+    pub postfix_replacements: HashMap<Aggregate<Float>, String>,
+
+    /// replacements for aggregate suffixes
+    pub tag_replacements: HashMap<Aggregate<Float>, String>,
+
+    /// the tag name to be used for aggregation
+    pub tag_name: String,
 }
 
 pub fn default_ms_aggregates() -> Vec<Aggregate<Float>> {
     let mut aggregates = Vec::new();
+    aggregates.push(Aggregate::Value);
     aggregates.push(Aggregate::Count);
     aggregates.push(Aggregate::Last);
     aggregates.push(Aggregate::Min);
@@ -183,8 +190,10 @@ impl Default for Aggregation {
             threads: None,
             update_count_threshold: 200,
             destination: AggregationDestination::Smart,
-            replacements: default_replacements(),
+            postfix_replacements: default_replacements(),
+            tag_replacements: default_replacements(),
             ms_aggregates: default_ms_aggregates(),
+            tag_name: "aggregate".to_string(),
         }
     }
 }
@@ -403,6 +412,9 @@ impl System {
             system.verbosity = v.into()
         }
 
+        // all parameter postprocessing goes here
+
+        // now parse command
         if let Some(query) = app.subcommand_matches("query") {
             let server = value_t!(query.value_of("host"), String).expect("bad server");
             if let Some(_) = query.subcommand_matches("status") {
@@ -427,11 +439,21 @@ mod tests {
 
     #[test]
     fn parsing_example_config() {
-        let config = "config.toml".to_string();
-        let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
+        let config = "test/fixtures/config.toml";
+        let mut file = File::open(config).expect(&format!("opening config file at {}", &config));
         let mut config_str = String::new();
         file.read_to_string(&mut config_str).expect("reading config file");
         //let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
         let _: System = toml::de::from_str(&config_str).expect("parsing config");
+    }
+
+    #[test]
+    fn parsing_documented_config() {
+        let config = "config.toml";
+        let mut file = File::open(config).expect(&format!("opening config file at {}", &config));
+        let mut config_str = String::new();
+        file.read_to_string(&mut config_str).expect("reading config file");
+        //let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
+        let _: System = toml::de::from_str(&config_str).expect("parsing documented config");
     }
 }
