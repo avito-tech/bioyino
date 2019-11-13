@@ -1,16 +1,25 @@
 # Release 0.6.0 #
 
 ## Incompatible changes ##
-* update counter is now an aggregate, all related options are changed
+* aggregation options now have separate section. Changed parameters:
+    * `metrics.aggregation-mode` -> `aggregation.mode`
+    * `metrics.aggregation-threads` -> `aggregation.threads`
+
+* Update counter is now an aggregate. Options changed:
+    * `metrics.update-counter-prefix` is no option anymore.
+    * `metrics.update-counter-suffix` moved to replacements(see below) naturally
+    * `metrics.update-counter-threshold` is now `aggregate.update-count-threshold` (note it is now *count instead of counter*)
 
 ## Major changes ##
 * graphite-style tags are now supported:
-    * one can use tags instead of postfixes
-    * postfix and tag names can be customized now
-* a list of aggregates is now customizable for ms-type metrics
+    * aggregates can be placed in tags instead of postfixes
+    * postfix and tag names can be customized
+* a list of particular aggregates is now customizable for ms-type metrics
+
+See config.toml for configuration instructions
 
 ## Minor changes
-
+* more unit testing
 
 # Release 0.5.1 #
 * Fixed bug where parallel aggregation was panicking if turned on
