@@ -15,6 +15,7 @@ consistent-parsing = true
 log-parse-errors = false
 max-unparsed-buffer = 10000
 max-tags-len = 9000
+create-untagged-copy = true
 
 [aggregation]
 mode = "single"

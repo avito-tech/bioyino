@@ -14,6 +14,8 @@
 * graphite-style tags are now supported:
     * aggregates can be placed in tags instead of postfixes
     * postfix and tag names can be customized
+    * a new option `metrics.create-untagged-copy` is available to create a copy of untagged metric for compatibility
+      the option is false by default and needs to be enabled explicitly
 * a list of particular aggregates is now customizable for ms-type metrics
 
 See config.toml for configuration instructions

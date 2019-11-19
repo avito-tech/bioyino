@@ -50,6 +50,7 @@ pub struct TaskRunner {
     long: HashMap<MetricName, Metric<Float>>,
     short: HashMap<MetricName, Metric<Float>>,
     buffers: HashMap<u64, (usize, BytesMut)>,
+    names_arena: BytesMut,
     sort_buf: Vec<u8>,
     config: Arc<System>,
     log: Logger,
@@ -57,7 +58,15 @@ pub struct TaskRunner {
 
 impl TaskRunner {
     pub fn new(log: Logger, config: Arc<System>, cap: usize) -> Self {
-        Self { long: HashMap::with_capacity(cap), short: HashMap::with_capacity(cap), buffers: HashMap::with_capacity(cap), sort_buf: Vec::with_capacity(config.metrics.max_tags_len), config, log }
+        Self {
+            long: HashMap::with_capacity(cap),
+            short: HashMap::with_capacity(cap),
+            buffers: HashMap::with_capacity(cap),
+            names_arena: BytesMut::new(),
+            sort_buf: Vec::with_capacity(config.metrics.max_tags_len),
+            config,
+            log,
+        }
     }
 
     pub fn run(&mut self, task: Task) {
@@ -83,12 +92,20 @@ impl TaskRunner {
                 for (mut name, metric) in parser {
                     INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
                     name.find_tag_pos(false);
-                    if self.sort_buf.len() < name.name.len() {
-                        self.sort_buf.resize(name.name.len(), 0u8);
+                    if name.has_tags() {
+                        if self.sort_buf.len() < name.name.len() {
+                            self.sort_buf.resize(name.name.len(), 0u8);
+                        }
+                        name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
+                            PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
+                        });
+
+                        if self.config.metrics.create_untagged_copy {
+                            self.names_arena.extend_from_slice(name.name_without_tags());
+                            let untagged = MetricName::new(self.names_arena.take(), None);
+                            update_metric(&mut self.short, untagged, metric.clone());
+                        }
                     }
-                    name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
-                        PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    });
                     update_metric(&mut self.short, name, metric);
                 }
             }
@@ -225,6 +242,36 @@ mod tests {
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Counter);
+    }
+
+    #[test]
+    fn create_untagged_copy() {
+        let mut data = BytesMut::new();
+        data.extend_from_slice(b"tagged.metric;t2=v2;t1=v1:1000|c");
+
+        let mut config = System::default();
+        config.metrics.create_untagged_copy = true;
+        let mut runner = TaskRunner::new(prepare_log("aggregate_with_copy"), Arc::new(config), 16);
+        // "send" metric two times
+        runner.run(Task::Parse(2, data.clone()));
+        runner.run(Task::Parse(2, data));
+
+        assert_eq!(runner.short.len(), 2, "additional metrics apepar from nowhere");
+        // must be aggregated into two as sum
+        let key = MetricName::new("tagged.metric;t1=v1;t2=v2".into(), None);
+        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+        let metric = runner.short.get(&key).unwrap().clone();
+        assert_eq!(metric.value, 2000f64);
+        assert_eq!(metric.mtype, MetricType::Counter);
+        assert_eq!(metric.update_counter, 2);
+
+        // ensure "independent" untagged version of tagged metric also exists with same values
+        let key = MetricName::new("tagged.metric".into(), None);
+        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+        let metric = runner.short.get(&key).unwrap().clone();
+        assert_eq!(metric.value, 2000f64);
+        assert_eq!(metric.mtype, MetricType::Counter);
+        assert_eq!(metric.update_counter, 2);
     }
 
     #[test]

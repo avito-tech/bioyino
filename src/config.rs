@@ -102,6 +102,9 @@ pub struct Metrics {
 
     /// Maximum length of tags part of a metric
     pub max_tags_len: usize,
+
+    /// An option to create a copy of tagged metric without tags
+    pub create_untagged_copy: bool,
 }
 
 impl Default for Metrics {
@@ -112,6 +115,7 @@ impl Default for Metrics {
             log_parse_errors: false,
             max_unparsed_buffer: 10000,
             max_tags_len: 9000,
+            create_untagged_copy: false,
         }
     }
 }

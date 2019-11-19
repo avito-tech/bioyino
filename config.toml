@@ -128,6 +128,12 @@ snapshot-interval = 1000
 # Size of tags part of a metric (after semicolon character, not including the leading semicolon itself)
 # max-tags-len = 9000
 
+# Since tagged metric becomes a totally different metric in many systems the timeseries for such metrics
+# can be broken. To avoid this for the time the metrics is adopted, this option allows to create a copy of
+# such tagged metric, but without tags
+# Please note that this is effectively the double amount of memory and processing times
+# create-untagged-copy = false
+
 [aggregation]
 # the threading mode of aggregation:
 # single - in a single thread
