@@ -344,7 +344,7 @@ mod test {
         chans.push(tx);
 
         let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
-        let mut runtime = Runtime::new().expect("creating runtime for main thread");
+        let mut runtime = Runtime::new().expect("creating runtime for peer test");
 
         let c_peer_listen = address.clone();
         let c_serv_log = log.clone();

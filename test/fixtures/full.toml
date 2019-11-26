@@ -1,7 +1,7 @@
 # this is config used in some unit testso
 # TODO: should contain all the possible values to check parsing
 
-verbosity = "warn"
+verbosity = "info"
 n-threads = 4
 w-threads = 4
 task-queue-size = 1024
@@ -21,19 +21,21 @@ create-untagged-copy = true
 mode = "single"
 destination = "smart"
 update-count-threshold = 200
-ms-aggregates = [ "count", "min", "percentile-90", "percentile-999", "percentile-98", "percentile-50" ]
+ms-aggregates = [ "count", "min", "max", "sum", "median", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999" ]
+#ms-aggregates = [ "count",  "min", "max", "sum", "median", "mean", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
 postfix-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
 tag-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
 tag-name = "agg"
 
 [carbon]
 address = "127.0.0.1:2003"
-bind-address = "127.0.0.1:2003"
+#bind-address = "127.0.0.1:2005"
 interval = 30000
 connect-delay = 250
 connect-delay-multiplier = 2
 connect-delay-max = 10000
 send-retries = 30
+chunks = 1
 
 [network]
 listen = "127.0.0.1:8125"

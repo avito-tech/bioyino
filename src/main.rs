@@ -350,7 +350,7 @@ fn main() {
                         .map(move |metrics| {
                             let carbon_log = carbon_log.clone();
                             let carbon = backend_opts.clone();
-                            let chunk_size = metrics.len() / carbon.chunks;
+                            let chunk_size = if metrics.len() > carbon.chunks { metrics.len() / carbon.chunks } else { 1 };
                             // TODO we could do this without allocations
                             // but in rust it's not so easy with these types
                             // probably Pin API would help

@@ -417,6 +417,9 @@ impl System {
         }
 
         // all parameter postprocessing goes here
+        if system.carbon.chunks == 0 {
+            panic!("number of chunks cannot be 0, use 1 to send without splitting");
+        }
 
         // now parse command
         if let Some(query) = app.subcommand_matches("query") {
@@ -442,8 +445,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parsing_example_config() {
-        let config = "test/fixtures/config.toml";
+    fn parsing_full_config() {
+        let config = "test/fixtures/full.toml";
         let mut file = File::open(config).expect(&format!("opening config file at {}", &config));
         let mut config_str = String::new();
         file.read_to_string(&mut config_str).expect("reading config file");
