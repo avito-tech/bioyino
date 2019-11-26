@@ -233,7 +233,7 @@ impl IntoFuture for NativeProtocolSnapshot {
                         let options = SnapshotClientOptions { address: address, bind: client_bind };
                         let client = SnapshotSender::new(metrics, options, log.clone());
                         spawn(peer_client_ret.spawn(client).map_err(move |e| {
-                            warn!(log, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e));
+                            warn!(log, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e), "remote"=>format!("{}", address));
                         }));
                     })
                     .last();
