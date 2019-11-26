@@ -128,18 +128,64 @@ impl Decoder for CarbonCodec {
 }
 
 impl Encoder for CarbonCodec {
-    type Item = (Bytes, Bytes, Bytes); // Metric name, suffix value and timestamp
+    type Item = (Bytes, Bytes, Bytes); // Metric name, value and timestamp
     type Error = Error;
 
     fn encode(&mut self, m: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
         let len = m.0.len() + 1 + m.1.len() + 1 + m.2.len() + 1;
         buf.reserve(len);
         buf.put(m.0);
-        buf.put(" .");
+        buf.put(" ");
         buf.put(m.1);
         buf.put(" ");
         buf.put(m.2);
         buf.put("\n");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    use std::time::{Duration, Instant};
+    use tokio::codec::LinesCodec;
+    use tokio::runtime::current_thread::Runtime;
+    use tokio::timer::Delay;
+
+    use crate::util::prepare_log;
+
+    #[test]
+    fn test_carbon_protocol_output() {
+        let test_timeout = Instant::now() + Duration::from_secs(1);
+        let log = prepare_log("test_carbon_protocol");
+
+        let mut runtime = Runtime::new().expect("creating runtime for carbon test");
+
+        let ts = 1574745744u64;
+
+        let name = Bytes::from("complex.test.bioyino_tagged;tag2=val2;tag1=value1");
+
+        let options = CarbonClientOptions { addr: "127.0.0.1:2003".parse().unwrap(), bind: None };
+        let backend = CarbonBackend::new(options, Duration::from_secs(ts), Arc::new(vec![(name, 42f64)]), log.clone());
+
+        let server = tokio::net::TcpListener::bind(&"127.0.0.1:2003".parse::<::std::net::SocketAddr>().unwrap())
+            .unwrap()
+            .incoming()
+            .map_err(|e| panic!(e))
+            .for_each(move |conn| {
+                LinesCodec::new().framed(conn).for_each(|line| {
+                    assert_eq!(&line, "complex.test.bioyino_tagged;tag2=val2;tag1=value1 42 1574745744");
+                    Ok(())
+                })
+            })
+            .map_err(move |e| panic!(e));
+
+        runtime.spawn(server);
+        runtime.spawn(backend.into_future().map_err(|_| panic!("codec error")));
+
+        let test_delay = Delay::new(test_timeout);
+        runtime.block_on(test_delay).expect("runtime");
     }
 }
