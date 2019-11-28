@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::Read;
+use std::iter::FromIterator;
 use std::net::SocketAddr;
 use std::ops::Range;
 use std::time::Duration;
@@ -417,10 +418,34 @@ impl System {
         }
 
         // all parameter postprocessing goes here
+
+        // it is not OK to specify 0 chunks
         if system.carbon.chunks == 0 {
             panic!("number of chunks cannot be 0, use 1 to send without splitting");
         }
 
+        // all replacements are additive, so we need to take a full list and only override it with
+        // the specified keys and values
+        let mut real_replacements = default_replacements();
+        for (k, v) in system.aggregation.postfix_replacements {
+            real_replacements.insert(k, v);
+        }
+        system.aggregation.postfix_replacements = real_replacements;
+
+        let mut real_replacements = default_replacements();
+        for (k, v) in system.aggregation.tag_replacements {
+            real_replacements.insert(k, v);
+        }
+
+        // value aggregate cannot be spceified in config and should always exist
+        if system.aggregation.ms_aggregates.iter().position(|a| a == &Aggregate::Value).is_none() {
+            system.aggregation.ms_aggregates.push(Aggregate::Value);
+        }
+
+        // remove duplicates that may exist by user mistake
+        system.aggregation.ms_aggregates = HashSet::<Aggregate<Float>>::from_iter(system.aggregation.ms_aggregates.into_iter()).into_iter().collect();
+
+        system.aggregation.tag_replacements = real_replacements;
         // now parse command
         if let Some(query) = app.subcommand_matches("query") {
             let server = value_t!(query.value_of("host"), String).expect("bad server");
