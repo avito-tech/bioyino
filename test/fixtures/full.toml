@@ -18,7 +18,8 @@ max-tags-len = 9000
 create-untagged-copy = true
 
 [aggregation]
-mode = "single"
+mode = "separate"
+threads = 8
 destination = "smart"
 update-count-threshold = 200
 ms-aggregates = [ "count", "min", "max", "sum", "median", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999" ]

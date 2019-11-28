@@ -12,7 +12,7 @@ use serde_derive::{Deserialize, Serialize};
 use slog::{info, warn, Logger};
 
 use bioyino_metric::{
-    aggregate::Aggregate,
+    aggregate::{Aggregate, AggregateCalculator},
     name::{AggregationDestination, MetricName},
     Metric,
 };
@@ -141,7 +141,7 @@ impl IntoFuture for Aggregator {
         });
 
         let aggregate = accumulate.and_then(move |accumulated| {
-            info!(log, "leader aggregating metrics");
+            info!(log, "leader aggregating metrics"; "amount"=>format!("{}", accumulated.len()));
 
             match options.mode {
                 AggregationMode::Single => {
@@ -207,26 +207,21 @@ pub struct AggregationData {
 }
 
 pub fn aggregate_task(data: AggregationData) {
-    let AggregationData { mut buf, name, metric, options, response } = data;
+    let AggregationData { mut buf, name, mut metric, options, response } = data;
 
     let mode = options.mode;
-    let mut cached_sum = None;
     // take all required aggregates
-    options
-        .ms_aggregates
-        .iter()
+    let calculator = AggregateCalculator::new(&mut metric, &options.ms_aggregates);
+    calculator
         // count all of them that are countable (filtering None) and leaving the aggregate itself
-        .filter_map(|aggregate| aggregate.calculate(&metric, &mut cached_sum).map(|res| (aggregate, res)))
+        .filter_map(|result| result)
         // set corresponding name
-        .filter_map(|(aggregate, value)| {
+        .filter_map(|(idx, value)| {
+            let aggregate = &options.ms_aggregates[idx];
             match aggregate {
                 &Aggregate::UpdateCount if value < Float::from(options.update_count_threshold) => {
                     // skip aggregates below update counter threshold
                     None
-                }
-                &Aggregate::Value => {
-                    // do not change the name for value aggregates
-                    Some((buf.take().freeze(), value))
                 }
                 _ => {
                     if name.put_with_aggregate(&mut buf, options.destination, aggregate, &options.postfix_replacements, &options.tag_replacements).is_err() {
