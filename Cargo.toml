@@ -6,6 +6,10 @@ description = "StatsD-compatible, high-performance, fault-tolerant metric aggreg
 edition = "2018"
 build = "build.rs"
 
+[profile.release]
+lto = true
+overflow-checks = false
+
 [dependencies]
 lazy_static="^1.1"
 clap="^2.31"
@@ -30,6 +34,8 @@ slog="^2.4"
 slog-term="^2.4"
 slog-async="^2.3"
 slog-scope="^4.0"
+slog-stdlog="^4.0"
+log="^0.4"
 toml="^0.5"
 ftoa = "^0.1"
 capnp = "^0.10"

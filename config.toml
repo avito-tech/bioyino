@@ -163,11 +163,24 @@ update-count-threshold = 200
 # this is the full list of default values
 #ms-aggregates = [ "count", "last", "min", "max", "sum", "median", "mean", "updates", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
 
-# these attributes allow to change naming of aggregates in name postfix or tags
-# these are just examples, see full list in ms-aggregates parameter
+# these attributes allow to change naming of aggregates in name postfix, prefix or in tags
+# by default names are the same as aggregate names, except for percentiles
+# percentile postfixes by default look like "percentile.99"
+
+# NOT defaults, just example
 #postfix-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+
+# prefix specific aggregates with specified string
+# all prefixes are empty by default
+# NOTE: you most probably want EITHER prefix or postfix, so having prefix specified here,
+# don't forget to explicitly set postfix to ""
+#
+# NOT defaults, just example
+#prefix-replacements = { "updates" = "resources.monitoring.bioyino.updates" }
+
 #tag-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
 
+# the default tag name taken when replacement is not specified
 # tag-name = "aggregate"
 
 # Settings for internal Raft

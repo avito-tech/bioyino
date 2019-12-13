@@ -60,7 +60,14 @@ pub struct ConsulConsensus {
 
 impl ConsulConsensus {
     pub fn new(log: &Logger, agent: SocketAddr, key: String) -> Self {
-        Self { log: log.new(o!("source"=>"consensus")), agent, key: key, session_ttl: Duration::from_secs(7), renew_time: Duration::from_secs(1), error_pause: Duration::from_secs(1) }
+        Self {
+            log: log.new(o!("source"=>"consensus")),
+            agent,
+            key,
+            session_ttl: Duration::from_secs(7),
+            renew_time: Duration::from_secs(1),
+            error_pause: Duration::from_secs(1),
+        }
     }
 
     pub fn set_key(&mut self, key: String) {
@@ -86,12 +93,23 @@ impl IntoFuture for ConsulConsensus {
     type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { log, agent, key, session_ttl, renew_time, error_pause } = self;
+        let Self {
+            log,
+            agent,
+            key,
+            session_ttl,
+            renew_time,
+            error_pause,
+        } = self;
 
         let renew_loop = loop_fn((), move |()| {
             let key = key.clone();
             let log = log.clone();
-            let session = ConsulSession { log: log.new(o!("source"=>"consul-session")), agent: agent.clone(), ttl: session_ttl.clone() };
+            let session = ConsulSession {
+                log: log.new(o!("source"=>"consul-session")),
+                agent: agent.clone(),
+                ttl: session_ttl.clone(),
+            };
 
             let renewlog = log.clone();
             /*
@@ -119,7 +137,8 @@ impl IntoFuture for ConsulConsensus {
                         Err(e) => {
                             warn!(log, "error getting consul session"; "error" => format!("{}", e));
                             let new_session = new_session.clone();
-                            Box::new(Delay::new(Instant::now() + error_pause).then(move |_| Ok(Loop::Continue(new_session)))) as Box<dyn Future<Item = Loop<_, _>, Error = _>>
+                            Box::new(Delay::new(Instant::now() + error_pause).then(move |_| Ok(Loop::Continue(new_session))))
+                                as Box<dyn Future<Item = Loop<_, _>, Error = _>>
                             //ok(Loop::Continue(new_session))
                         }
                         Ok(None) => {
@@ -149,7 +168,7 @@ impl IntoFuture for ConsulConsensus {
                         };
                         if should_renew {
                             let renew = ConsulRenew {
-                                agent: agent,
+                                agent,
                                 sid: sid.clone(),
                                 ttl: session_ttl,
                             }.into_future()
@@ -210,8 +229,12 @@ impl IntoFuture for ConsulSession {
         let bodylen = b.len() as u64;
         *session_req.body_mut() = hyper::Body::from(b);
         // Override sending request as multipart
-        session_req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_str(&format!("{}", bodylen)).unwrap());
-        session_req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap());
+        session_req
+            .headers_mut()
+            .insert(CONTENT_LENGTH, HeaderValue::from_str(&format!("{}", bodylen)).unwrap());
+        session_req
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap());
 
         let c_session = client.request(session_req).map_err(|e| ConsulError::Http(e)).and_then(move |resp| {
             let status = resp.status();
@@ -236,7 +259,12 @@ impl IntoFuture for ConsulSession {
             }
         });
         let timeout = Delay::new(Instant::now() + ttl);
-        let future = timeout.map_err(|e| ConsulError::Timer(e)).map(|_| None).select(c_session).map(|res| res.0).map_err(|e| e.0);
+        let future = timeout
+            .map_err(|e| ConsulError::Timer(e))
+            .map(|_| None)
+            .select(c_session)
+            .map(|res| res.0)
+            .map_err(|e| e.0);
         Box::new(future)
     }
 }
@@ -256,7 +284,9 @@ impl IntoFuture for ConsulRenew {
         let Self { agent, sid, ttl } = self;
         let mut renew_req = hyper::Request::default();
         *renew_req.method_mut() = Method::PUT;
-        *renew_req.uri_mut() = format!("http://{}/v1/session/renew/{}", agent, sid.clone()).parse().expect("creating session renew url");
+        *renew_req.uri_mut() = format!("http://{}/v1/session/renew/{}", agent, sid.clone())
+            .parse()
+            .expect("creating session renew url");
 
         let ttl_ns = ttl.as_secs() * 1000000000u64 + ttl.subsec_nanos() as u64;
         let b = format!("{{\"TTL\": \"{}ns\"}}", ttl_ns);
@@ -264,8 +294,12 @@ impl IntoFuture for ConsulRenew {
 
         *renew_req.body_mut() = hyper::Body::from(b);
         // Override sending request as multipart
-        renew_req.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_str(&format!("{}", bodylen)).unwrap());
-        renew_req.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap());
+        renew_req
+            .headers_mut()
+            .insert(CONTENT_LENGTH, HeaderValue::from_str(&format!("{}", bodylen)).unwrap());
+        renew_req
+            .headers_mut()
+            .insert(CONTENT_TYPE, HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap());
 
         let renew_client = hyper::Client::new();
         let future = renew_client.request(renew_req).then(move |res| match res {

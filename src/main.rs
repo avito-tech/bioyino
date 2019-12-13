@@ -100,30 +100,38 @@ lazy_static! {
 pub static IS_LEADER: AtomicBool = AtomicBool::new(false);
 
 fn main() {
-    let (system, command) = System::load();
+    let (system, command) = System::load().expect("loading config");
 
     let config = system.clone();
     let System {
         verbosity,
-        network: Network {
-            listen,
-            peer_listen,
-            peer_client_bind,
-            mgmt_listen,
-            bufsize,
-            multimessage,
-            mm_packets,
-            mm_async,
-            mm_timeout,
-            buffer_flush_time,
-            buffer_flush_length: _,
-            greens,
-            async_sockets,
-            nodes,
-            snapshot_interval,
-        },
+        network:
+            Network {
+                listen,
+                peer_listen,
+                peer_client_bind,
+                mgmt_listen,
+                bufsize,
+                multimessage,
+                mm_packets,
+                mm_async,
+                mm_timeout,
+                buffer_flush_time,
+                buffer_flush_length: _,
+                greens,
+                async_sockets,
+                nodes,
+                snapshot_interval,
+            },
         raft,
-        consul: Consul { start_as: consul_start_as, agent, session_ttl: consul_session_ttl, renew_time: consul_renew_time, key_name: consul_key },
+        consul:
+            Consul {
+                start_as: consul_start_as,
+                agent,
+                session_ttl: consul_session_ttl,
+                renew_time: consul_renew_time,
+                key_name: consul_key,
+            },
         metrics: _,
         aggregation,
         carbon,
@@ -148,10 +156,11 @@ fn main() {
     let rlog = slog::Logger::root(drain, o!("program"=>"bioyino"));
     // this lets root logger live as long as it needs
     let _guard = slog_scope::set_global_logger(rlog.clone());
+    let _log_guard = slog_stdlog::init().unwrap();
 
     if let Command::Query(command, dest) = command {
         let dest = try_resolve(&dest);
-        let command = MgmtClient::new(rlog.clone(), dest.clone(), command);
+        let command = MgmtClient::new(rlog.clone(), dest, command);
 
         runtime.block_on(command.into_future()).unwrap_or_else(|e| {
             warn!(rlog,
@@ -177,7 +186,7 @@ fn main() {
         let tlog = log.clone();
         let cf = config.clone();
         thread::Builder::new()
-            .name(format!("bioyino_cnt{}", i).into())
+            .name(format!("bioyino_cnt{}", i))
             .spawn(move || {
                 let runner = TaskRunner::new(tlog, cf, 8192);
                 let mut runtime = Runtime::new().expect("creating runtime for counting worker");
@@ -194,7 +203,7 @@ fn main() {
             .expect("starting counting worker thread");
     }
 
-    let stats_prefix = stats_prefix.trim_end_matches(".").to_string();
+    let stats_prefix = stats_prefix.trim_end_matches('.').to_string();
 
     // Spawn future gatering bioyino own stats
     let own_stat_chan = chans[0].clone();
@@ -207,15 +216,22 @@ fn main() {
     let snap_log = rlog.clone();
     let snap_err_log = rlog.clone();
 
-    let snapshot = NativeProtocolSnapshot::new(&snap_log, nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &chans).into_future().map_err(move |e| {
-        PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
-        info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
-    });
+    let snapshot = NativeProtocolSnapshot::new(&snap_log, nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &chans)
+        .into_future()
+        .map_err(move |e| {
+            PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+            info!(snap_err_log, "error sending snapshot";"error"=>format!("{}", e));
+        });
     runtime.spawn(snapshot);
 
     // settings safe for asap restart
     info!(log, "starting snapshot receiver");
-    let peer_server_ret = BackoffRetryBuilder { delay: 1, delay_mul: 1f32, delay_max: 1, retries: ::std::usize::MAX };
+    let peer_server_ret = BackoffRetryBuilder {
+        delay: 1,
+        delay_mul: 1f32,
+        delay_max: 1,
+        retries: ::std::usize::MAX,
+    };
 
     let peer_server = NativeProtocolServer::new(rlog.clone(), peer_listen, chans.clone());
     let peer_server = peer_server_ret
@@ -240,7 +256,10 @@ fn main() {
                 .spawn(move || {
                     let mut runtime = Runtime::new().expect("creating runtime for raft thread");
                     if start_as_leader {
-                        warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
+                        warn!(
+                            log,
+                            "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up."
+                        );
                     }
                     let d = Delay::new(Instant::now() + Duration::from_millis(raft.start_delay));
                     let log = log.clone();
@@ -261,7 +280,10 @@ fn main() {
         }
         ConsensusKind::Consul => {
             if start_as_leader {
-                warn!(log, "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up.");
+                warn!(
+                    log,
+                    "Starting as leader with enabled consensus. More that one leader is possible before consensus settle up."
+                );
             }
             {
                 let mut con_state = CONSENSUS_STATE.lock().unwrap();
@@ -278,7 +300,10 @@ fn main() {
             if !start_as_leader {
                 // starting as non-leader in this mode can be useful for agent mode
                 // so we don't disorient user with warnings
-                info!(log, "Starting as non-leader with disabled consensus. No metrics will be sent until leader is switched on by command");
+                info!(
+                    log,
+                    "Starting as non-leader with disabled consensus. No metrics will be sent until leader is switched on by command"
+                );
             }
         }
     }
@@ -286,9 +311,11 @@ fn main() {
     info!(log, "starting management server");
     let m_serv_log = rlog.clone();
     let m_serv_err_log = rlog.clone();
-    let m_server = hyper::Server::bind(&mgmt_listen).serve(move || ok::<_, hyper::Error>(MgmtServer::new(m_serv_log.clone(), &mgmt_listen))).map_err(move |e| {
-        warn!(m_serv_err_log, "management server gone with error: {:?}", e);
-    });
+    let m_server = hyper::Server::bind(&mgmt_listen)
+        .serve(move || ok::<_, hyper::Error>(MgmtServer::new(m_serv_log.clone(), &mgmt_listen)))
+        .map_err(move |e| {
+            warn!(m_serv_err_log, "management server gone with error: {:?}", e);
+        });
 
     runtime.spawn(m_server);
 
@@ -303,9 +330,9 @@ fn main() {
         carbon_config.chunks = 1
     }
 
-    let agg_opts = AggregationOptions::from_config(aggregation, carbon_log.clone());
-    let carbon_timer = carbon_timer.map_err(|e| GeneralError::Timer(e)).for_each(move |_tick| {
-        let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(|e| GeneralError::Time(e))?;
+    let agg_opts = AggregationOptions::from_config(aggregation, carbon_log.clone()).expect("parsing aggregation options");
+    let carbon_timer = carbon_timer.map_err(GeneralError::Timer).for_each(move |_tick| {
+        let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(GeneralError::Time)?;
 
         let backend_addr = try_resolve(&carbon.address);
         let tchans = tchans.clone();
@@ -337,38 +364,42 @@ fn main() {
                 if is_leader {
                     info!(carbon_log, "leader sending metrics");
                     let (backend_tx, backend_rx) = mpsc::unbounded();
-                    let aggregator = Aggregator::new(is_leader, options, tchans, backend_tx, carbon_log.clone()).into_future();
+                    let aggregator = Aggregator::new(is_leader, options.clone(), tchans, backend_tx, carbon_log.clone()).into_future();
 
                     runtime.spawn(aggregator);
 
                     let handle = runtime.handle();
-                    let carbon_sender = backend_rx
-                        .inspect(|_| {
-                            EGRESS.fetch_add(1, Ordering::Relaxed);
-                        })
-                        .collect()
-                        .map(move |metrics| {
-                            let carbon_log = carbon_log.clone();
-                            let carbon = backend_opts.clone();
-                            let chunk_size = if metrics.len() > carbon.chunks { metrics.len() / carbon.chunks } else { 1 };
-                            // TODO we could do this without allocations
-                            // but in rust it's not so easy with these types
-                            // probably Pin API would help
-                            // probably changing to Arc<[Metric]> would
-                            metrics
-                                .chunks(chunk_size)
-                                .map(move |metrics| {
-                                    let options = CarbonClientOptions { addr: backend_addr, bind: backend_opts.bind_address };
-                                    let backend = CarbonBackend::new(options, ts, Arc::new(metrics.to_vec()), carbon_log.clone());
-                                    let retrier = BackoffRetryBuilder { delay: backend_opts.connect_delay, delay_mul: backend_opts.connect_delay_multiplier, delay_max: backend_opts.connect_delay_max, retries: backend_opts.send_retries };
-                                    let carbon_log = carbon_log.clone();
-                                    let retrier = retrier.spawn(backend).map_err(move |e| {
-                                        error!(carbon_log.clone(), "Failed to send to graphite"; "error"=>format!("{:?}",e));
-                                    });
-                                    spawn(retrier);
-                                })
-                                .last();
-                        });
+                    let carbon_sender = backend_rx.collect().map(move |metrics| {
+                        let carbon_log = carbon_log.clone();
+                        let carbon = backend_opts.clone();
+                        let chunk_size = if metrics.len() > carbon.chunks { metrics.len() / carbon.chunks } else { 1 };
+                        // TODO we could do this without allocations
+                        // but in rust it's not so easy with these types
+                        // probably Pin API would help
+                        // probably changing to Arc<[Metric]> would
+                        metrics
+                            .chunks(chunk_size)
+                            .map(move |metrics| {
+                                let options = CarbonClientOptions {
+                                    addr: backend_addr,
+                                    bind: backend_opts.bind_address,
+                                    options: options.clone(),
+                                };
+                                let backend = CarbonBackend::new(options, ts, Arc::new(metrics.to_vec()), carbon_log.clone());
+                                let retrier = BackoffRetryBuilder {
+                                    delay: backend_opts.connect_delay,
+                                    delay_mul: backend_opts.connect_delay_multiplier,
+                                    delay_max: backend_opts.connect_delay_max,
+                                    retries: backend_opts.send_retries,
+                                };
+                                let carbon_log = carbon_log.clone();
+                                let retrier = retrier.spawn(backend).map_err(move |e| {
+                                    error!(carbon_log.clone(), "Failed to send to graphite"; "error"=>format!("{:?}",e));
+                                });
+                                spawn(retrier);
+                            })
+                            .last();
+                    });
 
                     handle.spawn(carbon_sender).unwrap_or_else(|e| {
                         error!(runtime_log, "spawning sender"; "error"=>format!("{:?}", e));
@@ -383,7 +414,9 @@ fn main() {
                     info!(carbon_log, "not leader, removing metrics");
                     let (backend_tx, _) = mpsc::unbounded();
                     let aggregator = Aggregator::new(is_leader, options, tchans, backend_tx, carbon_log.clone()).into_future();
-                    runtime.block_on(aggregator.then(|_| Ok::<(), ()>(()))).unwrap_or_else(|e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e));
+                    runtime
+                        .block_on(aggregator.then(|_| Ok::<(), ()>(())))
+                        .unwrap_or_else(|e| error!(carbon_log, "Failed to join aggregated metrics"; "error"=>e));
                 }
             })
             .expect("starting thread for sending to graphite");
@@ -409,7 +442,7 @@ fn main() {
 
         let tlog = rlog.clone();
         let flags = flush_flags.clone();
-        let flush_timer = flush_timer.map_err(|e| GeneralError::Timer(e)).for_each(move |_tick| {
+        let flush_timer = flush_timer.map_err(GeneralError::Timer).for_each(move |_tick| {
             info!(tlog, "buffer flush requested");
             flags.iter().map(|flag| flag.swap(true, Ordering::SeqCst)).last();
             Ok(())
@@ -421,9 +454,30 @@ fn main() {
     }
 
     if multimessage {
-        start_sync_udp(log, listen, &chans, config.clone(), n_threads, bufsize, mm_packets, mm_async, mm_timeout, flush_flags.clone());
+        start_sync_udp(
+            log,
+            listen,
+            &chans,
+            config.clone(),
+            n_threads,
+            bufsize,
+            mm_packets,
+            mm_async,
+            mm_timeout,
+            flush_flags.clone(),
+        );
     } else {
-        start_async_udp(log, listen, &chans, config.clone(), n_threads, greens, async_sockets, bufsize, flush_flags.clone());
+        start_async_udp(
+            log,
+            listen,
+            &chans,
+            config.clone(),
+            n_threads,
+            greens,
+            async_sockets,
+            bufsize,
+            flush_flags.clone(),
+        );
     }
 
     runtime.block_on(empty::<(), ()>()).expect("running runtime in main thread");

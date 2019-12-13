@@ -9,52 +9,41 @@ use ftoa;
 use futures::future::{err, Either};
 use futures::stream;
 use futures::{Future, IntoFuture, Sink, Stream};
+use log::warn;
 use slog::{info, Logger};
 use tokio::net::TcpStream;
 use tokio_codec::{Decoder, Encoder};
 
-use crate::errors::GeneralError;
+use bioyino_metric::{aggregate::Aggregate, name::MetricName};
 
+use crate::aggregate::AggregationOptions;
+use crate::errors::GeneralError;
 use crate::util::bound_stream;
-use crate::{Float, AGG_ERRORS};
+use crate::{Float, AGG_ERRORS, EGRESS};
 
 #[derive(Clone)]
 pub struct CarbonClientOptions {
     pub addr: SocketAddr,
     pub bind: Option<SocketAddr>,
+    pub options: Arc<AggregationOptions>,
 }
 
 #[derive(Clone)]
 pub struct CarbonBackend {
     options: CarbonClientOptions,
-    metrics: Arc<Vec<(Bytes, Bytes, Bytes)>>,
+    ts: Bytes,
+    metrics: Arc<Vec<(MetricName, Aggregate<Float>, Float)>>,
     log: Logger,
 }
 
 impl CarbonBackend {
-    pub(crate) fn new(options: CarbonClientOptions, ts: Duration, metrics: Arc<Vec<(Bytes, Float)>>, log: Logger) -> Self {
-        let ts: Bytes = ts.as_secs().to_string().into();
-
-        let buf = BytesMut::with_capacity(metrics.len() * 200); // 200 is an approximate for full metric name + value
-        let (metrics, _) = metrics.iter().fold((Vec::new(), buf), |(mut acc, mut buf), (name, metric)| {
-            let mut wr = buf.writer();
-            let buf = match ftoa::write(&mut wr, *metric) {
-                Ok(()) => {
-                    buf = wr.into_inner();
-                    let metric = buf.take().freeze();
-                    acc.push((name.clone(), metric, ts.clone()));
-                    buf
-                }
-                Err(_) => {
-                    AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
-                    wr.into_inner()
-                }
-            };
-            (acc, buf)
-        });
-        let metrics = Arc::new(metrics);
-        let self_ = Self { options, metrics, log };
-        self_
+    pub(crate) fn new(options: CarbonClientOptions, ts: Duration, metrics: Arc<Vec<(MetricName, Aggregate<Float>, Float)>>, log: Logger) -> Self {
+        Self {
+            options,
+            metrics,
+            log,
+            ts: ts.as_secs().to_string().into(),
+        }
     }
 }
 
@@ -64,7 +53,7 @@ impl IntoFuture for CarbonBackend {
     type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { options, metrics, log } = self;
+        let Self { options, ts, metrics, log } = self;
         let stream_future = match options.bind {
             Some(bind_addr) => match bound_stream(&bind_addr) {
                 Ok(std_stream) => Either::A(TcpStream::connect_std(std_stream, &options.addr, &tokio::reactor::Handle::default())),
@@ -76,12 +65,16 @@ impl IntoFuture for CarbonBackend {
         let elog = log.clone();
         let future = stream_future.map_err(GeneralError::Io).and_then(move |conn| {
             info!(log, "carbon backend sending metrics");
-            let writer = CarbonCodec::new().framed(conn);
+            let writer = CarbonCodec::new(ts.clone(), options.options.clone()).framed(conn);
             let metric_stream = stream::iter_ok::<_, ()>(SharedIter::new(metrics));
-            metric_stream.map_err(|_| GeneralError::CarbonBackend).forward(writer.sink_map_err(|_| GeneralError::CarbonBackend)).map(move |_| info!(log, "carbon backend finished")).map_err(move |e| {
-                info!(elog, "carbon backend error");
-                e
-            })
+            metric_stream
+                .map_err(|_| GeneralError::CarbonBackend)
+                .forward(writer.sink_map_err(|_| GeneralError::CarbonBackend))
+                .map(move |_| info!(log, "carbon backend finished"))
+                .map_err(move |e| {
+                    info!(elog, "carbon backend error");
+                    e
+                })
         });
 
         Box::new(future)
@@ -108,11 +101,14 @@ impl<T: Clone> Iterator for SharedIter<T> {
     }
 }
 
-pub struct CarbonCodec;
+pub struct CarbonCodec {
+    ts: Bytes,
+    options: Arc<AggregationOptions>,
+}
 
 impl CarbonCodec {
-    pub fn new() -> Self {
-        CarbonCodec //(PhantomData)
+    pub fn new(ts: Bytes, options: Arc<AggregationOptions>) -> Self {
+        Self { ts, options }
     }
 }
 
@@ -128,18 +124,39 @@ impl Decoder for CarbonCodec {
 }
 
 impl Encoder for CarbonCodec {
-    type Item = (Bytes, Bytes, Bytes); // Metric name, value and timestamp
+    //type Item = (Bytes, Bytes, Bytes); // Metric name, value and timestamp
+    type Item = (MetricName, Aggregate<Float>, Float); // Metric name, aggregate and counted value
     type Error = Error;
 
-    fn encode(&mut self, m: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
-        let len = m.0.len() + 1 + m.1.len() + 1 + m.2.len() + 1;
-        buf.reserve(len);
-        buf.put(m.0);
-        buf.put(" ");
-        buf.put(m.1);
-        buf.put(" ");
-        buf.put(m.2);
-        buf.put("\n");
+    fn encode(&mut self, item: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
+        let (name, aggregate, value) = item;
+        let options = &self.options;
+        if let Err(_) = name.put_with_aggregate(
+            buf,
+            options.destination,
+            &aggregate,
+            &options.postfix_replacements,
+            &options.prefix_replacements,
+            &options.tag_replacements,
+        ) {
+            // TODO don't log error maybe
+            warn!("could not serialize '{:?}' with {:?}", &name.name[..], aggregate);
+            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        };
+
+        buf.extend_from_slice(&b" "[..]);
+        // write somehow doesn't extend buffer size giving "cannot fill sholw buffer" error
+        buf.reserve(64);
+        if let Err(e) = ftoa::write(&mut buf.writer(), value) {
+            warn!("write error {:?}", e);
+            AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
+        }
+        buf.extend_from_slice(&b" "[..]);
+        buf.extend_from_slice(&self.ts[..]);
+        buf.extend_from_slice(&b"\n"[..]);
+        EGRESS.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }
@@ -154,21 +171,34 @@ mod test {
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 
+    use crate::config::Aggregation;
     use crate::util::prepare_log;
+    use bioyino_metric::name::TagFormat;
 
     #[test]
     fn test_carbon_protocol_output() {
         let test_timeout = Instant::now() + Duration::from_secs(1);
         let log = prepare_log("test_carbon_protocol");
+        let mut intermediate = Vec::with_capacity(128);
+        intermediate.resize(128, 0u8);
 
         let mut runtime = Runtime::new().expect("creating runtime for carbon test");
 
         let ts = 1574745744u64;
 
-        let name = Bytes::from("complex.test.bioyino_tagged;tag2=val2;tag1=value1");
-
-        let options = CarbonClientOptions { addr: "127.0.0.1:2003".parse().unwrap(), bind: None };
-        let backend = CarbonBackend::new(options, Duration::from_secs(ts), Arc::new(vec![(name, 42f64)]), log.clone());
+        let name = MetricName::new(
+            BytesMut::from("complex.test.bioyino_tagged;tag2=val2;tag1=value1"),
+            TagFormat::Graphite,
+            &mut intermediate,
+        )
+        .unwrap();
+        let agg_opts = AggregationOptions::from_config(Aggregation::default(), log.clone()).unwrap();
+        let options = CarbonClientOptions {
+            addr: "127.0.0.1:2003".parse().unwrap(),
+            bind: None,
+            options: agg_opts,
+        };
+        let backend = CarbonBackend::new(options, Duration::from_secs(ts), Arc::new(vec![(name, Aggregate::Value, 42f64)]), log.clone());
 
         let server = tokio::net::TcpListener::bind(&"127.0.0.1:2003".parse::<::std::net::SocketAddr>().unwrap())
             .unwrap()
@@ -176,7 +206,7 @@ mod test {
             .map_err(|e| panic!(e))
             .for_each(move |conn| {
                 LinesCodec::new().framed(conn).for_each(|line| {
-                    assert_eq!(&line, "complex.test.bioyino_tagged;tag2=val2;tag1=value1 42 1574745744");
+                    assert_eq!(&line, "complex.test.bioyino_tagged;tag1=value1;tag2=val2 42 1574745744");
                     Ok(())
                 })
             })

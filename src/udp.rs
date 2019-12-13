@@ -25,7 +25,18 @@ use crate::server::StatsdServer;
 use crate::task::Task;
 use crate::{DROPS, INGRESS};
 
-pub(crate) fn start_sync_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sender<Task>>, config: Arc<System>, n_threads: usize, bufsize: usize, mm_packets: usize, mm_async: bool, mm_timeout: u64, flush_flags: Arc<Vec<AtomicBool>>) {
+pub(crate) fn start_sync_udp(
+    log: Logger,
+    listen: SocketAddr,
+    chans: &Vec<Sender<Task>>,
+    config: Arc<System>,
+    n_threads: usize,
+    bufsize: usize,
+    mm_packets: usize,
+    mm_async: bool,
+    mm_timeout: u64,
+    flush_flags: Arc<Vec<AtomicBool>>,
+) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -115,7 +126,10 @@ pub(crate) fn start_sync_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sender
                     let mut chunks = Vec::with_capacity(mm_packets);
 
                     for i in 0..mm_packets {
-                        let chunk = iovec { iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr() as *mut c_void, iov_len: rowsize };
+                        let chunk = iovec {
+                            iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr() as *mut c_void,
+                            iov_len: rowsize,
+                        };
                         chunks.push(chunk);
                         // put the result to mheaders
                         mheaders[i].msg_hdr.msg_iov = &mut chunks[i];
@@ -126,9 +140,24 @@ pub(crate) fn start_sync_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sender
                         debug!(log, "recvmsg start");
                         // timeout is mutable and changed by every recvmmsg call, so it MUST be inside loop
                         // creating timeout as &mut fails because it's supposedly not dropped
-                        let mut timeout = if mm_timeout > 0 { timespec { tv_sec: (mm_timeout / 1000u64) as i64, tv_nsec: ((mm_timeout % 1000u64) * 1_000_000u64) as i64 } } else { timespec { tv_sec: 0, tv_nsec: 0 } };
+                        let mut timeout = if mm_timeout > 0 {
+                            timespec {
+                                tv_sec: (mm_timeout / 1000u64) as i64,
+                                tv_nsec: ((mm_timeout % 1000u64) * 1_000_000u64) as i64,
+                            }
+                        } else {
+                            timespec { tv_sec: 0, tv_nsec: 0 }
+                        };
 
-                        let res = unsafe { recvmmsg(fd as c_int, mhptr, mhlen as c_uint, flags, if mm_timeout > 0 { &mut timeout } else { null_mut() }) };
+                        let res = unsafe {
+                            recvmmsg(
+                                fd as c_int,
+                                mhptr,
+                                mhlen as c_uint,
+                                flags,
+                                if mm_timeout > 0 { &mut timeout } else { null_mut() },
+                            )
+                        };
 
                         if res == 0 {
                             // skip this shit
@@ -178,7 +207,11 @@ pub(crate) fn start_sync_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sender
                                         let mut hasher = DefaultHasher::new();
                                         hasher.write(&addr);
                                         let ahash = hasher.finish();
-                                        let mut chan = if config.metrics.consistent_parsing { chans[ahash as usize % chlen].clone() } else { ichans.next().unwrap().clone() };
+                                        let mut chan = if config.metrics.consistent_parsing {
+                                            chans[ahash as usize % chlen].clone()
+                                        } else {
+                                            ichans.next().unwrap().clone()
+                                        };
                                         chan.try_send(Task::Parse(ahash, buf.take()))
                                             .map_err(|_| {
                                                 warn!(log, "error sending buffer(queue full?)");
@@ -205,7 +238,17 @@ pub(crate) fn start_sync_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sender
     }
 }
 
-pub(crate) fn start_async_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sender<Task>>, config: Arc<System>, n_threads: usize, greens: usize, async_sockets: usize, bufsize: usize, flush_flags: Arc<Vec<AtomicBool>>) {
+pub(crate) fn start_async_udp(
+    log: Logger,
+    listen: SocketAddr,
+    chans: &Vec<Sender<Task>>,
+    config: Arc<System>,
+    n_threads: usize,
+    greens: usize,
+    async_sockets: usize,
+    bufsize: usize,
+    flush_flags: Arc<Vec<AtomicBool>>,
+) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
 
     // Create a pool of listener sockets
@@ -226,7 +269,7 @@ pub(crate) fn start_async_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sende
         let flush_flags = flush_flags.clone();
         let config = config.clone();
         thread::Builder::new()
-            .name(format!("bioyino_udp{}", i).into())
+            .name(format!("bioyino_udp{}", i))
             .spawn(move || {
                 // each thread runs it's own runtime
                 let mut runtime = Runtime::new().expect("creating runtime for counting worker");
@@ -242,7 +285,18 @@ pub(crate) fn start_async_udp(log: Logger, listen: SocketAddr, chans: &Vec<Sende
                         let socket = socket.try_clone().expect("cloning socket");
                         let socket = UdpSocket::from_std(socket, &Handle::default()).expect("adding socket to event loop");
 
-                        let server = StatsdServer::new(socket, chans.clone(), HashMap::new(), config.clone(), bufsize, 0, i, readbuf, flush_flags.clone(), i);
+                        let server = StatsdServer::new(
+                            socket,
+                            chans.clone(),
+                            HashMap::new(),
+                            config.clone(),
+                            bufsize,
+                            0,
+                            i,
+                            readbuf,
+                            flush_flags.clone(),
+                            i,
+                        );
 
                         runtime.spawn(server.into_future());
                     }

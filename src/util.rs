@@ -30,8 +30,7 @@ pub fn prepare_log(root: &'static str) -> Logger {
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
     let filter = slog::LevelFilter::new(drain, slog::Level::Trace).fuse();
     let drain = slog_async::Async::new(filter).build().fuse();
-    let rlog = slog::Logger::root(drain, o!("program"=>"test", "test"=>root));
-    return rlog;
+    slog::Logger::root(drain, o!("program"=>"test", "test"=>root))
 }
 
 pub fn try_resolve(s: &str) -> SocketAddr {
@@ -42,7 +41,10 @@ pub fn try_resolve(s: &str) -> SocketAddr {
         let port = split.next().expect("port not found");
         let port = port.parse().expect("bad port value");
 
-        let first_ip = resolver::resolve_host(host).expect(&format!("failed resolving {:}", &host)).next().expect("at least one IP address required");
+        let first_ip = resolver::resolve_host(host)
+            .unwrap_or_else(|_| panic!("failed resolving {:}", &host))
+            .next()
+            .expect("at least one IP address required");
         SocketAddr::new(first_ip, port)
     })
 }
@@ -125,6 +127,15 @@ pub fn switch_leader(acquired: bool, log: &Logger) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn new_test_graphite_name(s: &'static str) -> MetricName {
+    let mut intermediate = Vec::new();
+    intermediate.resize(9000, 0u8);
+    let mode = bioyino_metric::name::TagFormat::Graphite;
+
+    MetricName::new(s.into(), mode, &mut intermediate).unwrap()
+}
+
 // A future to send own stats. Never gets ready.
 pub struct OwnStats {
     interval: u64,
@@ -139,7 +150,13 @@ impl OwnStats {
         let log = log.new(o!("source"=>"stats"));
         let now = Instant::now();
         let dur = Duration::from_millis(if interval < 100 { 1000 } else { interval }); // exclude too small intervals
-        Self { interval, prefix, timer: Interval::new(now + dur, dur), chan, log }
+        Self {
+            interval,
+            prefix,
+            timer: Interval::new(now + dur, dur),
+            chan,
+            log,
+        }
     }
 
     pub fn get_stats(&mut self) {
@@ -151,10 +168,15 @@ impl OwnStats {
                     buf.put(&self.prefix);
                     buf.put(".");
                     buf.put(&$suffix);
-                    let name = MetricName::new(buf.take(), None);
+                    let name = MetricName::new_untagged(buf.take());
                     let metric = Metric::new($value, MetricType::Counter, None, None).unwrap();
                     let log = self.log.clone();
-                    let sender = self.chan.clone().send(Task::AddMetric(name, metric)).map(|_| ()).map_err(move |_| warn!(log, "stats future could not send metric to task"));
+                    let sender = self
+                        .chan
+                        .clone()
+                        .send(Task::AddMetric(name, metric))
+                        .map(|_| ())
+                        .map_err(move |_| warn!(log, "stats future could not send metric to task"));
                     spawn(sender);
                 }
             };
@@ -211,7 +233,12 @@ pub struct BackoffRetryBuilder {
 
 impl Default for BackoffRetryBuilder {
     fn default() -> Self {
-        Self { delay: 250, delay_mul: 2f32, delay_max: 5000, retries: 25 }
+        Self {
+            delay: 500,
+            delay_mul: 2f32,
+            delay_max: 10000,
+            retries: 25,
+        }
     }
 }
 
@@ -221,7 +248,11 @@ impl BackoffRetryBuilder {
         F: IntoFuture + Clone,
     {
         let inner = Either::A(action.clone().into_future());
-        BackoffRetry { action, inner: inner, options: self }
+        BackoffRetry {
+            action,
+            inner: inner,
+            options: self,
+        }
     }
 }
 
@@ -269,7 +300,11 @@ where
             if rotate_f {
                 self.options.retries -= 1;
                 let delay = self.options.delay as f32 * self.options.delay_mul;
-                let delay = if delay <= self.options.delay_max as f32 { delay as u64 } else { self.options.delay_max as u64 };
+                let delay = if delay <= self.options.delay_max as f32 {
+                    delay as u64
+                } else {
+                    self.options.delay_max as u64
+                };
                 let delay = Delay::new(Instant::now() + Duration::from_millis(delay));
                 self.inner = Either::B(delay);
             } else if rotate_t {

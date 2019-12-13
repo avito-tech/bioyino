@@ -25,5 +25,5 @@ pub enum GeneralError {
     UnknownState,
 
     #[fail(display = "configuration error: {}", _0)]
-    Configuration(&'static str),
+    Configuration(String),
 }

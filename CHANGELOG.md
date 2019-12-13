@@ -4,19 +4,20 @@
 * aggregation options now have separate section. Changed parameters:
     * `metrics.aggregation-mode` -> `aggregation.mode`
     * `metrics.aggregation-threads` -> `aggregation.threads`
+    * `metrics.update-counter-threshold` -> `aggregate.update-count-threshold` (note `count` instead of `counter`)
 
-* Update counter is now an aggregate. Options changed:
-    * `metrics.update-counter-prefix` is no option anymore.
-    * `metrics.update-counter-suffix` moved to replacements(see below) naturally
-    * `metrics.update-counter-threshold` is now `aggregate.update-count-threshold` (note it is now *count instead of counter*)
+* a list of particular aggregates is now customizable for ms-type metrics
+* aggregate naming is now customizable through `prefix-replacements`, `tag-replacements` and `postfix-replacements` in `aggregate` section
+
+* update counter is now an aggregate. Options changed:
+    * `metrics.update-counter-prefix` moved to `prefix-replacements` naturally
+    * `metrics.update-counter-suffix` moved to `postfix-replacements` naturally
 
 ## Major changes ##
 * graphite-style tags are now supported:
-    * aggregates can be placed in tags instead of postfixes
-    * postfix and tag names can be customized
+    * aggregates can be placed in tags instead of postfixes (see `aggregate.mode` parameter)
     * a new option `metrics.create-untagged-copy` is available to create a copy of untagged metric for compatibility
       the option is false by default and needs to be enabled explicitly
-* a list of particular aggregates is now customizable for ms-type metrics
 
 See config.toml for configuration instructions
 

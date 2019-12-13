@@ -11,10 +11,7 @@ use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
 use bioyino_metric::parser::{MetricParser, MetricParsingError, ParseErrorHandler};
-use bioyino_metric::{
-    name::{MetricName, TagFormat},
-    Metric,
-};
+use bioyino_metric::{name::MetricName, Metric};
 
 use crate::aggregate::{aggregate_task, AggregationData};
 use crate::config::System;
@@ -51,7 +48,6 @@ pub struct TaskRunner {
     short: HashMap<MetricName, Metric<Float>>,
     buffers: HashMap<u64, (usize, BytesMut)>,
     names_arena: BytesMut,
-    sort_buf: Vec<u8>,
     config: Arc<System>,
     log: Logger,
 }
@@ -63,7 +59,6 @@ impl TaskRunner {
             short: HashMap::with_capacity(cap),
             buffers: HashMap::with_capacity(cap),
             names_arena: BytesMut::new(),
-            sort_buf: Vec::with_capacity(config.metrics.max_tags_len),
             config,
             log,
         }
@@ -87,43 +82,28 @@ impl TaskRunner {
                     prev_buf
                 };
 
-                let parser = MetricParser::new(buf, self.config.metrics.max_unparsed_buffer, self.config.metrics.max_tags_len, TaskParseErrorHandler(log));
+                let parser = MetricParser::new(
+                    buf,
+                    self.config.metrics.max_unparsed_buffer,
+                    self.config.metrics.max_tags_len,
+                    TaskParseErrorHandler(log),
+                );
 
                 for (mut name, metric) in parser {
                     INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
-                    name.find_tag_pos(false);
                     if name.has_tags() {
-                        if self.sort_buf.len() < name.name.len() {
-                            self.sort_buf.resize(name.name.len(), 0u8);
-                        }
-                        name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
-                            PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
-                        });
-
                         if self.config.metrics.create_untagged_copy {
                             self.names_arena.extend_from_slice(name.name_without_tags());
-                            let untagged = MetricName::new(self.names_arena.take(), None);
+                            let untagged = MetricName::new_untagged(self.names_arena.take());
                             update_metric(&mut self.short, untagged, metric.clone());
                         }
                     }
                     update_metric(&mut self.short, name, metric);
                 }
             }
-            Task::AddMetric(mut name, metric) => {
-                name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
-                    PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
-                });
-                update_metric(&mut self.short, name, metric)
-            }
+            Task::AddMetric(name, metric) => update_metric(&mut self.short, name, metric),
             Task::AddMetrics(mut list) => {
-                list.drain(..)
-                    .map(|(mut name, metric)| {
-                        name.sort_tags(TagFormat::Graphite, &mut self.sort_buf).unwrap_or_else(|_| {
-                            PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
-                        });
-                        update_metric(&mut self.short, name, metric)
-                    })
-                    .last();
+                list.drain(..).map(|(name, metric)| update_metric(&mut self.short, name, metric)).last();
             }
             Task::AddSnapshot(mut list) => {
                 // snapshots go to long cache to avoid being duplicated to other nodes
@@ -209,9 +189,9 @@ impl ParseErrorHandler for TaskParseErrorHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bioyino_metric::MetricType;
+    use bioyino_metric::{name::TagFormat, MetricType};
 
-    use crate::util::prepare_log;
+    use crate::util::{new_test_graphite_name as new_name, prepare_log};
 
     #[test]
     fn aggregate_tagged_metrics() {
@@ -229,15 +209,19 @@ mod tests {
         let mut runner = TaskRunner::new(prepare_log("aggregate_tagged"), Arc::new(config), 16);
         runner.run(Task::Parse(2, data));
 
+        let mut intermediate = Vec::new();
+        intermediate.resize(9000, 0u8);
+        let mode = TagFormat::Graphite;
+
         // must be aggregated into two as sum
-        let key = MetricName::new("gorets;t1=v1;t2=v2".into(), None);
+        let key = MetricName::new("gorets;t1=v1;t2=v2".into(), mode, &mut intermediate).unwrap();
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 2000f64);
         assert_eq!(metric.mtype, MetricType::Counter);
 
         // must be aggregated into separate
-        let key = MetricName::new("gorets;t1=v1;t2=v3".into(), None);
+        let key = MetricName::new("gorets;t1=v1;t2=v3".into(), mode, &mut intermediate).unwrap();
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
@@ -258,7 +242,7 @@ mod tests {
 
         assert_eq!(runner.short.len(), 2, "additional metrics apepar from nowhere");
         // must be aggregated into two as sum
-        let key = MetricName::new("tagged.metric;t1=v1;t2=v2".into(), None);
+        let key = new_name("tagged.metric;t1=v1;t2=v2");
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 2000f64);
@@ -266,7 +250,7 @@ mod tests {
         assert_eq!(metric.update_counter, 2);
 
         // ensure "independent" untagged version of tagged metric also exists with same values
-        let key = MetricName::new("tagged.metric".into(), None);
+        let key = new_name("tagged.metric");
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 2000f64);
@@ -284,14 +268,14 @@ mod tests {
         let mut runner = TaskRunner::new(prepare_log("parse_trashed"), Arc::new(config), 16);
         runner.run(Task::Parse(2, data));
 
-        let key = MetricName::new("gorets1".into(), None);
+        let key = new_name("gorets1");
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(1i8)));
         assert_eq!(metric.sampling, None);
 
         // expect tags to be sorted after parsing
-        let key = MetricName::new("gorets2;t2=fuck;tag3=shit".into(), None);
+        let key = new_name("gorets2;t2=fuck;tag3=shit");
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(-1i8)));
