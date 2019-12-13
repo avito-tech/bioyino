@@ -91,12 +91,10 @@ impl TaskRunner {
 
                 for (mut name, metric) in parser {
                     INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
-                    if name.has_tags() {
-                        if self.config.metrics.create_untagged_copy {
-                            self.names_arena.extend_from_slice(name.name_without_tags());
-                            let untagged = MetricName::new_untagged(self.names_arena.take());
-                            update_metric(&mut self.short, untagged, metric.clone());
-                        }
+                    if name.has_tags() && self.config.metrics.create_untagged_copy {
+                        self.names_arena.extend_from_slice(name.name_without_tags());
+                        let untagged = MetricName::new_untagged(self.names_arena.take());
+                        update_metric(&mut self.short, untagged, metric.clone());
                     }
                     update_metric(&mut self.short, name, metric);
                 }

@@ -107,8 +107,8 @@ impl IntoFuture for ConsulConsensus {
             let log = log.clone();
             let session = ConsulSession {
                 log: log.new(o!("source"=>"consul-session")),
-                agent: agent.clone(),
-                ttl: session_ttl.clone(),
+                agent,
+                ttl: session_ttl,
             };
 
             let renewlog = log.clone();
@@ -159,7 +159,7 @@ impl IntoFuture for ConsulConsensus {
                 .and_then(move |sid| {
                     let timer = Interval::new(Instant::now()+renew_time, renew_time);
 
-                    timer.map_err(|e| ConsulError::Timer(e)).for_each(move |_| {
+                    timer.map_err(ConsulError::Timer).for_each(move |_| {
                         let log = renewlog.clone();
                         let should_renew = {
                             let state = &*CONSENSUS_STATE.lock().unwrap();
@@ -236,21 +236,21 @@ impl IntoFuture for ConsulSession {
             .headers_mut()
             .insert(CONTENT_TYPE, HeaderValue::from_str(WWW_FORM_URLENCODED.as_str()).unwrap());
 
-        let c_session = client.request(session_req).map_err(|e| ConsulError::Http(e)).and_then(move |resp| {
+        let c_session = client.request(session_req).map_err(ConsulError::Http).and_then(move |resp| {
             let status = resp.status();
             if status == StatusCode::OK {
-                let body = resp.into_body().concat2().map_err(|e| ConsulError::Http(e)).and_then(move |body| {
+                let body = resp.into_body().concat2().map_err(ConsulError::Http).and_then(move |body| {
                     let resp: ConsulSessionResponse =
                                 //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
-                                from_slice(&body).map_err(|e| ConsulError::Parsing(e))?;
+                                from_slice(&body).map_err(ConsulError::Parsing)?;
                     debug!(log, "new session"; "id"=>format!("{}", resp.id));
                     Ok(Some(resp.id))
                 });
                 Box::new(body) as Box<dyn Future<Item = Option<String>, Error = ConsulError>>
             } else {
-                let body = resp.into_body().concat2().map_err(|e| ConsulError::Http(e));
+                let body = resp.into_body().concat2().map_err(ConsulError::Http);
                 // TODO make this into option
-                let sleep = Delay::new(Instant::now() + Duration::from_millis(1000)).map_err(|e| ConsulError::Timer(e));
+                let sleep = Delay::new(Instant::now() + Duration::from_millis(1000)).map_err(ConsulError::Timer);
                 let future = sleep.join(body).then(move |res| match res {
                     Ok((_, body)) => Err::<Option<String>, _>(ConsulError::HttpStatus(status, format!("{:?}", String::from_utf8(body.to_vec())))),
                     Err(e) => Err(e),
@@ -260,7 +260,7 @@ impl IntoFuture for ConsulSession {
         });
         let timeout = Delay::new(Instant::now() + ttl);
         let future = timeout
-            .map_err(|e| ConsulError::Timer(e))
+            .map_err(ConsulError::Timer)
             .map(|_| None)
             .select(c_session)
             .map(|res| res.0)
@@ -288,7 +288,7 @@ impl IntoFuture for ConsulRenew {
             .parse()
             .expect("creating session renew url");
 
-        let ttl_ns = ttl.as_secs() * 1000000000u64 + ttl.subsec_nanos() as u64;
+        let ttl_ns = ttl.as_secs() * 1_000_000_000u64 + ttl.subsec_nanos() as u64;
         let b = format!("{{\"TTL\": \"{}ns\"}}", ttl_ns);
         let bodylen = b.len() as u64;
 

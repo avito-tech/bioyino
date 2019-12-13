@@ -104,7 +104,7 @@ impl AggregationOptions {
                     if agg.starts_with("percentile-") {
                         agg.replace("-", ".")
                     } else {
-                        return Err(ConfigError::BadAggregate(agg.into()));
+                        return Err(ConfigError::BadAggregate(agg));
                     }
                 }
             };
@@ -112,7 +112,7 @@ impl AggregationOptions {
             opts.postfix_replacements.insert(parsed.clone(), repl.clone());
 
             opts.prefix_replacements
-                .insert(parsed.clone(), prefix_replacements.get(&agg).cloned().unwrap_or(String::new()));
+                .insert(parsed.clone(), prefix_replacements.get(&agg).cloned().unwrap_or_default());
 
             if destination != AggregationDestination::Name {
                 // only put tag replacements when aggregation into tags is enabled
@@ -124,7 +124,7 @@ impl AggregationOptions {
                         if agg.starts_with("percentile-") {
                             agg.replace("-", ".")
                         } else {
-                            return Err(ConfigError::BadAggregate(agg.into()));
+                            return Err(ConfigError::BadAggregate(agg));
                         }
                     }
                 };
@@ -266,7 +266,7 @@ impl IntoFuture for Aggregator {
                 }
                 AggregationMode::Separate => {
                     let pool = ThreadPoolBuilder::new()
-                        .thread_name(|i| format!("bioyino_crb{}", i).into())
+                        .thread_name(|i| format!("bioyino_crb{}", i))
                         .num_threads(options.multi_threads)
                         .build()
                         .unwrap();

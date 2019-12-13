@@ -26,6 +26,8 @@ pub struct CarbonClientOptions {
     pub addr: SocketAddr,
     pub bind: Option<SocketAddr>,
     pub options: Arc<AggregationOptions>,
+    //pub round: RoundTimestamp,
+    //pub interval: u32,
 }
 
 #[derive(Clone)]
@@ -38,11 +40,14 @@ pub struct CarbonBackend {
 
 impl CarbonBackend {
     pub(crate) fn new(options: CarbonClientOptions, ts: Duration, metrics: Arc<Vec<(MetricName, Aggregate<Float>, Float)>>, log: Logger) -> Self {
+        let ts = ts.as_secs();
+        let ts = ts - (ts % 30) + 30;
         Self {
             options,
             metrics,
             log,
-            ts: ts.as_secs().to_string().into(),
+            //ts: ts.as_secs().to_string().into(),
+            ts: ts.to_string().into(),
         }
     }
 }
@@ -64,7 +69,7 @@ impl IntoFuture for CarbonBackend {
 
         let elog = log.clone();
         let future = stream_future.map_err(GeneralError::Io).and_then(move |conn| {
-            info!(log, "carbon backend sending metrics");
+            info!(log, "carbon backend sending metrics"; "ts" => format!("{}", String::from_utf8_lossy(&ts[..])));
             let writer = CarbonCodec::new(ts.clone(), options.options.clone()).framed(conn);
             let metric_stream = stream::iter_ok::<_, ()>(SharedIter::new(metrics));
             metric_stream
@@ -95,7 +100,7 @@ impl<T> SharedIter<T> {
 impl<T: Clone> Iterator for SharedIter<T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
-        let n = self.inner.get(self.current).map(|i| i.clone());
+        let n = self.inner.get(self.current).cloned();
         self.current += 1;
         n
     }
@@ -131,16 +136,19 @@ impl Encoder for CarbonCodec {
     fn encode(&mut self, item: Self::Item, buf: &mut BytesMut) -> Result<(), Self::Error> {
         let (name, aggregate, value) = item;
         let options = &self.options;
-        if let Err(_) = name.put_with_aggregate(
-            buf,
-            options.destination,
-            &aggregate,
-            &options.postfix_replacements,
-            &options.prefix_replacements,
-            &options.tag_replacements,
-        ) {
+        if name
+            .put_with_aggregate(
+                buf,
+                options.destination,
+                &aggregate,
+                &options.postfix_replacements,
+                &options.prefix_replacements,
+                &options.tag_replacements,
+            )
+            .is_err()
+        {
             // TODO don't log error maybe
-            warn!("could not serialize '{:?}' with {:?}", &name.name[..], aggregate);
+            //warn!("could not serialize '{:?}' with {:?}", &name.name[..], aggregate);
             AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         };

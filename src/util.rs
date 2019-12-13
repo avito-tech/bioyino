@@ -248,11 +248,7 @@ impl BackoffRetryBuilder {
         F: IntoFuture + Clone,
     {
         let inner = Either::A(action.clone().into_future());
-        BackoffRetry {
-            action,
-            inner: inner,
-            options: self,
-        }
+        BackoffRetry { action, inner, options: self }
     }
 }
 
