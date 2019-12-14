@@ -41,7 +41,7 @@ pub struct CarbonBackend {
 impl CarbonBackend {
     pub(crate) fn new(options: CarbonClientOptions, ts: Duration, metrics: Arc<Vec<(MetricName, Aggregate<Float>, Float)>>, log: Logger) -> Self {
         let ts = ts.as_secs();
-        let ts = ts - (ts % 30) + 30;
+//        let ts = ts - (ts % 30) + 30;
         Self {
             options,
             metrics,

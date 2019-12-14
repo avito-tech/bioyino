@@ -317,7 +317,7 @@ pub fn aggregate_task(data: AggregationData) {
         .filter_map(|(idx, value)| {
             let aggregate = &options.aggregates[idx];
             match aggregate {
-                &Aggregate::UpdateCount => {
+                Aggregate::UpdateCount => {
                     if value < options.update_count_threshold {
                         // skip aggregates below update counter threshold
                         None

@@ -93,7 +93,7 @@ impl IntoFuture for NativeProtocolServer {
 
         let future = listener
             .incoming()
-            .map_err(|e| PeerError::Io(e))
+            .map_err(PeerError::Io)
             .for_each(move |conn| {
                 let peer_addr = conn.peer_addr().map(|addr| addr.to_string()).unwrap_or("[UNCONNECTED]".into());
                 let transport = ReadStream::new(conn, CAPNP_READER_OPTIONS);

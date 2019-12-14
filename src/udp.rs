@@ -28,7 +28,7 @@ use crate::{DROPS, INGRESS};
 pub(crate) fn start_sync_udp(
     log: Logger,
     listen: SocketAddr,
-    chans: &Vec<Sender<Task>>,
+    chans: &[Sender<Task>],
     config: Arc<System>,
     n_threads: usize,
     bufsize: usize,
@@ -51,14 +51,14 @@ pub(crate) fn start_sync_udp(
     let mm_timeout = if mm_timeout == 0 { config.network.buffer_flush_time } else { mm_timeout };
 
     for i in 0..n_threads {
-        let chans = chans.clone();
+        let chans = chans.to_owned();
         let log = log.new(o!("source"=>"mudp_thread"));
 
         let sck = sck.try_clone().unwrap();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
         thread::Builder::new()
-            .name(format!("bioyino_mudp{}", i).into())
+            .name(format!("bioyino_mudp{}", i))
             .spawn(move || {
                 let fd = sck.as_raw_fd();
                 {
@@ -241,7 +241,7 @@ pub(crate) fn start_sync_udp(
 pub(crate) fn start_async_udp(
     log: Logger,
     listen: SocketAddr,
-    chans: &Vec<Sender<Task>>,
+    chans: &[Sender<Task>],
     config: Arc<System>,
     n_threads: usize,
     greens: usize,
@@ -265,7 +265,7 @@ pub(crate) fn start_async_udp(
         // Each thread gets the clone of a socket pool
         let sockets = sockets.iter().map(|s| s.try_clone().unwrap()).collect::<Vec<_>>();
 
-        let chans = chans.clone();
+        let chans = chans.to_owned();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
         thread::Builder::new()

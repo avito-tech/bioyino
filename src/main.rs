@@ -103,6 +103,7 @@ fn main() {
     let (system, command) = System::load().expect("loading config");
 
     let config = system.clone();
+    #[allow(clippy::unneeded_field_pattern)]
     let System {
         verbosity,
         network:
@@ -156,7 +157,8 @@ fn main() {
     let rlog = slog::Logger::root(drain, o!("program"=>"bioyino"));
     // this lets root logger live as long as it needs
     let _guard = slog_scope::set_global_logger(rlog.clone());
-    let _log_guard = slog_stdlog::init().unwrap();
+
+    slog_stdlog::init().unwrap();
 
     if let Command::Query(command, dest) = command {
         let dest = try_resolve(&dest);

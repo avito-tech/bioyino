@@ -243,7 +243,7 @@ impl IntoFuture for ConsulSession {
                     let resp: ConsulSessionResponse =
                                 //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
                                 from_slice(&body).map_err(ConsulError::Parsing)?;
-                    debug!(log, "new session"; "id"=>format!("{}", resp.id));
+                    debug!(log, "new session"; "id"=>resp.id.to_string());
                     Ok(Some(resp.id))
                 });
                 Box::new(body) as Box<dyn Future<Item = Option<String>, Error = ConsulError>>
@@ -306,8 +306,8 @@ impl IntoFuture for ConsulRenew {
             Err(e) => Box::new(err(ConsulError::Http(e))),
             Ok(resp) => {
                 if resp.status() != StatusCode::OK {
-                    let status = resp.status().clone();
-                    let body = resp.into_body().concat2().map_err(|e| ConsulError::Http(e)).and_then(move |body| {
+                    let status = resp.status();
+                    let body = resp.into_body().concat2().map_err(ConsulError::Http).and_then(move |body| {
                         let msg = format!("renew error: {:?} {:?}", status, String::from_utf8(body.to_vec()));
                         Err(ConsulError::Renew(msg))
                     });
@@ -343,11 +343,11 @@ impl IntoFuture for ConsulAcquire {
         //.expect("building acquire request");
 
         let client = hyper::Client::new();
-        let acquire = client.request(req).map_err(|e| ConsulError::Http(e)).and_then(move |resp| {
-            resp.into_body().concat2().map_err(|e| ConsulError::Http(e)).and_then(move |body| {
+        let acquire = client.request(req).map_err(ConsulError::Http).and_then(move |resp| {
+            resp.into_body().concat2().map_err(ConsulError::Http).and_then(move |body| {
                 let acquired: bool =
                             //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
-                            from_slice(&body).map_err(|e| ConsulError::Parsing(e))?;
+                            from_slice(&body).map_err(ConsulError::Parsing)?;
 
                 switch_leader(acquired, &log);
                 // let should_set = {

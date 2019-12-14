@@ -256,16 +256,18 @@ impl IntoFuture for MgmtClient {
                     Err(e) => Box::new(err(MgmtError::Http(e))),
                     Ok(resp) => {
                         if resp.status() == StatusCode::OK {
-                            let body = resp.into_body().concat2().map_err(|e| MgmtError::Http(e)).map(move |body| {
-                                match serde_json::from_slice::<ServerStatus>(&*body) {
-                                    Ok(status) => {
-                                        println!("{:?}", status);
-                                    }
-                                    Err(e) => {
-                                        println!("Error parsing server response: {}", e.to_string());
-                                    }
-                                }
-                            });
+                            let body =
+                                resp.into_body()
+                                    .concat2()
+                                    .map_err(MgmtError::Http)
+                                    .map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
+                                        Ok(status) => {
+                                            println!("{:?}", status);
+                                        }
+                                        Err(e) => {
+                                            println!("Error parsing server response: {}", e.to_string());
+                                        }
+                                    });
                             Box::new(body) as Box<dyn Future<Item = (), Error = MgmtError>>
                         } else {
                             Box::new(ok(warn!(clog, "Bad status returned from server: {:?}", resp)))
@@ -286,16 +288,18 @@ impl IntoFuture for MgmtClient {
                     Err(e) => Box::new(err(MgmtError::Http(e))),
                     Ok(resp) => {
                         if resp.status() == StatusCode::OK {
-                            let body = resp.into_body().concat2().map_err(|e| MgmtError::Http(e)).map(move |body| {
-                                match serde_json::from_slice::<ServerStatus>(&*body) {
-                                    Ok(status) => {
-                                        println!("New server state: {:?}", status);
-                                    }
-                                    Err(e) => {
-                                        println!("Error parsing server response: {}", e.to_string());
-                                    }
-                                }
-                            });
+                            let body =
+                                resp.into_body()
+                                    .concat2()
+                                    .map_err(MgmtError::Http)
+                                    .map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
+                                        Ok(status) => {
+                                            println!("New server state: {:?}", status);
+                                        }
+                                        Err(e) => {
+                                            println!("Error parsing server response: {}", e.to_string());
+                                        }
+                                    });
                             Box::new(body) as Box<dyn Future<Item = (), Error = MgmtError>>
                         } else {
                             Box::new(ok(warn!(clog, "Bad status returned from server: {:?}", resp)))
