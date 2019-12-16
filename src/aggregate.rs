@@ -18,7 +18,7 @@ use bioyino_metric::{
     Metric,
 };
 
-use crate::config::{Aggregation, ConfigError};
+use crate::config::{Aggregation, ConfigError, RoundTimestamp};
 use crate::task::Task;
 use crate::{Cache, Float};
 use crate::{AGG_ERRORS, DROPS};
@@ -35,27 +35,29 @@ pub enum AggregationMode {
 
 #[derive(Debug, Clone)]
 pub struct AggregationOptions {
-    pub update_count_threshold: Float,
+    pub round_timestamp: RoundTimestamp,
     pub mode: AggregationMode,
+    pub multi_threads: usize,
+    pub update_count_threshold: Float,
     pub destination: AggregationDestination,
     pub aggregates: Vec<Aggregate<Float>>,
     pub postfix_replacements: HashMap<Aggregate<Float>, String>,
     pub prefix_replacements: HashMap<Aggregate<Float>, String>,
     pub tag_replacements: HashMap<Aggregate<Float>, String>,
-    pub multi_threads: usize,
 }
 
 impl AggregationOptions {
     pub(crate) fn from_config(config: Aggregation, log: Logger) -> Result<Arc<Self>, ConfigError> {
         let Aggregation {
-            update_count_threshold,
+            round_timestamp,
             mode,
+            threads,
+            update_count_threshold,
             destination,
             ms_aggregates,
             postfix_replacements,
             prefix_replacements,
             tag_replacements,
-            threads,
             tag_name,
         } = config;
 
@@ -71,10 +73,11 @@ impl AggregationOptions {
 
         let mut opts = Self {
             //
-            update_count_threshold: Float::from(update_count_threshold),
+            round_timestamp,
             mode,
-            destination,
             multi_threads,
+            update_count_threshold: Float::from(update_count_threshold),
+            destination,
             aggregates: Vec::new(),
             postfix_replacements: HashMap::new(),
             prefix_replacements: HashMap::new(),
@@ -209,9 +212,11 @@ impl IntoFuture for Aggregator {
         info!(log, "leader accumulating metrics");
 
         let acc_log = log.clone();
+
         let accumulate = send_tasks.and_then(move |_| {
             info!(acc_log, "collecting responses from tasks");
             task_rx.fold(HashMap::new(), move |mut acc: Cache, metrics| {
+                #[allow(clippy::map_entry)] // clippy offers us the entry API here, but it doesn't work without additional cloning
                 metrics
                     .into_iter()
                     .map(|(name, metric)| {
@@ -322,10 +327,10 @@ pub fn aggregate_task(data: AggregationData) {
                         // skip aggregates below update counter threshold
                         None
                     } else {
-                        Some((name.clone(), aggregate.clone(), value))
+                        Some((name.clone(), *aggregate, value))
                     }
                 }
-                _ => Some((name.clone(), aggregate.clone(), value)),
+                _ => Some((name.clone(), *aggregate, value)),
             }
         })
         .map(|data| {

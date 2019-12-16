@@ -18,6 +18,7 @@ max-tags-len = 9000
 create-untagged-copy = true
 
 [aggregation]
+round-timestamp = "up"
 mode = "separate"
 threads = 8
 destination = "smart"

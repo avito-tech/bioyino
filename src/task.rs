@@ -140,14 +140,14 @@ impl TaskRunner {
                 let mut rotated = HashMap::with_capacity(self.long.len() / 2);
                 std::mem::swap(&mut self.long, &mut rotated);
                 let log = self.log.clone();
-                channel.map(|c| {
+                if let Some(c) = channel {
                     let log = log.clone();
                     let respond = c.send(rotated).map(|_| ()).map_err(move |_| {
                         debug!(log, "rotated data not sent");
                         DROPS.fetch_add(1, Ordering::Relaxed);
                     });
                     spawn(respond);
-                });
+                }
 
                 self.buffers.retain(|_, (ref mut times, _)| {
                     *times += 1;

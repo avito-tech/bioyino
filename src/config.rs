@@ -125,7 +125,9 @@ impl Default for Metrics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Aggregation {
-    //    pub round_timestamp: RoundTimestamp,
+    /// Timestamp rounding
+    pub round_timestamp: RoundTimestamp,
+
     /// Choose the way of aggregation
     pub mode: AggregationMode,
 
@@ -153,6 +155,17 @@ pub struct Aggregation {
 
     /// the default tag name to be used for aggregation
     pub tag_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum RoundTimestamp {
+    /// round timestamp to closest interval down
+    Down,
+    /// do not round the timestamp
+    No,
+    /// round timestamp to closest interval up
+    Up,
 }
 
 pub fn default_ms_aggregates() -> Vec<String> {
@@ -194,6 +207,7 @@ impl Default for Aggregation {
     fn default() -> Self {
         Self {
             //
+            round_timestamp: RoundTimestamp::No,
             mode: AggregationMode::Single,
             threads: None,
             update_count_threshold: 200,

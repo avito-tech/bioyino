@@ -78,10 +78,12 @@ pub(crate) fn start_sync_udp(
                     let mut addrs: Vec<[u8; 20]> = Vec::with_capacity(mm_packets);
                     addrs.resize(mm_packets, [0; 20]);
 
-                    for i in 0..mm_packets {
+                    //for i in 0..mm_packets { // clippy said iterator may be faster
+                    for addr in addrs.iter_mut().take(mm_packets) {
                         let m = mmsghdr {
                             msg_hdr: msghdr {
-                                msg_name: addrs[i].as_mut_ptr() as *mut c_void,
+                                //msg_name: addrs[i].as_mut_ptr() as *mut c_void,
+                                msg_name: addr.as_mut_ptr() as *mut c_void,
                                 msg_namelen: 20 as socklen_t,
                                 msg_iov: null_mut(),     // this will change later
                                 msg_iovlen: 0,           // this will change later
@@ -171,7 +173,7 @@ pub(crate) fn start_sync_udp(
                                 INGRESS.fetch_add(mlen, Ordering::Relaxed);
 
                                 // create address entry in messagemap
-                                let entry = bufmap.entry(addrs[i]).or_insert(BytesMut::with_capacity(mlen));
+                                let entry = bufmap.entry(addrs[i]).or_insert_with(|| BytesMut::with_capacity(mlen));
 
                                 // check we can fit the buffer
                                 if entry.remaining_mut() < mlen + 1 {

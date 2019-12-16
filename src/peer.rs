@@ -95,7 +95,7 @@ impl IntoFuture for NativeProtocolServer {
             .incoming()
             .map_err(PeerError::Io)
             .for_each(move |conn| {
-                let peer_addr = conn.peer_addr().map(|addr| addr.to_string()).unwrap_or("[UNCONNECTED]".into());
+                let peer_addr = conn.peer_addr().map(|addr| addr.to_string()).unwrap_or_else(|_| "[UNCONNECTED]".into());
                 let transport = ReadStream::new(conn, CAPNP_READER_OPTIONS);
 
                 let log = log.new(o!("remote"=>peer_addr));
@@ -195,14 +195,14 @@ pub struct NativeProtocolSnapshot {
 }
 
 impl NativeProtocolSnapshot {
-    pub fn new(log: &Logger, nodes: Vec<String>, client_bind: Option<SocketAddr>, interval: Duration, chans: &Vec<Sender<Task>>) -> Self {
+    pub fn new(log: &Logger, nodes: Vec<String>, client_bind: Option<SocketAddr>, interval: Duration, chans: &[Sender<Task>]) -> Self {
         let nodes = nodes.into_iter().map(|node| try_resolve(&node)).collect::<Vec<_>>();
         Self {
             log: log.new(o!("source"=>"peer-client")),
             nodes,
             client_bind,
             interval,
-            chans: chans.clone(),
+            chans: chans.to_owned(),
         }
     }
 }
@@ -222,7 +222,7 @@ impl IntoFuture for NativeProtocolSnapshot {
         } = self;
 
         let timer = Interval::new(Instant::now() + interval, interval);
-        let future = timer.map_err(|e| PeerError::Timer(e)).for_each(move |_| {
+        let future = timer.map_err(PeerError::Timer).for_each(move |_| {
             let chans = chans.clone();
             let nodes = nodes.clone();
 
@@ -241,7 +241,7 @@ impl IntoFuture for NativeProtocolSnapshot {
                     PeerError::TaskSend
                 })
                 .and_then(move |mut metrics| {
-                    metrics.retain(|m| m.len() > 0);
+                    metrics.retain(|m| !m.is_empty());
                     Ok(Arc::new(metrics))
                 });
 
@@ -310,7 +310,7 @@ impl IntoFuture for SnapshotSender {
         };
 
         let sender = stream_future
-            .map_err(|e| PeerError::Io(e))
+            .map_err(PeerError::Io)
             .and_then(move |conn| {
                 let codec = ::capnp_futures::serialize::Transport::new(conn, CAPNP_READER_OPTIONS);
 
@@ -321,7 +321,7 @@ impl IntoFuture for SnapshotSender {
                     let mut multi_metric = builder.init_snapshot(flat_len as u32);
                     metrics
                         .iter()
-                        .flat_map(|hmap| hmap.into_iter())
+                        .flat_map(|hmap| hmap.iter())
                         .enumerate()
                         .map(|(idx, (name, metric))| {
                             let mut c_metric = multi_metric.reborrow().get(idx as u32);

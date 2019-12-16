@@ -1,7 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use failure::Error;
@@ -17,6 +16,7 @@ use tokio_codec::{Decoder, Encoder};
 use bioyino_metric::{aggregate::Aggregate, name::MetricName};
 
 use crate::aggregate::AggregationOptions;
+use crate::config::RoundTimestamp;
 use crate::errors::GeneralError;
 use crate::util::bound_stream;
 use crate::{Float, AGG_ERRORS, EGRESS};
@@ -25,9 +25,8 @@ use crate::{Float, AGG_ERRORS, EGRESS};
 pub struct CarbonClientOptions {
     pub addr: SocketAddr,
     pub bind: Option<SocketAddr>,
+    pub interval: u64, // the timer is external, this is only used to calculate timestamp rounding
     pub options: Arc<AggregationOptions>,
-    //pub round: RoundTimestamp,
-    //pub interval: u32,
 }
 
 #[derive(Clone)]
@@ -39,14 +38,16 @@ pub struct CarbonBackend {
 }
 
 impl CarbonBackend {
-    pub(crate) fn new(options: CarbonClientOptions, ts: Duration, metrics: Arc<Vec<(MetricName, Aggregate<Float>, Float)>>, log: Logger) -> Self {
-        let ts = ts.as_secs();
-//        let ts = ts - (ts % 30) + 30;
+    pub(crate) fn new(options: CarbonClientOptions, ts: u64, metrics: Arc<Vec<(MetricName, Aggregate<Float>, Float)>>, log: Logger) -> Self {
+        let ts = match options.options.round_timestamp {
+            RoundTimestamp::Down => ts - (ts % options.interval),
+            RoundTimestamp::No => ts,
+            RoundTimestamp::Up => ts - (ts % options.interval) + options.interval,
+        };
         Self {
             options,
             metrics,
             log,
-            //ts: ts.as_secs().to_string().into(),
             ts: ts.to_string().into(),
         }
     }
@@ -140,7 +141,7 @@ impl Encoder for CarbonCodec {
             .put_with_aggregate(
                 buf,
                 options.destination,
-                &aggregate,
+                aggregate,
                 &options.postfix_replacements,
                 &options.prefix_replacements,
                 &options.tag_replacements,
@@ -192,7 +193,7 @@ mod test {
 
         let mut runtime = Runtime::new().expect("creating runtime for carbon test");
 
-        let ts = 1574745744u64;
+        let ts = 1574745744u64; // this is 24 seconds before start of the minute
 
         let name = MetricName::new(
             BytesMut::from("complex.test.bioyino_tagged;tag2=val2;tag1=value1"),
@@ -200,13 +201,18 @@ mod test {
             &mut intermediate,
         )
         .unwrap();
-        let agg_opts = AggregationOptions::from_config(Aggregation::default(), log.clone()).unwrap();
+
+        let mut agg_opts = Aggregation::default();
+        agg_opts.round_timestamp = RoundTimestamp::Up;
+
+        let agg_opts = AggregationOptions::from_config(agg_opts, log.clone()).unwrap();
         let options = CarbonClientOptions {
             addr: "127.0.0.1:2003".parse().unwrap(),
             bind: None,
+            interval: 30,
             options: agg_opts,
         };
-        let backend = CarbonBackend::new(options, Duration::from_secs(ts), Arc::new(vec![(name, Aggregate::Value, 42f64)]), log.clone());
+        let backend = CarbonBackend::new(options, ts, Arc::new(vec![(name, Aggregate::Value, 42f64)]), log.clone());
 
         let server = tokio::net::TcpListener::bind(&"127.0.0.1:2003".parse::<::std::net::SocketAddr>().unwrap())
             .unwrap()
@@ -214,7 +220,8 @@ mod test {
             .map_err(|e| panic!(e))
             .for_each(move |conn| {
                 LinesCodec::new().framed(conn).for_each(|line| {
-                    assert_eq!(&line, "complex.test.bioyino_tagged;tag1=value1;tag2=val2 42 1574745744");
+                    // with "up" the timestamp have to be rounded to 30th second which is at 1574745750
+                    assert_eq!(&line, "complex.test.bioyino_tagged;tag1=value1;tag2=val2 42 1574745750");
                     Ok(())
                 })
             })

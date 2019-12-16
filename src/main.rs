@@ -334,7 +334,7 @@ fn main() {
 
     let agg_opts = AggregationOptions::from_config(aggregation, carbon_log.clone()).expect("parsing aggregation options");
     let carbon_timer = carbon_timer.map_err(GeneralError::Timer).for_each(move |_tick| {
-        let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(GeneralError::Time)?;
+        let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(GeneralError::Time)?.as_secs();
 
         let backend_addr = try_resolve(&carbon.address);
         let tchans = tchans.clone();
@@ -375,18 +375,16 @@ fn main() {
                         let carbon_log = carbon_log.clone();
                         let carbon = backend_opts.clone();
                         let chunk_size = if metrics.len() > carbon.chunks { metrics.len() / carbon.chunks } else { 1 };
-                        // TODO we could do this without allocations
-                        // but in rust it's not so easy with these types
-                        // probably Pin API would help
-                        // probably changing to Arc<[Metric]> would
                         metrics
                             .chunks(chunk_size)
                             .map(move |metrics| {
                                 let options = CarbonClientOptions {
                                     addr: backend_addr,
                                     bind: backend_opts.bind_address,
+                                    interval: carbon.interval,
                                     options: options.clone(),
                                 };
+
                                 let backend = CarbonBackend::new(options, ts, Arc::new(metrics.to_vec()), carbon_log.clone());
                                 let retrier = BackoffRetryBuilder {
                                     delay: backend_opts.connect_delay,

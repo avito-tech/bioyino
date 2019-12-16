@@ -86,7 +86,9 @@ impl IntoFuture for StatsdServer {
                 }
 
                 {
-                    let buf = bufmap.entry(addr).or_insert(BytesMut::with_capacity(config.network.buffer_flush_length));
+                    let buf = bufmap
+                        .entry(addr)
+                        .or_insert_with(|| BytesMut::with_capacity(config.network.buffer_flush_length));
                     recv_counter += size;
                     // check we can fit the buffer
                     if buf.remaining_mut() < size {

@@ -18,6 +18,7 @@
     * aggregates can be placed in tags instead of postfixes (see `aggregate.mode` parameter)
     * a new option `metrics.create-untagged-copy` is available to create a copy of untagged metric for compatibility
       the option is false by default and needs to be enabled explicitly
+* timestamp rounding option is available as `aggregate.round-timestamp` to better match aggregation delays with rounding at receiver
 
 See config.toml for configuration instructions
 
