@@ -135,6 +135,13 @@ snapshot-interval = 1000
 # create-untagged-copy = false
 
 [aggregation]
+# round timestamp to interval of aggregation
+# possible values:
+# "up" - round to uppor bound of interval
+# "down" - round to lower bound
+# "no" - use exact timestamp, i.e. no rounding
+# round-timestamp = "no"
+
 # the threading mode of aggregation:
 # single - in a single thread
 # common - in the general thread pool along with parsing ang aggregating metrics

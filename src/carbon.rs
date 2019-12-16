@@ -9,7 +9,7 @@ use futures::future::{err, Either};
 use futures::stream;
 use futures::{Future, IntoFuture, Sink, Stream};
 use log::warn;
-use slog::{info, Logger};
+use slog::{info, o, Logger};
 use tokio::net::TcpStream;
 use tokio_codec::{Decoder, Encoder};
 
@@ -39,16 +39,21 @@ pub struct CarbonBackend {
 
 impl CarbonBackend {
     pub(crate) fn new(options: CarbonClientOptions, ts: u64, metrics: Arc<Vec<(MetricName, Aggregate<Float>, Float)>>, log: Logger) -> Self {
+        // we have interval in milliseconds
+        // but we need a timestamp to be rounded to seconds
+        let interval = options.interval / 1000;
         let ts = match options.options.round_timestamp {
-            RoundTimestamp::Down => ts - (ts % options.interval),
+            RoundTimestamp::Down => ts - (ts % interval),
             RoundTimestamp::No => ts,
-            RoundTimestamp::Up => ts - (ts % options.interval) + options.interval,
+            RoundTimestamp::Up => ts - (ts % interval) + interval,
         };
+        let ts = ts.to_string();
+        let log = log.new(o!("module"=>"carbon backend", "ts"=>ts.clone()));
         Self {
             options,
             metrics,
             log,
-            ts: ts.to_string().into(),
+            ts: ts.into(),
         }
     }
 }
@@ -70,15 +75,15 @@ impl IntoFuture for CarbonBackend {
 
         let elog = log.clone();
         let future = stream_future.map_err(GeneralError::Io).and_then(move |conn| {
-            info!(log, "carbon backend sending metrics"; "ts" => format!("{}", String::from_utf8_lossy(&ts[..])));
+            info!(log, "sending metrics");
             let writer = CarbonCodec::new(ts.clone(), options.options.clone()).framed(conn);
             let metric_stream = stream::iter_ok::<_, ()>(SharedIter::new(metrics));
             metric_stream
                 .map_err(|_| GeneralError::CarbonBackend)
                 .forward(writer.sink_map_err(|_| GeneralError::CarbonBackend))
-                .map(move |_| info!(log, "carbon backend finished"))
+                .map(move |_| info!(log, "finished"))
                 .map_err(move |e| {
-                    info!(elog, "carbon backend error");
+                    info!(elog, "something wrong"; "error" => format!("{:?}", e));
                     e
                 })
         });
@@ -209,7 +214,7 @@ mod test {
         let options = CarbonClientOptions {
             addr: "127.0.0.1:2003".parse().unwrap(),
             bind: None,
-            interval: 30,
+            interval: 30000,
             options: agg_opts,
         };
         let backend = CarbonBackend::new(options, ts, Arc::new(vec![(name, Aggregate::Value, 42f64)]), log.clone());
