@@ -158,7 +158,7 @@ impl Encoder for CarbonCodec {
         // write somehow doesn't extend buffer size giving "cannot fill sholw buffer" error
         buf.reserve(64);
         if let Err(e) = ftoa::write(&mut buf.writer(), value) {
-            warn!("write error {:?}", e);
+            warn!("buffer write error {:?}", e);
             AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         }

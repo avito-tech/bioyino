@@ -7,7 +7,6 @@ use futures::sync::mpsc::{self, Sender, UnboundedSender};
 use futures::{Future, IntoFuture, Sink, Stream};
 use tokio::executor::current_thread::spawn;
 
-use log::warn as logw;
 use rayon::{iter::IntoParallelIterator, iter::ParallelIterator, ThreadPoolBuilder};
 use serde_derive::{Deserialize, Serialize};
 use slog::{info, warn, Logger};
@@ -222,7 +221,6 @@ impl IntoFuture for Aggregator {
                     .map(|(name, metric)| {
                         if acc.contains_key(&name) {
                             acc.get_mut(&name).unwrap().accumulate(metric).unwrap_or_else(|_| {
-                                logw!("accumulation error");
                                 AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
                             });
                         } else {
@@ -338,7 +336,6 @@ pub fn aggregate_task(data: AggregationData) {
                 .clone()
                 .send(data)
                 .map_err(|_| {
-                    logw!("error receiving task response");
                     AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
                 })
                 .map(|_| ());
