@@ -154,7 +154,7 @@ impl Encoder for CarbonCodec {
             .is_err()
         {
             // TODO don't log error maybe
-            //warn!("could not serialize '{:?}' with {:?}", &name.name[..], aggregate);
+            warn!("could not serialize '{:?}' with {:?}", &name.name[..], aggregate);
             AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
             return Ok(());
         };

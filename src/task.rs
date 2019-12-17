@@ -7,6 +7,7 @@ use bytes::{BufMut, BytesMut};
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::oneshot;
 use futures::{Future, Sink};
+use log::warn as logw;
 use slog::{debug, warn, Logger};
 use tokio::runtime::current_thread::spawn;
 
@@ -30,9 +31,18 @@ pub enum Task {
 }
 
 fn update_metric(cache: &mut Cache, name: MetricName, metric: Metric<Float>) {
+    let ename = name.clone();
+    let em = metric.clone();
     match cache.entry(name) {
         Entry::Occupied(ref mut entry) => {
-            entry.get_mut().accumulate(metric).unwrap_or_else(|_| {
+            let mtype = { entry.get().mtype.clone() };
+            entry.get_mut().accumulate(metric.clone()).unwrap_or_else(|_| {
+                logw!(
+                    "could not accumulate {:?} : {:?} into {:?} in task",
+                    String::from_utf8_lossy(&ename.name[..]),
+                    em,
+                    mtype
+                );
                 AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
             });
         }

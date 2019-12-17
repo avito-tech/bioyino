@@ -43,7 +43,7 @@ capnp-futures = "^0.10"
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
 rand = "^0.6"
 rayon = "^1.0"
-bioyino-metric = { path = "/home/albibek/projects/rust/bioyino-metric"}
+bioyino-metric = { git = "https://github.com/Albibek/bioyino-metric", branch = "metric-tags" }
 
 [build-dependencies]
 capnpc = "^0.10"
