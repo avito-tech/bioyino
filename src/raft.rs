@@ -42,7 +42,7 @@ impl Notifier for LeaderNotifier {
 // we reuse the type to avoid creating a new one
 impl ConnectionSolver for LeaderNotifier {
     fn solve(&self, is_client: bool, local_id: ServerId, remote_id: ServerId) -> bool {
-        return BiggerIdSolver.solve(is_client, local_id, remote_id);
+        BiggerIdSolver.solve(is_client, local_id, remote_id)
     }
 }
 

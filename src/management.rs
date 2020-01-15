@@ -221,10 +221,15 @@ pub struct MgmtClient {
 
 impl MgmtClient {
     pub fn new(log: Logger, address: SocketAddr, command: MgmtCommand) -> Self {
-        Self { log: log.new(o!("source"=>"management-client", "server"=>format!("{}", address.clone()))), address, command }
+        Self {
+            log: log.new(o!("source"=>"management-client", "server"=>format!("{}", address.clone()))),
+            address,
+            command,
+        }
     }
 }
 
+#[allow(clippy::unit_arg)]
 impl IntoFuture for MgmtClient {
     type Item = ();
     type Error = MgmtError;
@@ -246,14 +251,18 @@ impl IntoFuture for MgmtClient {
                     Err(e) => Box::new(err(MgmtError::Http(e))),
                     Ok(resp) => {
                         if resp.status() == StatusCode::OK {
-                            let body = resp.into_body().concat2().map_err(|e| MgmtError::Http(e)).map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
-                                Ok(status) => {
-                                    println!("{:?}", status);
-                                }
-                                Err(e) => {
-                                    println!("Error parsing server response: {}", e.to_string());
-                                }
-                            });
+                            let body =
+                                resp.into_body()
+                                    .concat2()
+                                    .map_err(MgmtError::Http)
+                                    .map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
+                                        Ok(status) => {
+                                            println!("{:?}", status);
+                                        }
+                                        Err(e) => {
+                                            println!("Error parsing server response: {}", e.to_string());
+                                        }
+                                    });
                             Box::new(body) as Box<dyn Future<Item = (), Error = MgmtError>>
                         } else {
                             Box::new(ok(warn!(clog, "Bad status returned from server: {:?}", resp)))
@@ -274,14 +283,18 @@ impl IntoFuture for MgmtClient {
                     Err(e) => Box::new(err(MgmtError::Http(e))),
                     Ok(resp) => {
                         if resp.status() == StatusCode::OK {
-                            let body = resp.into_body().concat2().map_err(|e| MgmtError::Http(e)).map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
-                                Ok(status) => {
-                                    println!("New server state: {:?}", status);
-                                }
-                                Err(e) => {
-                                    println!("Error parsing server response: {}", e.to_string());
-                                }
-                            });
+                            let body =
+                                resp.into_body()
+                                    .concat2()
+                                    .map_err(MgmtError::Http)
+                                    .map(move |body| match serde_json::from_slice::<ServerStatus>(&*body) {
+                                        Ok(status) => {
+                                            println!("New server state: {:?}", status);
+                                        }
+                                        Err(e) => {
+                                            println!("Error parsing server response: {}", e.to_string());
+                                        }
+                                    });
                             Box::new(body) as Box<dyn Future<Item = (), Error = MgmtError>>
                         } else {
                             Box::new(ok(warn!(clog, "Bad status returned from server: {:?}", resp)))
@@ -357,7 +370,13 @@ mod test {
             client.into_future().map_err(|e| panic!("{:?}", e)).map(move |_| {
                 // ensure state has changed
                 let state = ServerStatus::new();
-                assert_eq!(state, ServerStatus { consensus_status: ConsensusState::Enabled, leader_status: true })
+                assert_eq!(
+                    state,
+                    ServerStatus {
+                        consensus_status: ConsensusState::Enabled,
+                        leader_status: true
+                    }
+                )
             })
         });
         runtime.spawn(delayed);

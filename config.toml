@@ -26,39 +26,6 @@ stats-prefix = "resources.monitoring.bioyino"
 # What consensus to use: "consul", "internal" or "none"
 consensus = "none"
 
-[metrics]
-# Should we provide metrics that update more than update-counter-threshold times diring aggregation interval
-count-updates = true
-
-# Prefix for metric update statistics (no trailing dot!)
-update-counter-prefix = "resources.monitoring.bioyino.updates"
-
-# Suffix for metric update statistics (no leading dot!)
-update-counter-suffix = ""
-
-# Minimal update counter to be reported
-update-counter-threshold = 200
-
-# Aggregation can be made in two ways giving a tradeoff between the aggregation speed and
-# the probability of loosing metrics. See doc/aggregation.md for more information.
-# Available variants here: "single", "common", "separate"
-#aggregation-mode = "single"
-
-# Number of threads to use for aggregation in "separate" mode
-#aggregation-threads = (unset by default)
-
-# Process buffers from different hosts separately, this gives more guarantee to parse
-# metrics from different hosts correctly. Can play bad if lots of metrics is received from a single host, set
-# it to false if you have such use case
-# consistent-parsing = true
-
-# Log all buffers being dropped due to parsing errors. Can be very spammy.
-# log-parse-errors = false
-
-# Size of buffer that parser considers invalid. Used to avoid DoS attacks on parser.
-# Increase this if you have metrics taking more than 1000 bytes
-# max-unparsed-buffer = 1000
-
 [carbon]
 
 # IP and port of the carbon-protocol backend to send aggregated data to
@@ -66,7 +33,7 @@ address = "127.0.0.1:2003"
 
 # Address to bind carbon client to when connecting
 # default: not specified, so no bind happens
-#bind_address = "127.0.0.1:2003"
+#bind-address = "127.0.0.1:2003"
 
 # How often to send metrics to carbon backend, ms
 interval = 30000
@@ -145,6 +112,84 @@ nodes = []
 # Interval to send snapshots to nodes, ms
 snapshot-interval = 1000
 
+[metrics]
+# Process buffers from different hosts separately, this gives more guarantee to parse
+# metrics from different hosts correctly. Can play bad if lots of metrics is received from a single host, set
+# it to false if you have such use case
+# consistent-parsing = true
+
+# Log all buffers being dropped due to parsing errors. Can be very spammy.
+# log-parse-errors = false
+
+# Size of buffer that parser considers invalid. Used to avoid DoS attacks on parser.
+# Increase this if you have metrics taking more than 1000 bytes
+# max-unparsed-buffer = 10000
+
+# Size of tags part of a metric (after semicolon character, not including the leading semicolon itself)
+# max-tags-len = 9000
+
+# Since tagged metric becomes a totally different metric in many systems the timeseries for such metrics
+# can be broken. To avoid this for the time the metrics is adopted, this option allows to create a copy of
+# such tagged metric, but without tags
+# Please note that this is effectively the double amount of memory and processing times
+# create-untagged-copy = false
+
+[aggregation]
+# round timestamp to interval of aggregation
+# possible values:
+# "up" - round to uppor bound of interval
+# "down" - round to lower bound
+# "no" - use exact timestamp, i.e. no rounding
+# round-timestamp = "no"
+
+# the threading mode of aggregation:
+# single - in a single thread
+# common - in the general thread pool along with parsing ang aggregating metrics
+# separate - in a separate thread pool
+mode = "single"
+
+# available values: smart (explained below), name, tag, both
+# smart means uto detection based on existence of tags in the metric,
+# so, for example sum for `some.metric` will be aggregated as `some.metric.sum`
+# but for `some.metric;tag=value` it will automatically become `some.metric;tag=value;aggregate=sum`
+destination = "smart"
+
+# updates aggregate is usually a debug value than some real one
+# also thi is the only one used for every type of metric, not only ms
+# so it's reasonable to avoid receiving a doubled amount of all metrics
+# This option allows to receive only metrics updated too often
+update-count-threshold = 200
+
+# a list of aggregates gatheredfor each ms-typed metric
+# please, note that setting this value will define the exact way, so, i.e. ["mean"] will gather ONLY ONE aggregate
+#
+# To add new percentiles an integer value with "precentile-" prefix should be used.
+# It will then be "appended" (in reality this is not string based calculation) with "0."
+# For example, "percentile-9999" will become 0.9999th percentile
+#
+# this is the full list of default values
+#ms-aggregates = [ "count", "last", "min", "max", "sum", "median", "mean", "updates", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
+
+# these attributes allow to change naming of aggregates in name postfix, prefix or in tags
+# by default names are the same as aggregate names, except for percentiles
+# percentile postfixes by default look like "percentile.99"
+
+# NOT defaults, just example
+#postfix-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+
+# prefix specific aggregates with specified string
+# all prefixes are empty by default
+# NOTE: you most probably want EITHER prefix or postfix, so having prefix specified here,
+# don't forget to explicitly set postfix to ""
+#
+# NOT defaults, just example
+#prefix-replacements = { "updates" = "resources.monitoring.bioyino.updates" }
+
+#tag-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+
+# the default tag name taken when replacement is not specified
+# tag-name = "aggregate"
+
 # Settings for internal Raft
 [raft]
 # Defer start of raft consensus to avoid node becoming leader too early
@@ -165,7 +210,8 @@ snapshot-interval = 1000
 # this-node = <empty>
 
 # A map of other raft nodes. Keys are in form of hostname:port or IP:port
-# values are integers
+# values are integer IDs
+# this map is crucial to have the same address <-> ID mappings for all nodes
 nodes = {}
 
 # allow binding raft outgoing connnections to specific IP

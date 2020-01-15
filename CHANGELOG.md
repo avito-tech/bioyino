@@ -1,6 +1,32 @@
-# Release 0.5.1 #
+# Release 0.6.0 #
 
-* fixed bug with parallel aggregation not working in separate thread pool mode
+## Incompatible changes ##
+* aggregation options now have separate section. Changed parameters:
+    * `metrics.aggregation-mode` -> `aggregation.mode`
+    * `metrics.aggregation-threads` -> `aggregation.threads`
+    * `metrics.update-counter-threshold` -> `aggregate.update-count-threshold` (note `count` instead of `counter`)
+
+* a list of particular aggregates is now customizable for ms-type metrics
+* aggregate naming is now customizable through `prefix-replacements`, `tag-replacements` and `postfix-replacements` in `aggregate` section
+
+* update counter is now an aggregate. Options changed:
+    * `metrics.update-counter-prefix` moved to `prefix-replacements` naturally
+    * `metrics.update-counter-suffix` moved to `postfix-replacements` naturally
+
+## Major changes ##
+* graphite-style tags are now supported:
+    * aggregates can be placed in tags instead of postfixes (see `aggregate.mode` parameter)
+    * a new option `metrics.create-untagged-copy` is available to create a copy of untagged metric for compatibility
+      the option is false by default and needs to be enabled explicitly
+* timestamp rounding option is available as `aggregate.round-timestamp` to better match aggregation delays with rounding at receiver
+
+See config.toml for configuration instructions
+
+## Minor changes
+* more unit testing
+
+# Release 0.5.1 #
+* Fixed bug where parallel aggregation was panicking if turned on
 
 # Release 0.5.0 #
 

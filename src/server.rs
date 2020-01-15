@@ -11,9 +11,9 @@ use futures::{Future, IntoFuture, Sink};
 use tokio::executor::current_thread::spawn;
 use tokio::net::UdpSocket;
 
-use crate::{DROPS, INGRESS};
 use crate::config::System;
 use crate::task::Task;
+use crate::{DROPS, INGRESS};
 
 #[derive(Debug)]
 pub struct StatsdServer {
@@ -41,7 +41,7 @@ impl StatsdServer {
         readbuf: BytesMut,
         flush_flags: Arc<Vec<AtomicBool>>,
         thread_idx: usize,
-        ) -> Self {
+    ) -> Self {
         Self {
             socket,
             chans,
@@ -88,7 +88,7 @@ impl IntoFuture for StatsdServer {
                 {
                     let buf = bufmap
                         .entry(addr)
-                        .or_insert(BytesMut::with_capacity(config.network.buffer_flush_length));
+                        .or_insert_with(|| BytesMut::with_capacity(config.network.buffer_flush_length));
                     recv_counter += size;
                     // check we can fit the buffer
                     if buf.remaining_mut() < size {
@@ -98,10 +98,7 @@ impl IntoFuture for StatsdServer {
                     buf.put(&received[0..size]);
                 }
 
-                let flush = flush_flags
-                    .get(thread_idx)
-                    .unwrap()
-                    .swap(false, Ordering::SeqCst);
+                let flush = flush_flags.get(thread_idx).unwrap().swap(false, Ordering::SeqCst);
 
                 if recv_counter >= config.network.buffer_flush_length || flush {
                     bufmap
@@ -118,51 +115,23 @@ impl IntoFuture for StatsdServer {
                                     next = 0;
                                 }
                                 let chan = chans[next].clone();
-                                next = next + 1;
+                                next += 1;
                                 chan
                             };
 
                             spawn(
                                 chan.send(Task::Parse(ahash, buf))
-                                .map_err(|_| {
-                                    DROPS.fetch_add(1, Ordering::Relaxed);
-                                })
-                                .map(|_| ()),
-                                )
+                                    .map_err(|_| {
+                                        DROPS.fetch_add(1, Ordering::Relaxed);
+                                    })
+                                    .map(|_| ()),
+                            )
                         })
-                    .last();
+                        .last();
 
-                    spawn(
-                        StatsdServer::new(
-                            socket,
-                            chans,
-                            bufmap,
-                            config,
-                            bufsize,
-                            0,
-                            next,
-                            received,
-                            flush_flags,
-                            thread_idx,
-                            )
-                        .into_future(),
-                        );
+                    spawn(StatsdServer::new(socket, chans, bufmap, config, bufsize, 0, next, received, flush_flags, thread_idx).into_future());
                 } else {
-                    spawn(
-                        StatsdServer::new(
-                            socket,
-                            chans,
-                            bufmap,
-                            config,
-                            bufsize,
-                            recv_counter,
-                            next,
-                            received,
-                            flush_flags,
-                            thread_idx,
-                            )
-                        .into_future(),
-                        );
+                    spawn(StatsdServer::new(socket, chans, bufmap, config, bufsize, recv_counter, next, received, flush_flags, thread_idx).into_future());
                 }
                 Ok(())
             });

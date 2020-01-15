@@ -1,10 +1,14 @@
 [package]
 name = "bioyino"
-version = "0.5.1"
+version = "0.6.0"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
 build = "build.rs"
+
+[profile.release]
+lto = true
+overflow-checks = false
 
 [dependencies]
 lazy_static="^1.1"
@@ -30,6 +34,8 @@ slog="^2.4"
 slog-term="^2.4"
 slog-async="^2.3"
 slog-scope="^4.0"
+slog-stdlog="^4.0"
+log="^0.4"
 toml="^0.5"
 ftoa = "^0.1"
 capnp = "^0.10"
@@ -37,7 +43,7 @@ capnp-futures = "^0.10"
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
 rand = "^0.6"
 rayon = "^1.0"
-bioyino-metric = "^0.1"
+bioyino-metric = "^0.2"
 
 [build-dependencies]
 capnpc = "^0.10"

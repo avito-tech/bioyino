@@ -23,7 +23,10 @@ use crate::task::Task;
 use crate::util::{bound_stream, reusing_listener, try_resolve, BackoffRetryBuilder};
 use crate::{Cache, Float, PEER_ERRORS};
 
-const CAPNP_READER_OPTIONS: ReaderOptions = ReaderOptions { traversal_limit_in_words: 8 * 1024 * 1024 * 1024, nesting_limit: 16 };
+const CAPNP_READER_OPTIONS: ReaderOptions = ReaderOptions {
+    traversal_limit_in_words: 8 * 1024 * 1024 * 1024,
+    nesting_limit: 16,
+};
 
 #[derive(Fail, Debug)]
 pub enum PeerError {
@@ -64,7 +67,11 @@ pub struct NativeProtocolServer {
 
 impl NativeProtocolServer {
     pub fn new(log: Logger, listen: SocketAddr, chans: Vec<Sender<Task>>) -> Self {
-        Self { log: log.new(o!("source"=>"canproto-peer-server", "ip"=>format!("{}", listen.clone()))), listen, chans }
+        Self {
+            log: log.new(o!("source"=>"canproto-peer-server", "ip"=>format!("{}", listen.clone()))),
+            listen,
+            chans,
+        }
     }
 }
 
@@ -86,9 +93,9 @@ impl IntoFuture for NativeProtocolServer {
 
         let future = listener
             .incoming()
-            .map_err(|e| PeerError::Io(e))
+            .map_err(PeerError::Io)
             .for_each(move |conn| {
-                let peer_addr = conn.peer_addr().map(|addr| addr.to_string()).unwrap_or("[UNCONNECTED]".into());
+                let peer_addr = conn.peer_addr().map(|addr| addr.to_string()).unwrap_or_else(|_| "[UNCONNECTED]".into());
                 let transport = ReadStream::new(conn, CAPNP_READER_OPTIONS);
 
                 let log = log.new(o!("remote"=>peer_addr));
@@ -145,7 +152,10 @@ fn parse_and_send(reader: cmsg::Reader, next_chan: Sender<Task>, log: Logger) ->
         cmsg::Multi(reader) => {
             let reader = reader.map_err(MetricError::Capnp)?;
             let mut metrics = Vec::new();
-            reader.iter().map(|reader| Metric::<Float>::from_capnp(reader).map(|(name, metric)| metrics.push((name, metric)))).last();
+            reader
+                .iter()
+                .map(|reader| Metric::<Float>::from_capnp(reader).map(|(name, metric)| metrics.push((name, metric))))
+                .last();
             let future = next_chan
                 .send(Task::AddMetrics(metrics))
                 .map(|_| ()) // drop next sender
@@ -159,7 +169,10 @@ fn parse_and_send(reader: cmsg::Reader, next_chan: Sender<Task>, log: Logger) ->
         cmsg::Snapshot(reader) => {
             let reader = reader.map_err(MetricError::Capnp)?;
             let mut metrics = Vec::new();
-            reader.iter().map(|reader| Metric::<Float>::from_capnp(reader).map(|(name, metric)| metrics.push((name, metric)))).last();
+            reader
+                .iter()
+                .map(|reader| Metric::<Float>::from_capnp(reader).map(|(name, metric)| metrics.push((name, metric))))
+                .last();
             let future = next_chan
                 .send(Task::AddSnapshot(metrics))
                 .map(|_| ()) // drop next sender
@@ -182,9 +195,15 @@ pub struct NativeProtocolSnapshot {
 }
 
 impl NativeProtocolSnapshot {
-    pub fn new(log: &Logger, nodes: Vec<String>, client_bind: Option<SocketAddr>, interval: Duration, chans: &Vec<Sender<Task>>) -> Self {
+    pub fn new(log: &Logger, nodes: Vec<String>, client_bind: Option<SocketAddr>, interval: Duration, chans: &[Sender<Task>]) -> Self {
         let nodes = nodes.into_iter().map(|node| try_resolve(&node)).collect::<Vec<_>>();
-        Self { log: log.new(o!("source"=>"peer-client")), nodes, client_bind, interval, chans: chans.clone() }
+        Self {
+            log: log.new(o!("source"=>"peer-client")),
+            nodes,
+            client_bind,
+            interval,
+            chans: chans.to_owned(),
+        }
     }
 }
 
@@ -194,10 +213,16 @@ impl IntoFuture for NativeProtocolSnapshot {
     type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
 
     fn into_future(self) -> Self::Future {
-        let Self { log, nodes, client_bind, interval, chans } = self;
+        let Self {
+            log,
+            nodes,
+            client_bind,
+            interval,
+            chans,
+        } = self;
 
         let timer = Interval::new(Instant::now() + interval, interval);
-        let future = timer.map_err(|e| PeerError::Timer(e)).for_each(move |_| {
+        let future = timer.map_err(PeerError::Timer).for_each(move |_| {
             let chans = chans.clone();
             let nodes = nodes.clone();
 
@@ -216,7 +241,7 @@ impl IntoFuture for NativeProtocolSnapshot {
                     PeerError::TaskSend
                 })
                 .and_then(move |mut metrics| {
-                    metrics.retain(|m| m.len() > 0);
+                    metrics.retain(|m| !m.is_empty());
                     Ok(Arc::new(metrics))
                 });
 
@@ -229,11 +254,16 @@ impl IntoFuture for NativeProtocolSnapshot {
                     .map(move |address| {
                         let metrics = metrics.clone();
                         let log = log.clone();
-                        let peer_client_ret = BackoffRetryBuilder { delay: 500, delay_mul: 2f32, delay_max: 5000, retries: 3 };
-                        let options = SnapshotClientOptions { address: address, bind: client_bind };
+                        let peer_client_ret = BackoffRetryBuilder {
+                            delay: 500,
+                            delay_mul: 2f32,
+                            delay_max: 5000,
+                            retries: 3,
+                        };
+                        let options = SnapshotClientOptions { address, bind: client_bind };
                         let client = SnapshotSender::new(metrics, options, log.clone());
                         spawn(peer_client_ret.spawn(client).map_err(move |e| {
-                            warn!(log, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e));
+                            warn!(log, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e), "remote"=>format!("{}", address));
                         }));
                     })
                     .last();
@@ -280,7 +310,7 @@ impl IntoFuture for SnapshotSender {
         };
 
         let sender = stream_future
-            .map_err(|e| PeerError::Io(e))
+            .map_err(PeerError::Io)
             .and_then(move |conn| {
                 let codec = ::capnp_futures::serialize::Transport::new(conn, CAPNP_READER_OPTIONS);
 
@@ -291,11 +321,11 @@ impl IntoFuture for SnapshotSender {
                     let mut multi_metric = builder.init_snapshot(flat_len as u32);
                     metrics
                         .iter()
-                        .flat_map(|hmap| hmap.into_iter())
+                        .flat_map(|hmap| hmap.iter())
                         .enumerate()
                         .map(|(idx, (name, metric))| {
                             let mut c_metric = multi_metric.reborrow().get(idx as u32);
-                            let name = unsafe { ::std::str::from_utf8_unchecked(&name) };
+                            let name = unsafe { ::std::str::from_utf8_unchecked(name.name_with_tags()) };
                             c_metric.set_name(name);
                             metric.fill_capnp(&mut c_metric);
                         })
@@ -322,13 +352,14 @@ mod test {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use bytes::Bytes;
+    //use bytes::BytesMut;
     use capnp::message::Builder;
     use futures::sync::mpsc::{self, Receiver};
     use slog::Logger;
     use tokio::runtime::current_thread::Runtime;
     use tokio::timer::Delay;
 
+    use bioyino_metric::name::{MetricName, TagFormat};
     use bioyino_metric::{Metric, MetricType};
 
     use crate::config::System;
@@ -343,7 +374,7 @@ mod test {
         chans.push(tx);
 
         let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
-        let mut runtime = Runtime::new().expect("creating runtime for main thread");
+        let mut runtime = Runtime::new().expect("creating runtime for peer test");
 
         let c_peer_listen = address.clone();
         let c_serv_log = log.clone();
@@ -380,12 +411,18 @@ mod test {
                 Ok(runner)
             })
             .and_then(move |runner| {
-                let single_name: Bytes = "complex.test.bioyino_single".into();
-                let multi_name: Bytes = "complex.test.bioyino_multi".into();
-                let shot_name: Bytes = "complex.test.bioyino_snapshot".into();
+                let mut interm = Vec::with_capacity(128);
+                interm.resize(128, 0u8);
+                let m = TagFormat::Graphite;
+
+                let single_name = MetricName::new("complex.test.bioyino_single".into(), m, &mut interm).unwrap();
+                let multi_name = MetricName::new("complex.test.bioyino_multi".into(), m, &mut interm).unwrap();
+                let shot_name = MetricName::new("complex.test.bioyino_snapshot".into(), m, &mut interm).unwrap();
+                let tagged_name = MetricName::new("complex.test.bioyino_tagged;tag2=val2;tag1=value1".into(), m, &mut interm).unwrap();
                 assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
                 assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
                 assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
+                assert_eq!(runner.get_short_entry(&tagged_name), Some(&outmetric));
 
                 Ok(())
             })
@@ -407,6 +444,14 @@ mod test {
                     metric.fill_capnp(&mut c_metric);
                 }
 
+                let mut tagged_message = Builder::new_default();
+                {
+                    let builder = tagged_message.init_root::<CBuilder>();
+                    let mut c_metric = builder.init_single();
+                    c_metric.set_name("complex.test.bioyino_tagged;tag2=val2;tag1=value1");
+                    metric.fill_capnp(&mut c_metric);
+                }
+
                 let mut multi_message = Builder::new_default();
                 {
                     let builder = multi_message.init_root::<CBuilder>();
@@ -424,7 +469,11 @@ mod test {
                     new_metric.set_name("complex.test.bioyino_snapshot");
                     metric.fill_capnp(&mut new_metric);
                 }
-                codec.send(single_message).and_then(|codec| codec.send(multi_message).and_then(|codec| codec.send(snapshot_message))).map(|_| ()).map_err(|e| println!("codec error: {:?}", e))
+                codec
+                    .send(single_message)
+                    .and_then(|codec| codec.send(multi_message).and_then(|codec| codec.send(snapshot_message)))
+                    .map(|_| ())
+                    .map_err(|e| println!("codec error: {:?}", e))
             })
             .map_err(move |e| {
                 debug!(log, "error sending snapshot: {:?}", e);

@@ -8,18 +8,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-
 use bytes::{BufMut, BytesMut};
 use futures::future::empty;
 use futures::sync::mpsc::Sender;
 use futures::IntoFuture;
 use net2::unix::UnixUdpBuilderExt;
 use net2::UdpBuilder;
-use slog::{Logger, info, warn, debug, o};
+use slog::{debug, info, o, warn, Logger};
 use std::os::unix::io::AsRawFd;
 use tokio::net::UdpSocket;
-use tokio::runtime::current_thread::Runtime;
 use tokio::reactor::Handle;
+use tokio::runtime::current_thread::Runtime;
 
 use crate::config::System;
 use crate::server::StatsdServer;
@@ -29,7 +28,7 @@ use crate::{DROPS, INGRESS};
 pub(crate) fn start_sync_udp(
     log: Logger,
     listen: SocketAddr,
-    chans: &Vec<Sender<Task>>,
+    chans: &[Sender<Task>],
     config: Arc<System>,
     n_threads: usize,
     bufsize: usize,
@@ -37,7 +36,7 @@ pub(crate) fn start_sync_udp(
     mm_async: bool,
     mm_timeout: u64,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -49,21 +48,17 @@ pub(crate) fn start_sync_udp(
     let sck = socket.bind(listen).unwrap();
     sck.set_nonblocking(mm_async).unwrap();
 
-    let mm_timeout = if mm_timeout == 0 {
-        config.network.buffer_flush_time
-    } else {
-        mm_timeout
-    };
+    let mm_timeout = if mm_timeout == 0 { config.network.buffer_flush_time } else { mm_timeout };
 
     for i in 0..n_threads {
-        let chans = chans.clone();
+        let chans = chans.to_owned();
         let log = log.new(o!("source"=>"mudp_thread"));
 
         let sck = sck.try_clone().unwrap();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
         thread::Builder::new()
-            .name(format!("bioyino_mudp{}", i).into())
+            .name(format!("bioyino_mudp{}", i))
             .spawn(move || {
                 let fd = sck.as_raw_fd();
                 {
@@ -83,10 +78,12 @@ pub(crate) fn start_sync_udp(
                     let mut addrs: Vec<[u8; 20]> = Vec::with_capacity(mm_packets);
                     addrs.resize(mm_packets, [0; 20]);
 
-                    for i in 0..mm_packets {
+                    //for i in 0..mm_packets { // clippy said iterator may be faster
+                    for addr in addrs.iter_mut().take(mm_packets) {
                         let m = mmsghdr {
                             msg_hdr: msghdr {
-                                msg_name: addrs[i].as_mut_ptr() as *mut c_void,
+                                //msg_name: addrs[i].as_mut_ptr() as *mut c_void,
+                                msg_name: addr.as_mut_ptr() as *mut c_void,
                                 msg_namelen: 20 as socklen_t,
                                 msg_iov: null_mut(),     // this will change later
                                 msg_iovlen: 0,           // this will change later
@@ -132,9 +129,8 @@ pub(crate) fn start_sync_udp(
 
                     for i in 0..mm_packets {
                         let chunk = iovec {
-                            iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr()
-                                as *mut c_void,
-                                iov_len: rowsize,
+                            iov_base: recv_buffer[i * rowsize..i * rowsize + rowsize].as_mut_ptr() as *mut c_void,
+                            iov_len: rowsize,
                         };
                         chunks.push(chunk);
                         // put the result to mheaders
@@ -152,10 +148,7 @@ pub(crate) fn start_sync_udp(
                                 tv_nsec: ((mm_timeout % 1000u64) * 1_000_000u64) as i64,
                             }
                         } else {
-                            timespec {
-                                tv_sec: 0,
-                                tv_nsec: 0,
-                            }
+                            timespec { tv_sec: 0, tv_nsec: 0 }
                         };
 
                         let res = unsafe {
@@ -164,12 +157,8 @@ pub(crate) fn start_sync_udp(
                                 mhptr,
                                 mhlen as c_uint,
                                 flags,
-                                if mm_timeout > 0 {
-                                    &mut timeout
-                                } else {
-                                    null_mut()
-                                },
-                                )
+                                if mm_timeout > 0 { &mut timeout } else { null_mut() },
+                            )
                         };
 
                         if res == 0 {
@@ -184,9 +173,7 @@ pub(crate) fn start_sync_udp(
                                 INGRESS.fetch_add(mlen, Ordering::Relaxed);
 
                                 // create address entry in messagemap
-                                let entry = bufmap
-                                    .entry(addrs[i])
-                                    .or_insert(BytesMut::with_capacity(mlen));
+                                let entry = bufmap.entry(addrs[i]).or_insert_with(|| BytesMut::with_capacity(mlen));
 
                                 // check we can fit the buffer
                                 if entry.remaining_mut() < mlen + 1 {
@@ -196,7 +183,7 @@ pub(crate) fn start_sync_udp(
                                 // and put the buffer into the map
                                 entry.put(&recv_buffer[i * rowsize..i * rowsize + mlen]);
 
-                                // reset addres to be used in next cycle
+                                // reset address to be used in next cycle
                                 addrs[i] = [0; 20];
                                 mheaders[i].msg_hdr.msg_namelen = 20;
                             }
@@ -230,12 +217,11 @@ pub(crate) fn start_sync_udp(
                                         chan.try_send(Task::Parse(ahash, buf.take()))
                                             .map_err(|_| {
                                                 warn!(log, "error sending buffer(queue full?)");
-                                                DROPS.fetch_add(
-                                                    messages as usize,
-                                                    Ordering::Relaxed,
-                                                    );
-                                            }).unwrap_or(());
-                                    }).last();
+                                                DROPS.fetch_add(messages as usize, Ordering::Relaxed);
+                                            })
+                                            .unwrap_or(());
+                                    })
+                                    .last();
                             }
                         } else {
                             let errno = unsafe { *__errno_location() };
@@ -249,21 +235,22 @@ pub(crate) fn start_sync_udp(
                         }
                     }
                 }
-            }).expect("starting multimsg thread");
+            })
+            .expect("starting multimsg thread");
     }
 }
 
 pub(crate) fn start_async_udp(
     log: Logger,
     listen: SocketAddr,
-    chans: &Vec<Sender<Task>>,
+    chans: &[Sender<Task>],
     config: Arc<System>,
     n_threads: usize,
     greens: usize,
     async_sockets: usize,
     bufsize: usize,
     flush_flags: Arc<Vec<AtomicBool>>,
-    ) {
+) {
     info!(log, "multimessage is disabled, starting in async UDP mode");
 
     // Create a pool of listener sockets
@@ -278,16 +265,13 @@ pub(crate) fn start_async_udp(
 
     for i in 0..n_threads {
         // Each thread gets the clone of a socket pool
-        let sockets = sockets
-            .iter()
-            .map(|s| s.try_clone().unwrap())
-            .collect::<Vec<_>>();
+        let sockets = sockets.iter().map(|s| s.try_clone().unwrap()).collect::<Vec<_>>();
 
-        let chans = chans.clone();
+        let chans = chans.to_owned();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
         thread::Builder::new()
-            .name(format!("bioyino_udp{}", i).into())
+            .name(format!("bioyino_udp{}", i))
             .spawn(move || {
                 // each thread runs it's own runtime
                 let mut runtime = Runtime::new().expect("creating runtime for counting worker");
@@ -301,9 +285,7 @@ pub(crate) fn start_async_udp(
                         let chans = chans.clone();
                         // create UDP listener
                         let socket = socket.try_clone().expect("cloning socket");
-                        let socket =
-                            UdpSocket::from_std(socket, &Handle::default())
-                            .expect("adding socket to event loop");
+                        let socket = UdpSocket::from_std(socket, &Handle::default()).expect("adding socket to event loop");
 
                         let server = StatsdServer::new(
                             socket,
@@ -316,15 +298,14 @@ pub(crate) fn start_async_udp(
                             readbuf,
                             flush_flags.clone(),
                             i,
-                            );
+                        );
 
                         runtime.spawn(server.into_future());
                     }
                 }
 
-                runtime
-                    .block_on(empty::<(), ()>())
-                    .expect("starting runtime for async UDP");
-            }).expect("creating UDP reader thread");
+                runtime.block_on(empty::<(), ()>()).expect("starting runtime for async UDP");
+            })
+            .expect("creating UDP reader thread");
     }
 }

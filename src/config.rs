@@ -5,6 +5,8 @@ use std::net::SocketAddr;
 use std::ops::Range;
 use std::time::Duration;
 
+use failure_derive::Fail;
+
 use clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, value_t, Arg, SubCommand};
 use toml;
 
@@ -15,6 +17,7 @@ use raft_tokio::RaftOptions;
 use crate::aggregate::AggregationMode;
 use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
 use crate::{ConsensusKind, ConsensusState};
+use bioyino_metric::name::AggregationDestination;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -33,6 +36,9 @@ pub struct System {
 
     /// Metric settings
     pub metrics: Metrics,
+
+    /// Aggregation settings
+    pub aggregation: Aggregation,
 
     /// Carbon backend settings
     pub carbon: Carbon,
@@ -68,6 +74,7 @@ impl Default for System {
             raft: Raft::default(),
             consul: Consul::default(),
             metrics: Metrics::default(),
+            aggregation: Aggregation::default(),
             carbon: Carbon::default(),
             n_threads: 4,
             w_threads: 4,
@@ -85,18 +92,6 @@ impl Default for System {
 pub struct Metrics {
     // TODO: Maximum metric array size, 0 for unlimited
     //  max_metrics: usize,
-    /// Should we provide metrics with top update numbers
-    pub count_updates: bool,
-
-    /// Prefix for metric update statistics
-    pub update_counter_prefix: String,
-
-    /// Suffix for metric update statistics
-    pub update_counter_suffix: String,
-
-    /// Minimal update count to be reported
-    pub update_counter_threshold: u32,
-
     /// Consistent parsing
     pub consistent_parsing: bool,
 
@@ -107,26 +102,121 @@ pub struct Metrics {
     /// away
     pub max_unparsed_buffer: usize,
 
-    /// Choose the way of aggregation
-    pub aggregation_mode: AggregationMode,
+    /// Maximum length of tags part of a metric
+    pub max_tags_len: usize,
 
-    /// Number of threads when aggregating in "multi" mode
-    pub aggregation_threads: Option<usize>,
+    /// An option to create a copy of tagged metric without tags
+    pub create_untagged_copy: bool,
 }
 
 impl Default for Metrics {
     fn default() -> Self {
         Self {
             //           max_metrics: 0,
-            count_updates: true,
-            update_counter_prefix: "resources.monitoring.bioyino.updates".to_string(),
-            update_counter_suffix: String::new(),
-            update_counter_threshold: 200,
             consistent_parsing: true,
             log_parse_errors: false,
             max_unparsed_buffer: 10000,
-            aggregation_mode: AggregationMode::Single,
-            aggregation_threads: None,
+            max_tags_len: 9000,
+            create_untagged_copy: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct Aggregation {
+    /// Timestamp rounding
+    pub round_timestamp: RoundTimestamp,
+
+    /// Choose the way of aggregation
+    pub mode: AggregationMode,
+
+    /// Number of threads when aggregating in "multi" mode
+    pub threads: Option<usize>,
+
+    /// Minimal update count to be reported
+    pub update_count_threshold: u32,
+
+    /// Where to put aggregate postfix
+    pub destination: AggregationDestination,
+
+    /// list of aggregates to gather for timer metrics
+    //pub ms_aggregates: Vec<Aggregate<Float>>,
+    pub ms_aggregates: Vec<String>,
+
+    /// replacements for aggregate postfixes
+    pub postfix_replacements: HashMap<String, String>,
+
+    /// replacements for aggregate prefixes
+    pub prefix_replacements: HashMap<String, String>,
+
+    /// replacements for aggregate tag names
+    pub tag_replacements: HashMap<String, String>,
+
+    /// the default tag name to be used for aggregation
+    pub tag_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum RoundTimestamp {
+    /// round timestamp to closest interval down
+    Down,
+    /// do not round the timestamp
+    No,
+    /// round timestamp to closest interval up
+    Up,
+}
+
+pub fn default_ms_aggregates() -> Vec<String> {
+    [
+        //
+        "count",
+        "last",
+        "min",
+        "max",
+        "sum",
+        "median",
+        "mean",
+        "updates",
+        "percentile-75",
+        "percentile-95",
+        "percentile-98",
+        "percentile-99",
+        "percentile-999",
+    ]
+    .iter()
+    .map(|a| a.to_string())
+    .collect()
+}
+
+pub fn default_replacements() -> HashMap<String, String> {
+    let mut m = HashMap::new();
+    // by default we replace the aggrewgate name with the same name as itselfi
+    // i.e "count" -> "count"
+    ["count", "last", "min", "max", "sum", "median", "mean", "updates"]
+        .iter()
+        .map(|&a| m.insert(a.into(), a.into()))
+        .last();
+    // we can safely skip percentiles here, since they will be autogenerated when converted to real
+    // options
+    m
+}
+
+impl Default for Aggregation {
+    fn default() -> Self {
+        Self {
+            //
+            round_timestamp: RoundTimestamp::No,
+            mode: AggregationMode::Single,
+            threads: None,
+            update_count_threshold: 200,
+            destination: AggregationDestination::Smart,
+            ms_aggregates: default_ms_aggregates(),
+            postfix_replacements: default_replacements(),
+            prefix_replacements: HashMap::new(),
+            tag_replacements: default_replacements(),
+            tag_name: "aggregate".to_string(),
         }
     }
 }
@@ -275,7 +365,13 @@ pub struct Consul {
 
 impl Default for Consul {
     fn default() -> Self {
-        Self { start_as: ConsensusState::Disabled, agent: "127.0.0.1:8500".parse().unwrap(), session_ttl: 11000, renew_time: 1000, key_name: "service/bioyino/lock".to_string() }
+        Self {
+            start_as: ConsensusState::Disabled,
+            agent: "127.0.0.1:8500".parse().unwrap(),
+            session_ttl: 11000,
+            renew_time: 1000,
+            key_name: "service/bioyino/lock".to_string(),
+        }
     }
 }
 
@@ -306,7 +402,15 @@ pub struct Raft {
 
 impl Default for Raft {
     fn default() -> Self {
-        Self { start_delay: 0, heartbeat_timeout: 250, election_timeout_min: 500, election_timeout_max: 750, this_node: None, nodes: HashMap::new(), client_bind: None }
+        Self {
+            start_delay: 0,
+            heartbeat_timeout: 250,
+            election_timeout_min: 500,
+            election_timeout_max: 750,
+            this_node: None,
+            nodes: HashMap::new(),
+            client_bind: None,
+        }
     }
 }
 
@@ -314,9 +418,30 @@ impl Raft {
     pub fn get_raft_options(&self) -> RaftOptions {
         RaftOptions {
             heartbeat_timeout: Duration::from_millis(self.heartbeat_timeout),
-            election_timeout: Range { start: Duration::from_millis(self.election_timeout_min), end: Duration::from_millis(self.election_timeout_max) },
+            election_timeout: Range {
+                start: Duration::from_millis(self.election_timeout_min),
+                end: Duration::from_millis(self.election_timeout_max),
+            },
         }
     }
+}
+
+#[derive(Fail, Debug)]
+pub enum ConfigError {
+    #[fail(display = "I/O error while {}: {}", _0, _1)]
+    Io(String, #[cause] ::std::io::Error),
+
+    #[fail(display = "config file must be string")]
+    MustBeString,
+
+    #[fail(display = "parsing toml")]
+    Toml(#[cause] ::toml::de::Error),
+
+    #[fail(display = "bad aggregate spec: '{}'", _0)]
+    BadAggregate(String),
+
+    #[fail(display = "bad value for '{}': '{}'", _0, _1)]
+    BadValue(String, String),
 }
 
 #[derive(Debug)]
@@ -326,39 +451,117 @@ pub enum Command {
 }
 
 impl System {
-    pub fn load() -> (Self, Command) {
+    pub fn load() -> Result<(Self, Command), ConfigError> {
         // This is a first copy of args - with the "config" option
         let app = app_from_crate!()
             .long_version(concat!(crate_version!(), " ", env!("VERGEN_COMMIT_DATE"), " ", env!("VERGEN_SHA_SHORT")))
-            .arg(Arg::with_name("config").help("configuration file path").long("config").short("c").required(true).takes_value(true).default_value("/etc/bioyino/bioyino.toml"))
+            .arg(
+                Arg::with_name("config")
+                    .help("configuration file path")
+                    .long("config")
+                    .short("c")
+                    .required(true)
+                    .takes_value(true)
+                    .default_value("/etc/bioyino/bioyino.toml"),
+            )
             .arg(Arg::with_name("verbosity").short("v").help("logging level").takes_value(true))
-            .subcommand(SubCommand::with_name("query").about("send a management command to running bioyino server").arg(Arg::with_name("host").short("h").default_value("127.0.0.1:8137")).subcommand(SubCommand::with_name("status").about("get server state")).subcommand(SubCommand::with_name("consensus").arg(Arg::with_name("action").index(1)).arg(Arg::with_name("leader_action").index(2).default_value("unchanged"))))
+            .subcommand(
+                SubCommand::with_name("query")
+                    .about("send a management command to running bioyino server")
+                    .arg(Arg::with_name("host").short("h").default_value("127.0.0.1:8137"))
+                    .subcommand(SubCommand::with_name("status").about("get server state"))
+                    .subcommand(
+                        SubCommand::with_name("consensus")
+                            .arg(Arg::with_name("action").index(1))
+                            .arg(Arg::with_name("leader_action").index(2).default_value("unchanged")),
+                    ),
+            )
             .get_matches();
 
-        let config = value_t!(app.value_of("config"), String).expect("config file must be string");
-        let mut file = File::open(&config).expect(&format!("opening config file at {}", &config));
+        let config = value_t!(app.value_of("config"), String).map_err(|_| ConfigError::MustBeString)?;
+        let mut file = File::open(&config).map_err(|e| ConfigError::Io(format!("opening config file at {}", &config).to_string(), e))?;
         let mut config_str = String::new();
-        file.read_to_string(&mut config_str).expect("reading config file");
-        let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
+        file.read_to_string(&mut config_str)
+            .map_err(|e| ConfigError::Io("reading config file".into(), e))?;
+        let mut system: System = toml::de::from_str(&config_str).map_err(ConfigError::Toml)?;
 
         if let Some(v) = app.value_of("verbosity") {
             system.verbosity = v.into()
         }
 
+        // all parameter postprocessing goes here
+        system.prepare()?;
+
+        // now parse command
         if let Some(query) = app.subcommand_matches("query") {
             let server = value_t!(query.value_of("host"), String).expect("bad server");
             if let Some(_) = query.subcommand_matches("status") {
-                (system, Command::Query(MgmtCommand::Status, server))
+                Ok((system, Command::Query(MgmtCommand::Status, server)))
             } else if let Some(args) = query.subcommand_matches("consensus") {
                 let c_action = value_t!(args.value_of("action"), ConsensusAction).expect("bad consensus action");
                 let l_action = value_t!(args.value_of("leader_action"), LeaderAction).expect("bad leader action");
-                (system, Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server))
+                Ok((system, Command::Query(MgmtCommand::ConsensusCommand(c_action, l_action), server)))
             } else {
                 // shold be unreachable
                 unreachable!("clap bug?")
             }
         } else {
-            (system, Command::Daemon)
+            Ok((system, Command::Daemon))
         }
+    }
+
+    pub fn prepare(&mut self) -> Result<(), ConfigError> {
+        // join replacements with defaults (order of iterators is important here)
+        self.aggregation.postfix_replacements = default_replacements()
+            .into_iter()
+            .chain(self.aggregation.postfix_replacements.clone().into_iter())
+            .collect();
+
+        self.aggregation.tag_replacements = default_replacements()
+            .into_iter()
+            .chain(self.aggregation.tag_replacements.clone().into_iter())
+            .collect();
+
+        // it is not OK to specify 0 chunks
+        if self.carbon.chunks == 0 {
+            return Err(ConfigError::BadValue(
+                "system.carbon.chunks".into(),
+                "number of chunks cannot be 0, use 1 to send without splitting".into(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::aggregate::AggregationOptions;
+    use crate::util::prepare_log;
+
+    #[test]
+    fn parsing_full_config() {
+        let config = "test/fixtures/full.toml";
+        let mut file = File::open(config).expect(&format!("opening config file at {}", &config));
+        let mut config_str = String::new();
+        file.read_to_string(&mut config_str).expect("reading config file");
+        //let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
+        let mut config: System = toml::de::from_str(&config_str).expect("parsing config");
+        config.prepare().expect("preparing config");
+
+        let log = prepare_log("parse_full_config test");
+        let _ = AggregationOptions::from_config(config.aggregation, log).expect("checking aggregate options");
+    }
+
+    #[test]
+    fn parsing_documented_config() {
+        let config = "config.toml";
+        let mut file = File::open(config).expect(&format!("opening config file at {}", &config));
+        let mut config_str = String::new();
+        file.read_to_string(&mut config_str).expect("reading config file");
+        //let mut system: System = toml::de::from_str(&config_str).expect("parsing config");
+        let _: System = toml::de::from_str(&config_str).expect("parsing documented config");
     }
 }
