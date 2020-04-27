@@ -1,3 +1,27 @@
+# Release 0.7.0 #
+
+## Incompatible changes ##
+* naming optinos have changed again
+    * naming is now per-type, each type in specific section `naming.<type>`
+    * postfix, prefix and tag naming settings are now in corresponding naming sections
+    * `aggregation.destination` is now specified in corresponding naming sections
+
+* a list of aggregates is now customizable for all types of metrics
+    * `aggregation.ms-aggregates` is now `aggregation.aggregates.timer`
+    * all other metric types have their own `aggregation.aggregates.<type>` section
+
+
+See config.toml for further configuration instructions
+
+## Major changes ##
+* syslog logging is available via `syslog` configuration flag
+
+## Internal changes ##
+* the runtime has been updated to tokio-2 (except raft), this is not visible to users
+
+## Minor changes
+* added aggregate naming options document
+
 # Release 0.6.0 #
 
 ## Incompatible changes ##

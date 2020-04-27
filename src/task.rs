@@ -1,15 +1,15 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
-use futures::sync::mpsc::UnboundedSender;
-use futures::sync::oneshot;
-use futures::{Future, Sink};
+use futures3::channel::mpsc::UnboundedSender;
+use futures3::channel::oneshot;
+use futures3::SinkExt;
 use log::warn as logw;
 use slog::{debug, warn, Logger};
-use tokio::runtime::current_thread::spawn;
+
+use tokio2::spawn;
 
 use bioyino_metric::parser::{MetricParser, MetricParsingError, ParseErrorHandler};
 use bioyino_metric::{name::MetricName, Metric};
@@ -17,7 +17,7 @@ use bioyino_metric::{name::MetricName, Metric};
 use crate::aggregate::{aggregate_task, AggregationData};
 use crate::config::System;
 
-use crate::{Cache, Float, AGG_ERRORS, DROPS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
+use crate::{s, Cache, Float};
 
 #[derive(Debug)]
 pub enum Task {
@@ -43,7 +43,7 @@ fn update_metric(cache: &mut Cache, name: MetricName, metric: Metric<Float>) {
                     em,
                     mtype
                 );
-                AGG_ERRORS.fetch_add(1, Ordering::Relaxed);
+                s!(agg_errors);
             });
         }
         Entry::Vacant(entry) => {
@@ -86,7 +86,7 @@ impl TaskRunner {
                         .and_modify(|(times, _)| {
                             *times = 0;
                         })
-                        .or_insert((0, BytesMut::with_capacity(len)));
+                    .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf
@@ -100,10 +100,10 @@ impl TaskRunner {
                 );
 
                 for (mut name, metric) in parser {
-                    INGRESS_METRICS.fetch_add(1, Ordering::Relaxed);
+                    s!(ingress_metrics);
                     if name.has_tags() && self.config.metrics.create_untagged_copy {
                         self.names_arena.extend_from_slice(name.name_without_tags());
-                        let untagged = MetricName::new_untagged(self.names_arena.take());
+                        let untagged = MetricName::new_untagged(self.names_arena.split());
                         update_metric(&mut self.short, untagged, metric.clone());
                     }
                     update_metric(&mut self.short, name, metric);
@@ -131,7 +131,7 @@ impl TaskRunner {
                 // self.short now contains empty hashmap because of draining
                 // give a copy of snapshot to requestor
                 channel.send(short).unwrap_or_else(|_| {
-                    PEER_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    s!(peer_errors);
                     debug!(self.log, "shapshot not sent");
                 });
             }
@@ -149,16 +149,13 @@ impl TaskRunner {
                 // become lower
                 let mut rotated = HashMap::with_capacity(self.long.len() / 2);
                 std::mem::swap(&mut self.long, &mut rotated);
-                let log = self.log.clone();
-                if let Some(c) = channel {
-                    let log = log.clone();
-                    let respond = c.send(rotated).map(|_| ()).map_err(move |_| {
-                        debug!(log, "rotated data not sent");
-                        DROPS.fetch_add(1, Ordering::Relaxed);
-                    });
-                    spawn(respond);
+                if let Some(mut c) = channel {
+                    let log = self.log.clone();
+                    spawn(async move { c.send(rotated).await.unwrap_or_else(|_|{
+                        s!(agg_errors);
+                        debug!(log, "could not respond with aggregated metric, carbon thread is probably dead");
+                    }); });
                 }
-
                 self.buffers.retain(|_, (ref mut times, _)| {
                     *times += 1;
                     *times < 5
@@ -182,7 +179,7 @@ struct TaskParseErrorHandler(Option<Logger>);
 
 impl ParseErrorHandler for TaskParseErrorHandler {
     fn handle(&self, input: &[u8], pos: usize, e: MetricParsingError) {
-        PARSE_ERRORS.fetch_add(1, Ordering::Relaxed);
+        s!(parse_errors);
         if let Some(ref log) = self.0 {
             if let Ok(string) = std::str::from_utf8(input) {
                 // TODO better error formatting instead of Debug
@@ -291,37 +288,37 @@ mod tests {
     }
 
     /*
-    TODO: e2e for tasks
-    #[test]
-    fn parse_then_aggregate() {
-        let mut data = BytesMut::new();
+       TODO: e2e for tasks
+       #[test]
+       fn parse_then_aggregate() {
+       let mut data = BytesMut::new();
 
-        // ensure metrics with same tags (going probably in different orders) go to same aggregate
-        data.extend_from_slice(b"gorets;t2=v2;t1=v1:1000|c");
-        data.extend_from_slice(b"\ngorets;t1=v1;t2=v2:1000|c");
+    // ensure metrics with same tags (going probably in different orders) go to same aggregate
+    data.extend_from_slice(b"gorets;t2=v2;t1=v1:1000|c");
+    data.extend_from_slice(b"\ngorets;t1=v1;t2=v2:1000|c");
 
-        // ensure metrics with same name but different tags go to different aggregates
-        data.extend_from_slice(b"\ngorets;t1=v1;t2=v3:1000|c");
+    // ensure metrics with same name but different tags go to different aggregates
+    data.extend_from_slice(b"\ngorets;t1=v1;t2=v3:1000|c");
 
-        let mut config = System::default();
-        config.metrics.log_parse_errors = true;
-        let mut runner = TaskRunner::new(prepare_log("aggregate_tagged"), Arc::new(config), 16);
-        runner.run(Task::Parse(2, data));
+    let mut config = System::default();
+    config.metrics.log_parse_errors = true;
+    let mut runner = TaskRunner::new(prepare_log("aggregate_tagged"), Arc::new(config), 16);
+    runner.run(Task::Parse(2, data));
 
-        dbg!(&runner.short);
-        // must be aggregated into two as sum
-        let key = MetricName::new("gorets;t1=v1;t2=v2".into(), None);
-        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
-        let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value, 2000f64);
-        assert_eq!(metric.mtype, MetricType::Counter);
+    dbg!(&runner.short);
+    // must be aggregated into two as sum
+    let key = MetricName::new("gorets;t1=v1;t2=v2".into(), None);
+    assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+    let metric = runner.short.get(&key).unwrap().clone();
+    assert_eq!(metric.value, 2000f64);
+    assert_eq!(metric.mtype, MetricType::Counter);
 
-        // must be aggregated into separate
-        let key = MetricName::new("gorets;t1=v1;t2=v3".into(), None);
-        assert!(runner.short.contains_key(&key), "could not find {:?}", key);
-        let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value, 1000f64);
-        assert_eq!(metric.mtype, MetricType::Counter);
+    // must be aggregated into separate
+    let key = MetricName::new("gorets;t1=v1;t2=v3".into(), None);
+    assert!(runner.short.contains_key(&key), "could not find {:?}", key);
+    let metric = runner.short.get(&key).unwrap().clone();
+    assert_eq!(metric.value, 1000f64);
+    assert_eq!(metric.mtype, MetricType::Counter);
     }
     */
 }

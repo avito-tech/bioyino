@@ -2,12 +2,13 @@
 # TODO: should contain all the possible values to check parsing
 
 verbosity = "info"
+syslog = true
 n-threads = 4
 w-threads = 4
 task-queue-size = 1024
 start-as-leader = true
 stats-interval = 10000
-stats-prefix = "resources.monitoring.bioyino"
+#stats-prefix = "resources.monitoring.bioyino"
 consensus = "none"
 
 [metrics]
@@ -21,14 +22,25 @@ create-untagged-copy = true
 round-timestamp = "up"
 mode = "separate"
 threads = 8
-destination = "smart"
 update-count-threshold = 10
-ms-aggregates = [ "count", "updates", "min", "max", "median", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999", "percentile-80" ]
+aggregates.timer = [ "count", "updates", "min", "max", "median", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999", "percentile-80" ]
+aggregates.set = [ "count", "count", "value"]
 #ms-aggregates = [ "count",  "min", "max", "sum", "median", "mean", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
-postfix-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50", "updates" = "" }
-prefix-replacements = { "updates" = "what.the.fuck.updates", "median" = "all.medians" }
-tag-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
-tag-name = "agg"
+
+[naming.default]
+destination = "smart"
+prefix = "resources.monitoring.bioyino"
+prefix-overrides = { "updates" = "what.the.fuck.updates", "median" = "all.medians" }
+tag = "agg"
+postfixes = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50", "updates" = "" }
+tag-values = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+
+[naming.timer]
+prefix = "split.timers"
+prefix-overrides = { "updates" = "qewr" }
+
+[naming.set]
+tag-values = { "count" = "set.counts" }
 
 [carbon]
 address = "127.0.0.1:2003"
@@ -37,8 +49,8 @@ interval = 30000
 connect-delay = 250
 connect-delay-multiplier = 2
 connect-delay-max = 10000
-send-retries = 30
-chunks = 1
+send-retries = 10
+chunks = 3
 
 [network]
 listen = "127.0.0.1:8125"

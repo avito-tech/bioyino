@@ -1,29 +1,32 @@
-use failure_derive::Fail;
 use std::net::SocketAddr;
+use thiserror::Error;
 
-#[derive(Fail, Debug)]
+#[derive(Error, Debug)]
 pub enum GeneralError {
-    #[fail(display = "I/O error")]
-    Io(#[cause] ::std::io::Error),
+    #[error("I/O error")]
+    Io(#[from] ::std::io::Error),
 
-    #[fail(display = "Error when creating timer: {}", _0)]
-    Timer(#[cause] ::tokio::timer::Error),
+    #[error("Error when creating timer: {}", _0)]
+    Timer(#[from] ::tokio::timer::Error),
 
-    #[fail(display = "getting system time")]
-    Time(#[cause] ::std::time::SystemTimeError),
+    #[error("getting system time")]
+    Time(#[from] ::std::time::SystemTimeError),
 
-    #[fail(display = "Gave up connecting to {}", _0)]
+    #[error("Gave up connecting to {}", _0)]
     TcpOutOfTries(SocketAddr),
 
-    #[fail(display = "Carbon backend failure")]
+    #[error("Carbon backend errorure")]
     CarbonBackend,
 
-    #[fail(display = "future send error")]
+    #[error("future send error")]
     FutureSend,
 
-    #[fail(display = "unknown consensus state")]
+    #[error("unknown consensus state")]
     UnknownState,
 
-    #[fail(display = "configuration error: {}", _0)]
+    #[error("configuration error: {}", _0)]
     Configuration(String),
+
+    #[error("utility error")]
+    Other(#[from] crate::util::OtherError),
 }

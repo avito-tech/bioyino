@@ -1,28 +1,36 @@
 use libc;
 use std::ffi::CStr;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::net::TcpStream as StdTcpStream;
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::{Duration};
 
-use bytes::{BufMut, BytesMut};
-use futures::future::Either;
-use futures::sync::mpsc::Sender;
-use futures::{Async, Future, IntoFuture, Poll, Sink, Stream};
+use thiserror::Error;
+
+use futures3::future::{Future as Future3, TryFutureExt};
 use net2::TcpBuilder;
 use resolve::resolver;
-use slog::{info, o, warn, Drain, Logger};
-use tokio::executor::current_thread::spawn;
+use slog::{o, warn, Drain, Logger};
 use tokio::net::TcpListener;
-use tokio::timer::{Delay, Interval};
-
-use crate::task::Task;
-use crate::Float;
-use crate::{AGG_ERRORS, DROPS, EGRESS, INGRESS, INGRESS_METRICS, PARSE_ERRORS, PEER_ERRORS};
-use bioyino_metric::{name::MetricName, Metric, MetricType};
+use trust_dns_resolver::TokioAsyncResolver;
 
 use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
+
+#[cfg(test)]
+use bioyino_metric::name::MetricName;
+
+#[derive(Error, Debug)]
+pub enum OtherError {
+    #[error("resolving")]
+    Resolving(#[from] trust_dns_resolver::error::ResolveError),
+
+    #[error("integer parsing error")]
+    ParseInt(#[from] std::num::ParseIntError),
+
+    #[error("no IP addresses found for {}", _0)]
+    NotFound(String),
+}
 
 pub fn prepare_log(root: &'static str) -> Logger {
     // Set logging
@@ -66,37 +74,34 @@ pub fn reusing_listener(addr: &SocketAddr) -> Result<TcpListener, io::Error> {
     TcpListener::from_std(listener, &tokio::reactor::Handle::default())
 }
 
-// TODO impl this correctly and use instead of try_resolve
-// PROFIT: gives libnss-aware behaviour
-/*
-   fn _try_resolve_nss(name: &str) {
-   use std::io;
-   use std::ffi::CString;
-   use std::ptr::{null_mut, null};
-   use libc::*;
+pub async fn resolve_with_port(host: &str, default_port: u16) -> Result<SocketAddr, OtherError> {
+    let (host, port) = if let Some(pos) = host.find(':') {
+        let (host, port) = host.split_at(pos);
+        let port = &port[1..]; // remove ':'
+        let port: u16 = port.parse()?;
+        (host, port)
+    } else {
+        (host, default_port)
+    };
 
-   let domain= CString::new(Vec::from(name)).unwrap().into_raw();
-   let mut result: *mut addrinfo = null_mut();
+    let ip = resolve_to_first(host).await?;
 
-   let success = unsafe {
-   getaddrinfo(domain, null_mut(), null(), &mut result)
-   };
+    Ok(SocketAddr::new(ip, port))
+}
 
-   if success != 0 {
-//        let errno = unsafe { *__errno_location() };
-println!("{:?}", io::Error::last_os_error());
-} else {
-let mut cur = result;
-while cur != null_mut() {
-unsafe{
-println!("LEN {:?}", (*result).ai_addrlen);
-println!("DATA {:?}", (*(*result).ai_addr).sa_data);
-cur = (*result).ai_next;
+pub async fn resolve_to_first(host: &str) -> Result<IpAddr, OtherError> {
+    let resolver =
+        TokioAsyncResolver::tokio_from_system_conf().await?;
+
+    let response = resolver.lookup_ip(host).await?;
+
+    // Run the lookup until it resolves or errors
+    // There can be many addresses associated with the name,
+    response
+        .iter()
+        .next()
+        .ok_or(OtherError::NotFound(host.to_string()))
 }
-}
-}
-}
-*/
 
 /// Get hostname. Copypasted from some crate
 pub fn get_hostname() -> Option<String> {
@@ -136,176 +141,59 @@ pub(crate) fn new_test_graphite_name(s: &'static str) -> MetricName {
     MetricName::new(s.into(), mode, &mut intermediate).unwrap()
 }
 
-// A future to send own stats. Never gets ready.
-pub struct OwnStats {
-    interval: u64,
-    prefix: String,
-    timer: Interval,
-    chan: Sender<Task>,
-    log: Logger,
-}
-
-impl OwnStats {
-    pub fn new(interval: u64, prefix: String, chan: Sender<Task>, log: Logger) -> Self {
-        let log = log.new(o!("source"=>"stats"));
-        let now = Instant::now();
-        let dur = Duration::from_millis(if interval < 100 { 1000 } else { interval }); // exclude too small intervals
-        Self {
-            interval,
-            prefix,
-            timer: Interval::new(now + dur, dur),
-            chan,
-            log,
-        }
-    }
-
-    pub fn get_stats(&mut self) {
-        let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
-        macro_rules! add_metric {
-            ($global:ident, $value:ident, $suffix:expr) => {
-                let $value = $global.swap(0, Ordering::Relaxed) as Float;
-                if self.interval > 0 {
-                    buf.put(&self.prefix);
-                    buf.put(".");
-                    buf.put(&$suffix);
-                    let name = MetricName::new_untagged(buf.take());
-                    let metric = Metric::new($value, MetricType::Counter, None, None).unwrap();
-                    let log = self.log.clone();
-                    let sender = self
-                        .chan
-                        .clone()
-                        .send(Task::AddMetric(name, metric))
-                        .map(|_| ())
-                        .map_err(move |_| warn!(log, "stats future could not send metric to task"));
-                    spawn(sender);
-                }
-            };
-        };
-        add_metric!(EGRESS, egress, "egress");
-        add_metric!(INGRESS, ingress, "ingress");
-        add_metric!(INGRESS_METRICS, ingress_m, "ingress-metric");
-        add_metric!(AGG_ERRORS, agr_errors, "agg-error");
-        add_metric!(PARSE_ERRORS, parse_errors, "parse-error");
-        add_metric!(PEER_ERRORS, peer_errors, "peer-error");
-        add_metric!(DROPS, drops, "drop");
-        if self.interval > 0 {
-            let s_interval = self.interval as f64 / 1000f64;
-
-            info!(self.log, "stats";
-            "egress" => format!("{:2}", egress / s_interval),
-            "ingress" => format!("{:2}", ingress / s_interval),
-            "ingress-m" => format!("{:2}", ingress_m / s_interval),
-            "a-err" => format!("{:2}", agr_errors / s_interval),
-            "p-err" => format!("{:2}", parse_errors / s_interval),
-            "pe-err" => format!("{:2}", peer_errors / s_interval),
-            "drops" => format!("{:2}", drops / s_interval),
-            );
-        }
-    }
-}
-
-impl Future for OwnStats {
-    type Item = ();
-    type Error = ();
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        loop {
-            match self.timer.poll() {
-                Ok(Async::Ready(Some(_))) => {
-                    self.get_stats();
-                }
-                Ok(Async::Ready(None)) => unreachable!(),
-                Ok(Async::NotReady) => return Ok(Async::NotReady),
-                Err(_) => return Err(()),
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-/// Builder for `BackoffRetry`, delays are specified in milliseconds
-pub struct BackoffRetryBuilder {
+#[derive(Clone)]
+pub struct Backoff {
     pub delay: u64,
     pub delay_mul: f32,
     pub delay_max: u64,
     pub retries: usize,
 }
 
-impl Default for BackoffRetryBuilder {
+impl Default for Backoff {
     fn default() -> Self {
         Self {
             delay: 500,
             delay_mul: 2f32,
             delay_max: 10000,
-            retries: 25,
+            retries: std::usize::MAX,
         }
     }
 }
 
-impl BackoffRetryBuilder {
-    pub fn spawn<F>(self, action: F) -> BackoffRetry<F>
-    where
-        F: IntoFuture + Clone,
-    {
-        let inner = Either::A(action.clone().into_future());
-        BackoffRetry { action, inner, options: self }
+impl Backoff {
+    pub async fn sleep(&mut self) -> Result<usize, ()> {
+        if self.retries == 0 {
+            Err(())
+        } else {
+            self.retries -= 1;
+            let delay = self.delay as f32 * self.delay_mul;
+            let delay = if delay <= self.delay_max as f32 {
+                delay as u64
+            } else {
+                self.delay_max as u64
+            };
+
+            tokio2::time::delay_for(Duration::from_millis(delay)).await;
+            Ok(self.retries)
+        }
     }
 }
 
-/// TCP client that is able to reconnect with customizable settings
-pub struct BackoffRetry<F: IntoFuture> {
-    action: F,
-    inner: Either<F::Future, Delay>,
-    options: BackoffRetryBuilder,
-}
-
-impl<F> Future for BackoffRetry<F>
+// TODO maybe let caller know it was out of tries, not just the last error
+pub async fn retry_with_backoff<F, I, R, E>(mut bo: Backoff, mut f: F) -> Result<R, E>
 where
-    F: IntoFuture + Clone,
-{
-    type Item = F::Item;
-    type Error = Option<F::Error>;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+    I: Future3<Output = Result<R, E>>,
+    F: FnMut() -> I,
+    {
         loop {
-            let (rotate_f, rotate_t) = match self.inner {
-                // we are polling a future currently
-                Either::A(ref mut future) => match future.poll() {
-                    Ok(Async::Ready(item)) => {
-                        return Ok(Async::Ready(item));
-                    }
-                    Ok(Async::NotReady) => return Ok(Async::NotReady),
-                    Err(e) => {
-                        if self.options.retries == 0 {
-                            return Err(Some(e));
-                        } else {
-                            (true, false)
-                        }
-                    }
-                },
-                Either::B(ref mut timer) => {
-                    match timer.poll() {
-                        // we are waiting for the delay
-                        Ok(Async::Ready(())) => (false, true),
-                        Ok(Async::NotReady) => return Ok(Async::NotReady),
-                        Err(_) => unreachable!(), // timer should not return error
-                    }
+            match f().await {
+                r @ Ok(_) => {
+                    break r
                 }
-            };
-
-            if rotate_f {
-                self.options.retries -= 1;
-                let delay = self.options.delay as f32 * self.options.delay_mul;
-                let delay = if delay <= self.options.delay_max as f32 {
-                    delay as u64
-                } else {
-                    self.options.delay_max as u64
-                };
-                let delay = Delay::new(Instant::now() + Duration::from_millis(delay));
-                self.inner = Either::B(delay);
-            } else if rotate_t {
-                self.inner = Either::A(self.action.clone().into_future());
+                Err(e) => {
+                    bo.sleep().map_err(|()| e).await?;
+                    continue;
+                }
             }
         }
     }
-}

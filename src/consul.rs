@@ -90,7 +90,7 @@ impl ConsulConsensus {
 impl IntoFuture for ConsulConsensus {
     type Item = ();
     type Error = ConsulError;
-    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error> + Send>;
 
     fn into_future(self) -> Self::Future {
         let Self {
@@ -138,7 +138,7 @@ impl IntoFuture for ConsulConsensus {
                             warn!(log, "error getting consul session"; "error" => format!("{}", e));
                             let new_session = new_session.clone();
                             Box::new(Delay::new(Instant::now() + error_pause).then(move |_| Ok(Loop::Continue(new_session))))
-                                as Box<dyn Future<Item = Loop<_, _>, Error = _>>
+                                as Box<dyn Future<Item = Loop<_, _>, Error = _> + Send>
                             //ok(Loop::Continue(new_session))
                         }
                         Ok(None) => {
@@ -214,7 +214,7 @@ pub struct ConsulSession {
 impl IntoFuture for ConsulSession {
     type Item = Option<String>;
     type Error = ConsulError;
-    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error> + Send>;
 
     fn into_future(self) -> Self::Future {
         let Self { log, agent, ttl } = self;
@@ -241,12 +241,12 @@ impl IntoFuture for ConsulSession {
             if status == StatusCode::OK {
                 let body = resp.into_body().concat2().map_err(ConsulError::Http).and_then(move |body| {
                     let resp: ConsulSessionResponse =
-                                //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
-                                from_slice(&body).map_err(ConsulError::Parsing)?;
+                        //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                        from_slice(&body).map_err(ConsulError::Parsing)?;
                     debug!(log, "new session"; "id"=>resp.id.to_string());
                     Ok(Some(resp.id))
                 });
-                Box::new(body) as Box<dyn Future<Item = Option<String>, Error = ConsulError>>
+                Box::new(body) as Box<dyn Future<Item = Option<String>, Error = ConsulError> + Send>
             } else {
                 let body = resp.into_body().concat2().map_err(ConsulError::Http);
                 // TODO make this into option
@@ -278,7 +278,7 @@ pub struct ConsulRenew {
 impl IntoFuture for ConsulRenew {
     type Item = ();
     type Error = ConsulError;
-    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error> + Send>;
 
     fn into_future(self) -> Self::Future {
         let Self { agent, sid, ttl } = self;
@@ -311,7 +311,7 @@ impl IntoFuture for ConsulRenew {
                         let msg = format!("renew error: {:?} {:?}", status, String::from_utf8(body.to_vec()));
                         Err(ConsulError::Renew(msg))
                     });
-                    Box::new(body) as Box<dyn Future<Item = (), Error = ConsulError>>
+                    Box::new(body) as Box<dyn Future<Item = (), Error = ConsulError> + Send>
                 } else {
                     Box::new(ok(()))
                 }
@@ -331,7 +331,7 @@ pub struct ConsulAcquire {
 impl IntoFuture for ConsulAcquire {
     type Item = ();
     type Error = ConsulError;
-    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error>>;
+    type Future = Box<dyn Future<Item = Self::Item, Error = Self::Error> + Send>;
 
     fn into_future(self) -> Self::Future {
         let Self { log, agent, sid, key } = self;
@@ -346,8 +346,8 @@ impl IntoFuture for ConsulAcquire {
         let acquire = client.request(req).map_err(ConsulError::Http).and_then(move |resp| {
             resp.into_body().concat2().map_err(ConsulError::Http).and_then(move |body| {
                 let acquired: bool =
-                            //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
-                            from_slice(&body).map_err(ConsulError::Parsing)?;
+                    //try!(from_slice(&body).map_err(|e| ConsulError::Parsing(e)));
+                    from_slice(&body).map_err(ConsulError::Parsing)?;
 
                 switch_leader(acquired, &log);
                 // let should_set = {

@@ -9,21 +9,18 @@ use std::sync::Arc;
 use std::thread;
 
 use bytes::{BufMut, BytesMut};
-use futures::future::empty;
-use futures::sync::mpsc::Sender;
-use futures::IntoFuture;
+use futures3::channel::mpsc::Sender;
+use futures3::future::pending;
 use net2::unix::UnixUdpBuilderExt;
 use net2::UdpBuilder;
 use slog::{debug, info, o, warn, Logger};
 use std::os::unix::io::AsRawFd;
-use tokio::net::UdpSocket;
-use tokio::reactor::Handle;
-use tokio::runtime::current_thread::Runtime;
+use tokio2::net::UdpSocket;
+use tokio2::runtime::Builder;
 
 use crate::config::System;
-use crate::server::StatsdServer;
+use crate::stats::STATS;
 use crate::task::Task;
-use crate::{DROPS, INGRESS};
 
 pub(crate) fn start_sync_udp(
     log: Logger,
@@ -170,7 +167,7 @@ pub(crate) fn start_sync_udp(
                                 let mlen = mheaders[i].msg_len as usize;
                                 total_received += mlen;
 
-                                INGRESS.fetch_add(mlen, Ordering::Relaxed);
+                                STATS.ingress.fetch_add(mlen, Ordering::Relaxed);
 
                                 // create address entry in messagemap
                                 let entry = bufmap.entry(addrs[i]).or_insert_with(|| BytesMut::with_capacity(mlen));
@@ -198,7 +195,7 @@ pub(crate) fn start_sync_udp(
                                         // in some ideal world we want all values from the same host to be parsed by the
                                         // same thread, but this could cause load unbalancing between threads in some
                                         // corner cases, i.e. when only few hosts are sending most
-                                        // metrics
+                                        // of the metrics
                                         // TODO: we can work this around by fast-scanning buffer
                                         // for newlines. if more than 2 newlines are there, buffer
                                         // can be split into 3 parts and the middle part can be
@@ -214,10 +211,10 @@ pub(crate) fn start_sync_udp(
                                         } else {
                                             ichans.next().unwrap().clone()
                                         };
-                                        chan.try_send(Task::Parse(ahash, buf.take()))
+                                        chan.try_send(Task::Parse(ahash, buf.split()))
                                             .map_err(|_| {
                                                 warn!(log, "error sending buffer(queue full?)");
-                                                DROPS.fetch_add(messages as usize, Ordering::Relaxed);
+                                                STATS.drops.fetch_add(messages as usize, Ordering::Relaxed);
                                             })
                                             .unwrap_or(());
                                     })
@@ -228,8 +225,8 @@ pub(crate) fn start_sync_udp(
                             if errno == EAGAIN {
                             } else {
                                 warn!(log, "UDP receive error";
-                                      "code"=> format!("{}", res),
-                                      "error"=>format!("{}", io::Error::last_os_error())
+                                    "code"=> format!("{}", res),
+                                    "error"=>format!("{}", io::Error::last_os_error())
                                 );
                             }
                         }
@@ -270,41 +267,34 @@ pub(crate) fn start_async_udp(
         let chans = chans.to_owned();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
+        let log = log.clone();
         thread::Builder::new()
             .name(format!("bioyino_udp{}", i))
             .spawn(move || {
                 // each thread runs it's own runtime
-                let mut runtime = Runtime::new().expect("creating runtime for counting worker");
-
+                let mut runtime = Builder::new().basic_scheduler().enable_all().build().expect("creating runtime for test");
                 // Inside each green thread
                 for _ in 0..greens {
                     // start a listener for all sockets
                     for socket in sockets.iter() {
-                        let mut readbuf = BytesMut::with_capacity(bufsize);
-                        unsafe { readbuf.set_len(bufsize) }
                         let chans = chans.clone();
                         // create UDP listener
                         let socket = socket.try_clone().expect("cloning socket");
-                        let socket = UdpSocket::from_std(socket, &Handle::default()).expect("adding socket to event loop");
+                        let socket = UdpSocket::from_std(socket).expect("adding socket to event loop");
 
-                        let server = StatsdServer::new(
+                        runtime.spawn(crate::server::async_statsd_server(
+                            log.clone(),
                             socket,
                             chans.clone(),
-                            HashMap::new(),
                             config.clone(),
                             bufsize,
-                            0,
                             i,
-                            readbuf,
                             flush_flags.clone(),
-                            i,
-                        );
-
-                        runtime.spawn(server.into_future());
+                        ));
                     }
                 }
 
-                runtime.block_on(empty::<(), ()>()).expect("starting runtime for async UDP");
+                runtime.block_on(pending::<()>())
             })
             .expect("creating UDP reader thread");
     }
