@@ -73,23 +73,23 @@ The solution of all the wishes above is like this
 
 ```
 [aggregation]
-\# specify only required aggregates for timers and sets
+# specify only required aggregates for timers and sets
 aggregates.timer = ["sum", "max"]
 aggregates.set = [ "count" ]
 
 [naming.default]
 prefix="global.namespace"
 
-\# set compatibility mode for max aggregate
+# set compatibility mode for max aggregate
 postfixes = { "max" = "upper" }
 
 [naming.gauge]
-\# override namespace requirements for gauges
+# override namespace requirements for gauges
 prefix = "global.namespace.gauges"
 prefix-overrides = {"updates" = "global.namespace.debug-updates.gauges" }
 
 [naming.set]
-\# Change the destination of aggregation for sets
+# Change the destination of aggregation for sets
 destination = "tag"
 tag = "agg"
 ```

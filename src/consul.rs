@@ -11,36 +11,37 @@ use serde_json::{self, from_slice};
 use slog::{debug, o, warn, Logger};
 use tokio::timer::{self, Delay, Interval};
 
-use failure_derive::Fail;
 use serde_derive::Deserialize;
+use thiserror::Error;
 
 use crate::util::switch_leader;
 use crate::{ConsensusState, CONSENSUS_STATE};
 
-#[derive(Fail, Debug)]
+#[derive(Error, Debug)]
 pub enum ConsulError {
-    #[fail(display = "session create error: {}", _0)]
+    #[error("session create error: {}", _0)]
     Session(String),
 
-    #[fail(display = "server responded with bad status code '{}': {}", _0, _1)]
+    #[error("server responded with bad status code '{}': {}", _0, _1)]
     HttpStatus(hyper::StatusCode, String),
 
-    #[fail(display = "agent connection timed out")]
+    #[error("agent connection timed out")]
     ConnectionTimeout,
 
-    #[fail(display = "Http error: {}", _0)]
-    Http(#[cause] hyper::Error),
+    #[error("Http error: {}", _0)]
+    Http(#[from] hyper::Error),
 
-    #[fail(display = "Parsing response: {}", _0)]
-    Parsing(#[cause] serde_json::Error),
-    #[fail(display = "I/O error {}", _0)]
-    Io(#[cause] ::std::io::Error),
+    #[error("Parsing response: {}", _0)]
+    Parsing(#[from] serde_json::Error),
 
-    #[fail(display = "{}", _0)]
+    #[error("I/O error {}", _0)]
+    Io(#[from] ::std::io::Error),
+
+    #[error("{}", _0)]
     Renew(String),
 
-    #[fail(display = "creating timer: {}", _0)]
-    Timer(timer::Error),
+    #[error("creating timer: {}", _0)]
+    Timer(#[from] timer::Error),
 }
 
 #[derive(Deserialize)]

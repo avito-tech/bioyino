@@ -15,9 +15,11 @@ See config.toml for further configuration instructions
 
 ## Major changes ##
 * syslog logging is available via `syslog` configuration flag
+* new endpoint `/stats` is available at management server
 
 ## Internal changes ##
-* the runtime has been updated to tokio-2 (except raft), this is not visible to users
+* the runtime has been updated to new rust async paradigm with tokio-2 and futures-3 (except raft and consul)
+* many other libraries have their versions updated to latest major versions and incompatibilities fixed
 
 ## Minor changes
 * added aggregate naming options document
