@@ -18,7 +18,7 @@ use crate::s;
 
 pub async fn async_statsd_server(
     log: Logger,
-    mut socket: UdpSocket,
+    socket: std::net::UdpSocket,
     chans: Vec<mpsc::Sender<Task>>,
     config: Arc<System>,
     bufsize: usize,
@@ -31,6 +31,7 @@ pub async fn async_statsd_server(
     let mut recv_counter = 0;
     let mut next = thread_idx;
     let log = log.new(o!("source"=>"async_udp_server", "tid"=>thread_idx));
+    let mut socket = UdpSocket::from_std(socket).expect("adding socket to event loop");
     loop {
         let (size, addr) = match socket.recv_from(&mut readbuf).await {
             Ok((0, _)) => { // size = 0 means EOF

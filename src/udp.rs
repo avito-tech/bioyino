@@ -15,7 +15,6 @@ use net2::unix::UnixUdpBuilderExt;
 use net2::UdpBuilder;
 use slog::{debug, info, o, warn, Logger};
 use std::os::unix::io::AsRawFd;
-use tokio2::net::UdpSocket;
 use tokio2::runtime::Builder;
 
 use crate::config::System;
@@ -280,7 +279,6 @@ pub(crate) fn start_async_udp(
                         let chans = chans.clone();
                         // create UDP listener
                         let socket = socket.try_clone().expect("cloning socket");
-                        let socket = UdpSocket::from_std(socket).expect("adding socket to event loop");
 
                         runtime.spawn(crate::server::async_statsd_server(
                             log.clone(),
