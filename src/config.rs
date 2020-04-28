@@ -171,11 +171,11 @@ impl Default for Aggregation {
 pub(crate) fn all_aggregates() -> HashMap<MetricTypeName, Vec<Aggregate<Float>>> {
     let mut map = bioyino_metric::aggregate::possible_aggregates();
     let timers = map.get_mut(&MetricTypeName::Timer).expect("only BUG in possible_aggregates can panic here");
-    timers.push(Aggregate::Percentile(0.75));
-    timers.push(Aggregate::Percentile(0.95));
-    timers.push(Aggregate::Percentile(0.98));
+    timers.push(Aggregate::Percentile(0.75, 75));
+    timers.push(Aggregate::Percentile(0.95, 95));
+    timers.push(Aggregate::Percentile(0.98, 98));
     //timers.push(Aggregate::Percentile(0.99)); // 99th already exists
-    timers.push(Aggregate::Percentile(0.999));
+    timers.push(Aggregate::Percentile(0.999, 999));
     map
 }
 

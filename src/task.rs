@@ -178,14 +178,14 @@ impl TaskRunner {
 struct TaskParseErrorHandler(Option<Logger>);
 
 impl ParseErrorHandler for TaskParseErrorHandler {
-    fn handle(&self, input: &[u8], pos: usize, e: MetricParsingError) {
+    fn handle(&self, input: &[u8], _pos: usize, e: MetricParsingError) {
         s!(parse_errors);
         if let Some(ref log) = self.0 {
             if let Ok(string) = std::str::from_utf8(input) {
                 // TODO better error formatting instead of Debug
-                warn!(log, "parsing error"; "buffer"=> format!("{:?}", string), "position"=>format!("{}", pos), "error"=>format!("{:?}", e));
+                warn!(log, "parsing error"; "buffer"=> format!("{:?}", string), "position"=>format!("{}", e.position.translate_position(input)), "error"=>format!("{:?}", e));
             } else {
-                warn!(log, "parsing error (bad unicode)"; "buffer"=> format!("{:?}", input), "position"=>format!("{}", pos), "error"=>format!("{:?}", e));
+                warn!(log, "parsing error (bad unicode)"; "buffer"=> format!("{:?}", input), "position"=>format!("{}",e.position.translate_position(input) ), "error"=>format!("{:?}", e));
             }
         }
     }

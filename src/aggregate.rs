@@ -367,7 +367,7 @@ mod tests {
 
         let timer = MetricTypeName::Timer;
         // add 0.8th percentile to timer aggregates
-        config.aggregates.get_mut(&timer).unwrap().as_mut().unwrap().push(Aggregate::Percentile(0.8));
+        config.aggregates.get_mut(&timer).unwrap().as_mut().unwrap().push(Aggregate::Percentile(0.8, 80));
 
         //"percentile-80".into());
         /*config.postfix_replacements.insert("percentile-80".into(), "percentile80".into());
@@ -410,7 +410,7 @@ mod tests {
                     .clone()
                     .into_iter()
                     .map(|agg| Aggregate::<f64>::try_from(agg).unwrap())
-                    .chain(Some(Aggregate::Percentile(0.8)))
+                    .chain(Some(Aggregate::Percentile(0.8, 80)))
                     .map(move |agg| (key.clone(), agg))
             })
         .flatten()

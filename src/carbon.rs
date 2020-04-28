@@ -99,7 +99,7 @@ impl CarbonWorker {
                 let carbon_log = log.clone();
                 let carbon = backend_opts.clone();
                 let chunk_size = if metrics.len() > carbon.chunks { metrics.len() / carbon.chunks } else { 1 };
-                for chunk in metrics.chunks(chunk_size) {
+                for (nth, chunk) in metrics.chunks(chunk_size).enumerate() {
                     let retry_log = carbon_log.clone();
                     let elog = carbon_log.clone();
                     let options = CarbonClientOptions {
@@ -122,7 +122,7 @@ impl CarbonWorker {
                         client.run()
                     });
                     retrier.await.unwrap_or_else(move |e| {
-                        error!(elog.clone(), "failed to send chunk to graphite"; "error"=>format!("{:?}",e));
+                        error!(elog.clone(), "failed to send chunk to graphite"; "chunk" => format!("{}", nth), "error"=>format!("{:?}",e));
                     });
                 }
             };
@@ -187,7 +187,7 @@ impl CarbonBackend {
             None => TcpStream::connect(&options.addr).await?,
         };
 
-        info!(log, "sending metrics");
+        info!(log, "sending metrics chunk");
         let mut writer = CarbonCodec::new(ts.clone(), options.options.clone()).framed(conn);
 
         for m in metrics.iter().cloned() {

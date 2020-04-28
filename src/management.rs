@@ -160,8 +160,9 @@ impl Service<Request<Body>> for MgmtService {
             (&Method::GET, "/", _) => {
                 *response.body_mut() = Body::from(
                     "Available endpoints:
-    status - will show server status
-    consensus - posting will change consensus state",
+    /status - will show server status
+    /stats - will show server exported metrics
+    /consensus - posting will change consensus state",
                 );
                 Box::pin(ok(response))
             }
