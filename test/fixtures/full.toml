@@ -1,7 +1,7 @@
 # this is config used in some unit testso
 # TODO: should contain all the possible values to check parsing
 
-verbosity = "info"
+verbosity = "debug"
 syslog = true
 n-threads = 4
 w-threads = 4
@@ -55,7 +55,7 @@ chunks = 3
 [network]
 listen = "127.0.0.1:8125"
 peer-listen = "127.0.0.1:8136"
-peer-client-bind = "127.0.0.1:8000"
+#peer-client-bind = "127.0.0.1:32769"
 mgmt-listen = "127.0.0.1:8137"
 bufsize = 1500
 multimessage = true
@@ -66,7 +66,7 @@ buffer-flush-time = 0
 buffer-flush-length = 65536
 greens = 4
 async-sockets = 4
-nodes = []
+nodes = [ "127.0.0.1:8181",  "127.0.0.1:8182" ]
 snapshot-interval = 1000
 
 [raft]

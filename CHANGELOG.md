@@ -16,6 +16,7 @@ See config.toml for further configuration instructions
 ## Major changes ##
 * syslog logging is available via `syslog` configuration flag
 * new endpoint `/stats` is available at management server
+* the snapshot sender is now using ring buffer for shapshots, so senders don't start infinitely when a node disappears eating all the memory
 
 ## Internal changes ##
 * the runtime has been updated to new rust async paradigm with tokio-2 and futures-3 (except raft and consul)

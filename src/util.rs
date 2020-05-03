@@ -9,10 +9,9 @@ use std::time::{Duration};
 use thiserror::Error;
 
 use futures3::future::{Future as Future3, TryFutureExt};
-use net2::TcpBuilder;
+use net2::{TcpBuilder, unix::UnixTcpBuilderExt};
 use resolve::resolver;
 use slog::{o, warn, Drain, Logger};
-use tokio::net::TcpListener;
 use trust_dns_resolver::TokioAsyncResolver;
 
 use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
@@ -59,20 +58,22 @@ pub fn try_resolve(s: &str) -> SocketAddr {
 
 pub fn bound_stream(addr: &SocketAddr) -> Result<StdTcpStream, io::Error> {
     let builder = TcpBuilder::new_v4()?;
+    builder.reuse_address(true)?;
+    builder.reuse_port(true)?;
     builder.bind(addr)?;
     builder.to_tcp_stream()
 }
 
-pub fn reusing_listener(addr: &SocketAddr) -> Result<TcpListener, io::Error> {
-    let builder = TcpBuilder::new_v4()?;
-    builder.reuse_address(true)?;
-    builder.bind(addr)?;
+//pub fn reusing_listener(addr: &SocketAddr) -> Result<TcpListener, io::Error> {
+//let builder = TcpBuilder::new_v4()?;
+//builder.reuse_address(true)?;
+//builder.bind(addr)?;
 
-    // backlog parameter will be limited by SOMAXCONN on Linux, which is usually set to 128
-    let listener = builder.listen(65536)?;
-    listener.set_nonblocking(true)?;
-    TcpListener::from_std(listener, &tokio::reactor::Handle::default())
-}
+//// backlog parameter will be limited by SOMAXCONN on Linux, which is usually set to 128
+//let listener = builder.listen(65536)?;
+//listener.set_nonblocking(true)?;
+//TcpListener::from_std(listener, &tokio::reactor::Handle::default())
+//}
 
 pub async fn resolve_with_port(host: &str, default_port: u16) -> Result<SocketAddr, OtherError> {
     let (host, port) = if let Some(pos) = host.find(':') {
