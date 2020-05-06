@@ -121,6 +121,7 @@ fn main() {
                 async_sockets,
                 nodes,
                 snapshot_interval,
+                max_snapshots,
             },
             raft,
             consul:
@@ -245,10 +246,9 @@ fn main() {
     let stats_prefix = stats_prefix.trim_end_matches('.').to_string();
 
     // Spawn future gatering bioyino own stats
-    let own_stat_chan = chans[0].clone();
     let own_stat_log = rlog.clone();
     info!(log, "starting own stats counter");
-    let own_stats = OwnStats::new(s_interval, stats_prefix, own_stat_chan, own_stat_log);
+    let own_stats = OwnStats::new(s_interval, stats_prefix, chans.clone(), own_stat_log);
     runtime.spawn(async { own_stats.run().await });
 
     let compat_log = rlog.clone();
@@ -360,8 +360,7 @@ fn main() {
     runtime.spawn(peer_server);
 
     info!(log, "starting snapshot sender");
-    // TODO: make a config option for number of snapshots
-    let snapshot = NativeProtocolSnapshot::new(&log.clone(), nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &s_chans, 180);
+    let snapshot = NativeProtocolSnapshot::new(&log.clone(), nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &s_chans, max_snapshots);
 
     runtime.spawn(snapshot
         .run()

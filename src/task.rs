@@ -7,7 +7,7 @@ use futures3::channel::mpsc::UnboundedSender;
 use futures3::channel::oneshot;
 use futures3::SinkExt;
 use log::warn as logw;
-use slog::{debug, warn, Logger};
+use slog::{info, warn, Logger};
 
 use tokio2::spawn;
 
@@ -131,8 +131,8 @@ impl TaskRunner {
                 // self.short now contains empty hashmap because of draining
                 // give a copy of snapshot to requestor
                 channel.send(short).unwrap_or_else(|_| {
-                    s!(peer_errors);
-                    debug!(self.log, "shapshot not sent");
+                    s!(queue_errors);
+                    info!(self.log, "task could not send snapshot, receiving thread may be dead");
                 });
             }
             Task::Rotate(channel) => {
@@ -152,8 +152,8 @@ impl TaskRunner {
                 if let Some(mut c) = channel {
                     let log = self.log.clone();
                     spawn(async move { c.send(rotated).await.unwrap_or_else(|_|{
-                        s!(agg_errors);
-                        debug!(log, "could not respond with aggregated metric, carbon thread is probably dead");
+                        s!(queue_errors);
+                        info!(log, "task could not send rotated metric, receiving thread may be dead");
                     }); });
                 }
                 self.buffers.retain(|_, (ref mut times, _)| {

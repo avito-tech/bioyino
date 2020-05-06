@@ -367,6 +367,9 @@ pub struct Network {
 
     /// Interval to send snapshots to nodes, ms
     pub snapshot_interval: usize,
+
+    /// Number of latest snapshots stored
+    pub max_snapshots: usize,
 }
 
 impl Default for Network {
@@ -387,6 +390,7 @@ impl Default for Network {
             async_sockets: 4,
             nodes: Vec::new(),
             snapshot_interval: 1000,
+            max_snapshots: 180,
         }
     }
 }

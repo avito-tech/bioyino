@@ -74,7 +74,7 @@ pub async fn async_statsd_server(
                     next += 1;
                     chan
                 };
-                chan.send(Task::Parse(ahash, buf)).await.unwrap_or_else(|_|s!(drops));
+                chan.send(Task::Parse(ahash, buf)).await.unwrap_or_else(|_| s!(drops));
             }
         }
     };

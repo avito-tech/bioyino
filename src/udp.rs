@@ -13,7 +13,7 @@ use futures3::channel::mpsc::Sender;
 use futures3::future::pending;
 use net2::unix::UnixUdpBuilderExt;
 use net2::UdpBuilder;
-use slog::{debug, info, o, warn, Logger};
+use slog::{info, o, warn, Logger};
 use std::os::unix::io::AsRawFd;
 use tokio2::runtime::Builder;
 
@@ -135,7 +135,6 @@ pub(crate) fn start_sync_udp(
                     }
 
                     loop {
-                        debug!(log, "recvmsg start");
                         // timeout is mutable and changed by every recvmmsg call, so it MUST be inside loop
                         // creating timeout as &mut fails because it's supposedly not dropped
                         let mut timeout = if mm_timeout > 0 {

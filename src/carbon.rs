@@ -226,7 +226,6 @@ impl Encoder<(MetricName, MetricTypeName, Aggregate<Float>, Float)> for CarbonCo
             )
                 .is_err()
         {
-            // TODO don't log error maybe
             warn!("could not serialize '{:?}' with {:?}", &name.name[..], aggregate);
             s!(agg_errors);
             return Ok(());

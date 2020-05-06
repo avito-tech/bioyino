@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use capnp::message::{Builder, ReaderOptions};
 use capnp_futures::{serialize::write_message};
-use slog::{o, warn, info, Logger};
+use slog::{o, warn, Logger};
 use thiserror::Error;
 
 use futures3::channel::mpsc::Sender;
@@ -107,7 +107,7 @@ impl NativeProtocolServer {
 
             let receiver = async move {
                 let elog = log.clone();
-                //    let transport = capnp_futures::ReadStream::new(&mut conn, CAPNP_READER_OPTIONS).map_err(PeerError::Capnp);
+                //let transport = capnp_futures::ReadStream::new(&mut conn, CAPNP_READER_OPTIONS);//.map_err(PeerError::Capnp);
                 while let Ok(Some(reader)) = capnp_futures::serialize::read_message(&mut conn, CAPNP_READER_OPTIONS).await {
                     //while let Some(reader) = futures3::stream::TryStreamExt::try_next(&mut transport).await?
                     let task = {
@@ -121,10 +121,12 @@ impl NativeProtocolServer {
                     };
 
                     let mut next_chan = chans.next().unwrap().clone();
-                    next_chan.send(task).map_err(|_|{ s!(peer_errors); PeerError::TaskSend }).await?;
+                    next_chan.send(task).map_err(|_|{ s!(queue_errors); PeerError::TaskSend }).await?;
                 }
                 Ok::<(), PeerError>(())
             }.map_err(move |e| {
+
+                s!(peer_errors);
                 warn!(elog, "snapshot server reading error"; "error"=>format!("{:?}", e));
             });
 
@@ -227,6 +229,7 @@ impl NativeProtocolSnapshot {
                         let client = SnapshotSender::new(metrics, options.clone(), log.clone());
                         client.run()
                     }).await.map_err(move |e| {
+                        s!(peer_errors);
                         warn!(elog, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
                         e
                     }).unwrap_or(()); // don't exit on failure
@@ -247,7 +250,7 @@ impl NativeProtocolSnapshot {
                 let (tx, rx) = oneshot::channel();
                 chan.send(Task::TakeSnapshot(tx)).await.unwrap_or(());
                 outs.push(rx.unwrap_or_else(|_| {
-                    s!(peer_errors);
+                    s!(queue_errors);
                     HashMap::new()
                 }));
             }
@@ -262,7 +265,7 @@ impl NativeProtocolSnapshot {
             for ch in &mut node_chans {
                 // sender has sync send method which conflicts with one from Sink
                 futures3::SinkExt::send(ch, all_metrics.clone()).await.map_err(|_| {
-                    s!(peer_errors);
+                    s!(queue_errors);
                     PeerError::SnapshotDropped}).unwrap_or(());
             }
         };
@@ -293,6 +296,7 @@ impl SnapshotSender {
     async fn run(self) -> Result<(), PeerError> {
         let Self { metrics, log, options } = self;
 
+        // error stats are counted when running this future
         let addr = resolve_with_port(&options.address, 8136).await?;
         let conn = match options.bind {
             Some(bind_addr) => {
@@ -320,7 +324,6 @@ impl SnapshotSender {
             .last();
             }
         write_message(conn.compat_write(), snapshot_message).map_err(move |e| {
-            s!(peer_errors);
             warn!(log, "error encoding snapshot"; "error"=>e.to_string());
             PeerError::Capnp(e)
         }).await
@@ -473,33 +476,4 @@ mod test {
         runtime.block_on(test_delay);
 
     }
-
-    /*
-       #[test]
-       fn snapshot_wtf() {
-       use slog::info;
-       use crate::s;
-
-       let log = prepare_log("test_peer_capnp");
-       let mut runtime = RBuilder::new()
-       .thread_name("bioyino_wtf")
-       .basic_scheduler()
-       .enable_all()
-       .build()
-       .expect("creating runtime for wtf thread");
-
-       let nodes = vec!["127.0.0.1:8182".to_string()];
-       let chans = Vec::new();
-       let snapshot = NativeProtocolSnapshot::new(&log, nodes, None, Duration::from_millis(1000u64), &s_chans, 180);
-
-       runtime.spawn(snapshot
-       .run()
-       .map_err(move |e| {
-       s!(peer_errors);
-       info!(snap_err_log, "error running snapshot sender"; "error"=>format!("{}", e));
-       })
-       );
-
-       }
-       */
 }
