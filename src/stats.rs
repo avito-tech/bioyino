@@ -102,11 +102,14 @@ impl OwnStats {
         } else {
             1f64
         };
-        self.next_chan = if self.next_chan >= self.chans.len() {
-            0
-        } else {
-            self.next_chan + 1
-        };
+
+        // we will start from 1st worker, not 0th, but who cares, we rotate them every second
+        self.next_chan += 1;
+        // this also covers situation when the number of workers = 1
+        if self.next_chan >= self.chans.len() {
+            self.next_chan  = 0;
+        }
+
         macro_rules! add_metric {
             ($value:ident, $suffix:expr) => {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
