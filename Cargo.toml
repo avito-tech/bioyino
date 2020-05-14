@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.7.0"
+version = "0.7.0-rc1"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -24,7 +24,7 @@ tokio-io="^0.1"
 #tokio-codec="^0.1"
 
 # new wave
-tokio2 = { package = "tokio", version = "^0.2", features = ["net", "time", "sync", "macros", "io-util", "io-driver", "rt-core", "rt-util"] }
+tokio2 = { package = "tokio", version = "^0.2", features = ["net", "time", "sync", "macros", "io-util", "io-driver", "rt-core", "rt-util", "rt-threaded"] }
 futures3 = { package = "futures", version = "^0.3", features = ["compat"] }
 hyper13 = { package = "hyper", version = "^0.13" }
 trust-dns-resolver = { version = "^0.19" }

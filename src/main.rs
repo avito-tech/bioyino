@@ -20,8 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::{thread, panic, process};
 use std::time::{Duration, Instant};
+use std::io;
 
-use slog::{info, o, Drain, Level};
+use slog::{info, o, Drain};
 
 use futures::future::{empty};
 use futures3::channel::mpsc;
@@ -102,8 +103,9 @@ fn main() {
     let config = system.clone();
     #[allow(clippy::unneeded_field_pattern)]
     let System {
-        verbosity,
-        syslog,
+        verbosity_console,
+        verbosity_syslog,
+        daemon,
         network:
             Network {
                 listen,
@@ -145,39 +147,36 @@ fn main() {
                 consensus,
     } = system;
 
-    let verbosity = Level::from_str(&verbosity).expect("bad verbosity");
-
-    //let mut runtime = Runtime::new().expect("creating runtime for main thread");
-    let mut runtime = Builder::new()
-        .thread_name("bioyino_main")
-        .basic_scheduler()
-        .enable_all()
-        .build()
-        .expect("creating runtime for main thread");
+    // Since daemonizing closes all opened resources, inclusing syslog, we mut do it before everything else
+    if daemon {
+        let result = unsafe { libc::daemon(0, 0) };
+        if result < 0 {
+            println!("daemonize failed: {}", io::Error::last_os_error());
+            std::process::exit(1);
+        }
+    }
 
     // Set logging
-    let syslog = if syslog {
-        Some(slog_syslog::SyslogBuilder::new()
-            .facility(slog_syslog::Facility::LOG_DAEMON)
-            .level(verbosity)
-            .unix("/dev/log")
-            .start()
-            .expect("Failed to start syslog on `var/run/syslog`")
-            .fuse())
-    } else {
-        None
-    };
+    let syslog_drain =
+        slog_syslog::SyslogBuilder::new()
+        .facility(slog_syslog::Facility::LOG_DAEMON)
+        .unix("/dev/log")
+        .start()
+        .expect("Failed to start logging to syslog on `/dev/log`")
+        .filter(move |r: &slog::Record| verbosity_syslog.level.accepts(r.level()) )
+        .fuse();
 
-    // we always have async terminal logger as of now
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog::LevelFilter::new(drain, verbosity).fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    let rlog = if let Some(log) = syslog {
-        let drain = drain.map(|d| slog::Duplicate(d, log).fuse());
+    let rlog = if daemon {
+        let drain = slog_async::Async::new(syslog_drain).build().fuse();
         slog::Logger::root(drain, o!("program"=>"bioyino"))
     } else {
+        let decorator = slog_term::TermDecorator::new().build();
+        let console_drain = slog_term::FullFormat::new(decorator).build()
+            .filter(move |r: &slog::Record| verbosity_console.level.accepts(r.level()))
+            .fuse();
+
+        let drain = slog::Duplicate(console_drain, syslog_drain).fuse();
+        let drain = slog_async::Async::new(drain).build().fuse();
         slog::Logger::root(drain, o!("program"=>"bioyino"))
     };
 
@@ -185,6 +184,15 @@ fn main() {
     let _guard = slog_scope::set_global_logger(rlog.clone());
 
     slog_stdlog::init().unwrap();
+
+
+    let mut runtime = Builder::new()
+        .thread_name("bioyino_main")
+        .basic_scheduler()
+        //.threaded_scheduler()
+        .enable_all()
+        .build()
+        .expect("creating runtime for main thread");
 
     if let Command::Query(command, dest) = command {
         let dest = try_resolve(&dest);

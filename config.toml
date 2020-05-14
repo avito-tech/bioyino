@@ -2,10 +2,16 @@
 # Required options are filled with default values
 # Non-required options are commented with defaul values in comments
 
-verbosity = "warn"
+# set verbosity of console messages, use "off" to disable
+verbosity-console = "warn"
 
-# use this to enable logging to syslog
-# syslog = false
+# set verbosity of syslog messages, use "off" to disable
+#verbosity-syslog = "off"
+
+# become a unix daemon: will be done in a standard unix
+# console verbosity will be turned off in this mode
+# NOTE: syslog verbosity will stay the same, and there will be no loggind at all if it is turned off
+#daemon = false
 
 # Number of network worker threads in any mode, use 0(not recommended) to use all CPU cores
 n-threads = 4

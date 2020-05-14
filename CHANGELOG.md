@@ -1,7 +1,7 @@
 # Release 0.7.0 #
 
 ## Incompatible changes ##
-* naming optinos have changed again
+* naming options have changed again
     * naming is now per-type, each type in specific section `naming.<type>`
     * postfix, prefix and tag naming settings are now in corresponding naming sections
     * `aggregation.destination` is now specified in corresponding naming sections
@@ -10,13 +10,18 @@
     * `aggregation.ms-aggregates` is now `aggregation.aggregates.timer`
     * all other metric types have their own `aggregation.aggregates.<type>` section
 
+* syslog logging is available via `verbosity-syslog` configuration option
+* console logging verbosity has changed name from just `verbosity` to `verbosity-console`
 
 See config.toml for further configuration instructions
 
 ## Major changes ##
-* syslog logging is available via `syslog` configuration flag
-* new endpoint `/stats` is available at management server
-* the snapshot sender is now using ring buffer for shapshots, so senders don't start infinitely when a node disappears eating all the memory
+The snapshot sending has been reworked:
+Instead of sending each snapshot in a single connection with backoff settings, it is  now using ring buffer for shapshots (meaning the oldest snapshot is deleted when buffer is full). This helps to avoid problems when senders were taking memory infinitely when one of nodes disappear. Snapshots are also sent in a single TCP-connection without resolve+connect overhead for each snapshot.
+
+* `max_snapshots` option has been added, allowing to set maximum number of snapshots _per remote node_ stored in ring buffer
+* new endpoint `/stats` is available at management server (HTTP on port 8137)
+* becoming daemon is available via `daemon` option in config, the setting can also be overrided by `-f`/`--foreground` command line options
 
 ## Internal changes ##
 * the runtime has been updated to new rust async paradigm with tokio-2 and futures-3 (except raft and consul)

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Debug, fs::File, io::Read, net::SocketAddr, ops::Range, time::Duration};
+use std::{collections::HashMap, convert::TryFrom, fmt::Debug, fs::File, io::Read, net::SocketAddr, ops::Range, str::FromStr, time::Duration};
 
 use clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, value_t, Arg, SubCommand};
 use toml;
@@ -22,10 +22,13 @@ use bioyino_metric::{
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct System {
     /// Logging level
-    pub verbosity: String,
+    pub verbosity_console: Verbosity,
 
     /// Enable logging to syslog
-    pub syslog: bool,
+    pub verbosity_syslog: Verbosity,
+
+    /// Enable going to background
+    pub daemon: bool,
 
     /// Network settings
     pub network: Network,
@@ -74,8 +77,9 @@ pub struct System {
 impl Default for System {
     fn default() -> Self {
         Self {
-            verbosity: "warn".to_string(),
-            syslog: false,
+            verbosity_console: Verbosity::default(),
+            verbosity_syslog: TryFrom::try_from("off").unwrap(),
+            daemon: false,
             network: Network::default(),
             raft: Raft::default(),
             consul: Consul::default(),
@@ -91,6 +95,31 @@ impl Default for System {
             stats_prefix: "resources.monitoring.bioyino".to_string(),
             consensus: ConsensusKind::None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields, try_from = "&str")]
+pub struct Verbosity {
+    #[serde(skip)]
+    pub(crate) level: slog::FilterLevel,
+}
+
+impl TryFrom<&str> for Verbosity {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        if let Ok(level) = FromStr::from_str(s) {
+            Ok(Self { level })
+        } else {
+            Err("incorrect verbosity value".to_string())
+        }
+    }
+}
+
+impl Default for Verbosity {
+    fn default() -> Self {
+        TryFrom::try_from("warn").unwrap()
     }
 }
 
@@ -518,7 +547,8 @@ impl System {
                     .takes_value(true)
                     .default_value("/etc/bioyino/bioyino.toml"),
             )
-            .arg(Arg::with_name("verbosity").short("v").help("logging level").takes_value(true))
+            .arg(Arg::with_name("verbosity").short("v").help("console logging level").takes_value(true))
+            .arg(Arg::with_name("foreground").short("f").help("do not daemonize"))
             .subcommand(
                 SubCommand::with_name("query")
                     .about("send a management command to running bioyino server")
@@ -540,9 +570,12 @@ impl System {
         let mut system: System = toml::de::from_str(&config_str).map_err(ConfigError::Toml)?;
 
         if let Some(v) = app.value_of("verbosity") {
-            system.verbosity = v.into()
+            system.verbosity_console = TryFrom::try_from(v).map_err(|_| ConfigError::BadValue("`verbosity` CLI option".to_string(), v.to_string()))?;
         }
 
+        if app.is_present("foreground") {
+            system.daemon = false
+        }
         // all parameter postprocessing goes here
         system.prepare()?;
 

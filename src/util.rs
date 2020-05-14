@@ -1,4 +1,3 @@
-use libc;
 use std::ffi::CStr;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -167,15 +166,19 @@ impl Backoff {
             Err(())
         } else {
             self.retries -= 1;
-            let delay = self.delay as f32 * self.delay_mul;
-            let delay = if delay <= self.delay_max as f32 {
-                delay as u64
-            } else {
-                self.delay_max as u64
-            };
+            let delay = self.next_sleep();
 
             tokio2::time::delay_for(Duration::from_millis(delay)).await;
             Ok(self.retries)
+        }
+    }
+
+    pub fn next_sleep(&self) -> u64 {
+        let delay = self.delay as f32 * self.delay_mul;
+        if delay <= self.delay_max as f32 {
+            delay as u64
+        } else {
+            self.delay_max as u64
         }
     }
 }

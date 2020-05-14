@@ -4,14 +4,14 @@ use std::time::{Duration};
 use std::num::NonZeroUsize;
 use std::collections::HashMap;
 
-use capnp::message::{Builder, ReaderOptions};
+use capnp::message::{Builder, ReaderOptions, ReaderSegments};
 use capnp_futures::{serialize::write_message};
-use slog::{o, warn, Logger};
+use slog::{o, warn, error, Logger};
 use thiserror::Error;
 
 use futures3::channel::mpsc::Sender;
 use futures3::channel::oneshot;
-use futures3::{SinkExt};
+use futures3::{SinkExt, AsyncWriteExt};
 
 use ring_channel::{ring_channel, RingSender, RingReceiver};
 use tokio2::net::{TcpStream, TcpListener};
@@ -26,7 +26,7 @@ use bioyino_metric::protocol_capnp::{message as cmsg, message::Builder as CBuild
 use bioyino_metric::{Metric};
 
 use crate::task::Task;
-use crate::util::{bound_stream, resolve_with_port, Backoff, retry_with_backoff};
+use crate::util::{bound_stream, resolve_with_port, Backoff};
 use crate::{s, Cache, Float};
 
 const CAPNP_READER_OPTIONS: ReaderOptions = ReaderOptions {
@@ -56,6 +56,9 @@ pub enum PeerError {
 
     #[error("shapshot has been dropped")]
     SnapshotDropped,
+
+    #[error("shapshot write timeout")]
+    SnapshotWriteTimeout,
 
     #[error("decoding capnp error: {}", _0)]
     Capnp(#[from] capnp::Error),
@@ -107,12 +110,10 @@ impl NativeProtocolServer {
 
             let receiver = async move {
                 let elog = log.clone();
-                //let transport = capnp_futures::ReadStream::new(&mut conn, CAPNP_READER_OPTIONS);//.map_err(PeerError::Capnp);
+                //let transport = capnp_futures::ReadStream::new(&mut conn, CAPNP_READER_OPTIONS).err_into::<PeerError>();
                 while let Ok(Some(reader)) = capnp_futures::serialize::read_message(&mut conn, CAPNP_READER_OPTIONS).await {
                     //while let Some(reader) = futures3::stream::TryStreamExt::try_next(&mut transport).await?
                     let task = {
-                        let reader = reader.get_root::<cmsg::Reader>()?;
-
                         let elog = elog.clone();
                         parse_and_send(reader).map_err(move |e| {
                             warn!(elog, "bad incoming message"; "error" => e.to_string());
@@ -136,7 +137,10 @@ impl NativeProtocolServer {
     }
 }
 
-fn parse_and_send(reader: cmsg::Reader<'_>) -> Result<Task, PeerError> {
+//fn parse_and_send(reader: cmsg::Reader<'_>) -> Result<Task, PeerError> {
+fn parse_and_send(reader: capnp::message::Reader<capnp::serialize::OwnedSegments>) -> Result<Task, PeerError> {
+
+    let reader = reader.get_root::<cmsg::Reader>()?;
     match reader.which()? {
         cmsg::Single(reader) => {
             let reader = reader?;
@@ -208,36 +212,15 @@ impl NativeProtocolSnapshot {
         // few latest intervals. This is the reason of using a ring buffer instead of a channel.
 
         let mut node_chans = nodes.iter().map(|address| {
-            let (tx, mut rx): (RingSender<Arc<Vec<Cache>>>, RingReceiver<Arc<Vec<Cache>>>)  = ring_channel(snapshots);
+            let (tx, rx): (RingSender<Arc<Vec<Cache>>>, RingReceiver<Arc<Vec<Cache>>>)  = ring_channel(snapshots);
             let log = log.clone();
             let options = SnapshotClientOptions { address: address.clone(), bind: client_bind };
 
-            let snapshot_sender = async move {
-                while let Some(metrics) = rx.next().await {
-                    let backoff = Backoff {
-                        delay: 500,
-                        delay_mul: 2f32,
-                        delay_max: 5000,
-                        retries: 3,
-                    };
-                    let elog = log.clone();
-                    let log = log.clone();
-                    let options = options.clone();
-                    let eaddr = options.address.clone();
-                    retry_with_backoff(backoff, move || {
-                        let metrics =  metrics.clone();
-                        let client = SnapshotSender::new(metrics, options.clone(), log.clone());
-                        client.run()
-                    }).await.map_err(move |e| {
-                        s!(peer_errors);
-                        warn!(elog, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
-                        e
-                    }).unwrap_or(()); // don't exit on failure
-                }
-
-                Ok::<(), PeerError>(())
-            };
-            spawn(snapshot_sender);
+            spawn(async move {
+                let client = SnapshotSender::new(rx, options.clone(), log.clone());
+                client.run().await
+            });
+            //spawn(snapshot_sender);
             tx
         }).collect::<Vec<_>>();
 
@@ -280,53 +263,114 @@ pub struct SnapshotClientOptions {
 
 #[derive(Clone)]
 pub struct SnapshotSender {
-    metrics: Arc<Vec<Cache>>,
+    //metrics: Arc<Vec<Cache>>,
     options: SnapshotClientOptions,
+    rx: RingReceiver<Arc<Vec<Cache>>>,
     log: Logger,
 }
 
 impl SnapshotSender {
-    pub fn new(metrics: Arc<Vec<Cache>>, options: SnapshotClientOptions, log: Logger) -> Self {
+    pub fn new(rx: RingReceiver<Arc<Vec<Cache>>>, options: SnapshotClientOptions, log: Logger) -> Self {
         let log = log.new(o!("remote"=>options.address.clone()));
         Self {
-            metrics, options, log
+            rx, options, log
         }
     }
 
-    async fn run(self) -> Result<(), PeerError> {
-        let Self { metrics, log, options } = self;
+    async fn run(self) {
+        let Self { mut rx, log, options } = self;
 
-        // error stats are counted when running this future
-        let addr = resolve_with_port(&options.address, 8136).await?;
-        let conn = match options.bind {
-            Some(bind_addr) => {
-                let std_stream = bound_stream(&bind_addr)?;
-                TcpStream::connect_std(std_stream, &addr).await?
-            },
-            None => TcpStream::connect(&addr).await?,
+        let eaddr = options.address.clone();
+        // snapshot client works in the infinite loop
+        let mut backoff = Backoff {
+            delay: 500,
+            delay_mul: 2f32,
+            delay_max: 5000,
+            retries: usize::MAX,
         };
 
-        let mut snapshot_message = Builder::new_default();
-        {
-            let builder = snapshot_message.init_root::<CBuilder>();
-            let flat_len = metrics.iter().flat_map(|hmap| hmap.iter()).count();
-            let mut multi_metric = builder.init_snapshot(flat_len as u32);
-            metrics
-                .iter()
-                .flat_map(|hmap| hmap.iter())
-                .enumerate()
-                .map(|(idx, (name, metric))| {
-                    let mut c_metric = multi_metric.reborrow().get(idx as u32);
-                    let name = unsafe { ::std::str::from_utf8_unchecked(name.name_with_tags()) };
-                    c_metric.set_name(name);
-                    metric.fill_capnp(&mut c_metric);
-                })
-            .last();
+        let elog = log.clone();
+
+        use slog::info;
+        loop  {
+            let connect_and_send = async {
+                // we connect once
+                let addr = resolve_with_port(&options.address, 8136).await?;
+                // use net2::unix::UnixTcpBuilderExt;
+                //use net2::TcpStreamExt;
+                //let builder = net2::TcpBuilder::new_v4()?;
+                //builder.reuse_address(true)?;
+                //builder.reuse_port(true)?;
+                ////builder.bind(addr)?;
+                //let std_stream = builder.to_tcp_stream()?;
+                //std_stream.set_write_timeout_ms(Some(1000))?;
+                //info!(log, "connecting");
+                // let conn = TcpStream::connect_std(std_stream, &addr).await?;
+                let conn = match options.bind {
+                    Some(bind_addr) => {
+                        let std_stream = bound_stream(&bind_addr)?;
+                        TcpStream::connect_std(std_stream, &addr).await?
+                    },
+                    None => TcpStream::connect(&addr).await?,
+                };
+
+                let mut conn = conn.compat_write();
+
+                // then we read the channel trying to send all data remotely
+                while let Some(metrics) = rx.next().await {
+                    let mlen = metrics.len();
+                    let snapshot_message = {
+                        let mut snapshot_message = Builder::new_default();
+                        let builder = snapshot_message.init_root::<CBuilder>();
+                        let flat_len = metrics.iter().flat_map(|hmap| hmap.iter()).count();
+                        let mut multi_metric = builder.init_snapshot(flat_len as u32);
+                        metrics
+                            .iter()
+                            .flat_map(|hmap| hmap.iter())
+                            .enumerate()
+                            .map(|(idx, (name, metric))| {
+                                let mut c_metric = multi_metric.reborrow().get(idx as u32);
+                                // parsing stage has a guarantee that name is a valid unicode
+                                // metrics that come over capnproto also has Text type in schema,
+                                // so capnproto decoder will ensure unicode here
+                                let name = unsafe { ::std::sir::from_utf8_unchecked(name.name_with_tags()) };
+                                c_metric.set_name(&name);
+                                metric.fill_capnp(&mut c_metric);
+                            })
+                        .last();
+                        snapshot_message
+                    };
+
+                    let mut len = 0usize;
+                    let slen = snapshot_message.len() as u32;
+                    for i in 0u32..slen {
+                        len = len + snapshot_message.get_segment(i).unwrap().len();
+                    }
+                    info!(log, "sending snapshot"; "bytes" => format!("{}", len), "metrics" => format!("{}", mlen));
+                    let write = write_message(&mut conn, snapshot_message).map_err(|e| {
+                        warn!(log, "error encoding snapshot"; "error"=>e.to_string());
+                        PeerError::Capnp(e)
+                    });
+
+                    tokio2::time::timeout(std::time::Duration::from_millis(30000), write).await.map_err(|_|PeerError::SnapshotWriteTimeout)??;
+                    conn.flush().await?;
+                }
+
+                Ok::<(), PeerError>(())
+            };
+
+            match connect_and_send.await {
+                Err(e) => {
+                    s!(peer_errors);
+                    warn!(elog, "snapshot client error, retrying"; "next_pause"=>format!("{}", backoff.next_sleep()), "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
+                    if backoff.sleep().await.is_err() {
+                        error!(elog, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
+                        break
+                    }
+                }
+                Ok(()) => break,
             }
-        write_message(conn.compat_write(), snapshot_message).map_err(move |e| {
-            warn!(log, "error encoding snapshot"; "error"=>e.to_string());
-            PeerError::Capnp(e)
-        }).await
+        }
     }
 }
 
@@ -459,11 +503,6 @@ mod test {
             write_message(&mut conn, single_message).await.unwrap();
             write_message(&mut conn, multi_message).await.unwrap();
             write_message(&mut conn, snapshot_message).await.unwrap();
-            //codec
-            //.send(single_message)
-            //.and_then(|codec| codec.send(multi_message).and_then(|codec| codec.send(snapshot_message)))
-            //.map(|_| ())
-            //    .map_err(|e| println!("codec error: {:?}", e))
         };
 
         let delayed = async {
