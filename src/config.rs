@@ -105,6 +105,12 @@ pub struct Verbosity {
     pub(crate) level: slog::FilterLevel,
 }
 
+impl Verbosity {
+    pub fn is_off(&self) -> bool {
+        self.level == slog::FilterLevel::Off
+    }
+}
+
 impl TryFrom<&str> for Verbosity {
     type Error = String;
 

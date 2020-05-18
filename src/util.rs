@@ -13,6 +13,7 @@ use resolve::resolver;
 use slog::{o, warn, Drain, Logger};
 use trust_dns_resolver::TokioAsyncResolver;
 
+use crate::config::Verbosity;
 use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER};
 
 #[cfg(test)]
@@ -39,6 +40,50 @@ pub fn prepare_log(root: &'static str) -> Logger {
     slog::Logger::root(drain, o!("program"=>"test", "test"=>root))
 }
 
+pub(crate) fn setup_logging(daemon: bool, verbosity_console: Verbosity, verbosity_syslog: Verbosity) -> Logger {
+    macro_rules! async_logger {
+        ($drain:ident) => {
+            {
+                let values = o!("program"=>"bioyino");
+                let drain = slog_async::Async::new($drain).build().fuse();
+                slog::Logger::root(drain, values)
+            }
+        }
+    };
+
+    // the complex logic here could be decreased using boxed drains,
+    // but we don't want it yet, for meaningless imaginary performance benefits
+    let decorator = slog_term::TermDecorator::new().build();
+    if verbosity_syslog.is_off() {
+        if daemon {
+            let drain = slog::Discard.fuse();
+            async_logger!(drain)
+        } else {
+            let console_drain = slog_term::FullFormat::new(decorator).build()
+                .filter(move |r: &slog::Record| verbosity_console.level.accepts(r.level()))
+                .fuse();
+            async_logger!(console_drain)
+        }
+    } else {
+        let syslog_drain = slog_syslog::SyslogBuilder::new()
+            .facility(slog_syslog::Facility::LOG_DAEMON)
+            .unix("/dev/log")
+            .start()
+            .expect("Failed to start logging to syslog on `/dev/log`")
+            .filter(move |r: &slog::Record| verbosity_syslog.level.accepts(r.level()) )
+            .fuse();
+
+        if daemon {
+            async_logger!(syslog_drain)
+        } else {
+            let console_drain = slog_term::FullFormat::new(decorator).build()
+                .filter(move |r: &slog::Record| verbosity_console.level.accepts(r.level()))
+                .fuse();
+            let drain = slog::Duplicate(console_drain, syslog_drain).fuse();
+            async_logger!(drain)
+        }
+    }
+}
 pub fn try_resolve(s: &str) -> SocketAddr {
     s.parse().unwrap_or_else(|_| {
         // for name that have failed to be parsed we try to resolve it via DNS

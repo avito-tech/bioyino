@@ -22,7 +22,7 @@ use std::{thread, panic, process};
 use std::time::{Duration, Instant};
 use std::io;
 
-use slog::{info, o, Drain};
+use slog::{info, o};
 
 use futures::future::{empty};
 use futures3::channel::mpsc;
@@ -53,7 +53,7 @@ use crate::management::{MgmtClient};
 use crate::peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use crate::raft::start_internal_raft;
 use crate::task::{TaskRunner};
-use crate::util::{try_resolve, Backoff, retry_with_backoff};
+use crate::util::{try_resolve, Backoff, retry_with_backoff, setup_logging};
 pub use crate::stats::OwnStats;
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
@@ -146,6 +146,9 @@ fn main() {
                 stats_prefix,
                 consensus,
     } = system;
+    if daemon && verbosity_syslog.is_off() {
+        eprintln!("syslog is disabled, while daemon mode is on, no logging will be performed");
+    }
 
     // Since daemonizing closes all opened resources, inclusing syslog, we mut do it before everything else
     if daemon {
@@ -156,29 +159,7 @@ fn main() {
         }
     }
 
-    // Set logging
-    let syslog_drain =
-        slog_syslog::SyslogBuilder::new()
-        .facility(slog_syslog::Facility::LOG_DAEMON)
-        .unix("/dev/log")
-        .start()
-        .expect("Failed to start logging to syslog on `/dev/log`")
-        .filter(move |r: &slog::Record| verbosity_syslog.level.accepts(r.level()) )
-        .fuse();
-
-    let rlog = if daemon {
-        let drain = slog_async::Async::new(syslog_drain).build().fuse();
-        slog::Logger::root(drain, o!("program"=>"bioyino"))
-    } else {
-        let decorator = slog_term::TermDecorator::new().build();
-        let console_drain = slog_term::FullFormat::new(decorator).build()
-            .filter(move |r: &slog::Record| verbosity_console.level.accepts(r.level()))
-            .fuse();
-
-        let drain = slog::Duplicate(console_drain, syslog_drain).fuse();
-        let drain = slog_async::Async::new(drain).build().fuse();
-        slog::Logger::root(drain, o!("program"=>"bioyino"))
-    };
+    let rlog = setup_logging(daemon, verbosity_console, verbosity_syslog);
 
     // this lets root logger live as long as it needs
     let _guard = slog_scope::set_global_logger(rlog.clone());
