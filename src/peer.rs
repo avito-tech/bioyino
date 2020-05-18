@@ -333,7 +333,7 @@ impl SnapshotSender {
                                 // parsing stage has a guarantee that name is a valid unicode
                                 // metrics that come over capnproto also has Text type in schema,
                                 // so capnproto decoder will ensure unicode here
-                                let name = unsafe { ::std::sir::from_utf8_unchecked(name.name_with_tags()) };
+                                let name = unsafe { ::std::str::from_utf8_unchecked(name.name_with_tags()) };
                                 c_metric.set_name(&name);
                                 metric.fill_capnp(&mut c_metric);
                             })
