@@ -8,7 +8,7 @@ use std::time::{Duration};
 use thiserror::Error;
 
 use futures3::future::{Future as Future3, TryFutureExt};
-use net2::{TcpBuilder, unix::UnixTcpBuilderExt};
+use socket2::{Socket, Domain, Type};
 use resolve::resolver;
 use slog::{o, warn, Drain, Logger};
 use trust_dns_resolver::TokioAsyncResolver;
@@ -84,6 +84,7 @@ pub(crate) fn setup_logging(daemon: bool, verbosity_console: Verbosity, verbosit
         }
     }
 }
+
 pub fn try_resolve(s: &str) -> SocketAddr {
     s.parse().unwrap_or_else(|_| {
         // for name that have failed to be parsed we try to resolve it via DNS
@@ -101,11 +102,11 @@ pub fn try_resolve(s: &str) -> SocketAddr {
 }
 
 pub fn bound_stream(addr: &SocketAddr) -> Result<StdTcpStream, io::Error> {
-    let builder = TcpBuilder::new_v4()?;
-    builder.reuse_address(true)?;
-    builder.reuse_port(true)?;
-    builder.bind(addr)?;
-    builder.to_tcp_stream()
+    let socket = Socket::new(Domain::ipv4(), Type::stream(), None)?;
+    socket.set_reuse_address(true)?;
+    socket.set_reuse_port(true)?;
+    socket.bind(&addr.clone().into())?;
+    Ok(socket.into_tcp_stream())
 }
 
 //pub fn reusing_listener(addr: &SocketAddr) -> Result<TcpListener, io::Error> {

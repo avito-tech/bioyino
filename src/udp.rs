@@ -11,9 +11,8 @@ use std::thread;
 use bytes::{BufMut, BytesMut};
 use futures3::channel::mpsc::Sender;
 use futures3::future::pending;
-use net2::unix::UnixUdpBuilderExt;
-use net2::UdpBuilder;
 use slog::{info, o, warn, Logger};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::os::unix::io::AsRawFd;
 use tokio2::runtime::Builder;
 
@@ -38,11 +37,11 @@ pub(crate) fn start_sync_udp(
     // It is crucial for recvmmsg to have one socket per many threads
     // to avoid drops because at lease two threads have to work on socket
     // simultaneously
-    let socket = UdpBuilder::new_v4().unwrap();
-    socket.reuse_address(true).unwrap();
-    socket.reuse_port(true).unwrap();
-    let sck = socket.bind(listen).unwrap();
-    sck.set_nonblocking(mm_async).unwrap();
+    let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).expect("creating UDP socket");
+    socket.set_reuse_address(true).expect("reusing address");
+    socket.set_reuse_port(true).expect("reusing port");
+    socket.set_nonblocking(mm_async).expect("setting O_NONBLOCK option");
+    socket.bind(&listen.into()).expect("binding");
 
     let mm_timeout = if mm_timeout == 0 { config.network.buffer_flush_time } else { mm_timeout };
 
@@ -50,7 +49,7 @@ pub(crate) fn start_sync_udp(
         let chans = chans.to_owned();
         let log = log.new(o!("source"=>"mudp_thread"));
 
-        let sck = sck.try_clone().unwrap();
+        let sck = socket.try_clone().unwrap();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
         thread::Builder::new()
@@ -251,10 +250,11 @@ pub(crate) fn start_async_udp(
     // Create a pool of listener sockets
     let mut sockets = Vec::new();
     for _ in 0..async_sockets {
-        let socket = UdpBuilder::new_v4().unwrap();
-        socket.reuse_address(true).unwrap();
-        socket.reuse_port(true).unwrap();
-        let socket = socket.bind(&listen).unwrap();
+        let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).expect("creating UDP socket");
+        socket.set_reuse_address(true).expect("reusing address");
+        socket.set_reuse_port(true).expect("reusing port");
+        socket.bind(&listen.into()).expect("binding");
+
         sockets.push(socket);
     }
 
@@ -281,7 +281,7 @@ pub(crate) fn start_async_udp(
 
                         runtime.spawn(crate::server::async_statsd_server(
                             log.clone(),
-                            socket,
+                            socket.into(),
                             chans.clone(),
                             config.clone(),
                             bufsize,
