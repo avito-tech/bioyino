@@ -237,7 +237,7 @@ fn main() {
     // Spawn future gatering bioyino own stats
     info!(own_stat_log, "starting own stats counter");
     let own_stats = OwnStats::new(s_interval, stats_prefix, chans.clone(), own_stat_log);
-    runtime.block_on(async { own_stats.run().await });
+    runtime.spawn(async { own_stats.run().await });
 
     let compat_log = rlog.new(o!("thread" => "compat"));
     let snap_err_log = compat_log.clone();
@@ -349,13 +349,12 @@ fn main() {
     info!(log, "starting snapshot sender");
     let snapshot = NativeProtocolSnapshot::new(&log, nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &chans, max_snapshots);
 
-    runtime.block_on(snapshot
+    runtime.spawn(snapshot
         .run()
         .map_err(move |e| {
             s!(peer_errors);
             info!(snap_err_log, "error running snapshot sender"; "error"=>format!("{}", e));
-        })
-    ).expect("unrecoverable error on peer client");
+        }));
 
     info!(log, "starting management server");
     let m_serv_log = rlog.clone();
