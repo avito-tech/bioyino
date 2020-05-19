@@ -146,6 +146,7 @@ fn main() {
                 stats_prefix,
                 consensus,
     } = system;
+
     if daemon && verbosity_syslog.is_off() {
         eprintln!("syslog is disabled, while daemon mode is on, no logging will be performed");
     }
@@ -166,11 +167,10 @@ fn main() {
 
     slog_stdlog::init().unwrap();
 
-
     let mut runtime = Builder::new()
         .thread_name("bioyino_main")
-        .basic_scheduler()
-        //.threaded_scheduler()
+        .threaded_scheduler()
+        .core_threads(4)
         .enable_all()
         .build()
         .expect("creating runtime for main thread");
@@ -232,17 +232,15 @@ fn main() {
             .expect("starting counting worker thread");
     }
 
+    let own_stat_log = log.clone();
     let stats_prefix = stats_prefix.trim_end_matches('.').to_string();
-
     // Spawn future gatering bioyino own stats
-    let own_stat_log = rlog.clone();
-    info!(log, "starting own stats counter");
+    info!(own_stat_log, "starting own stats counter");
     let own_stats = OwnStats::new(s_interval, stats_prefix, chans.clone(), own_stat_log);
-    runtime.spawn(async { own_stats.run().await });
+    runtime.block_on(async { own_stats.run().await });
 
-    let compat_log = rlog.clone();
-    let snap_err_log = rlog.clone();
-    let s_chans = chans.clone();
+    let compat_log = rlog.new(o!("thread" => "compat"));
+    let snap_err_log = compat_log.clone();
 
     // TODO: unfortunately, the old entities are using timers and/or older tokio spawn function
     // therefore they are incompatible between old and new tokio runtimes, even using `compat`
@@ -325,6 +323,7 @@ fn main() {
         })
     .expect("starting compat thread");
 
+
     // settings safe for asap restart
     info!(log, "starting snapshot receiver");
     let peer_server_bo = Backoff {
@@ -334,10 +333,9 @@ fn main() {
         retries: ::std::usize::MAX,
     };
 
-    let server_chans = s_chans.clone();
+    let server_chans = chans.clone();
     let server_log = log.clone();
     let peer_server = retry_with_backoff(peer_server_bo, move || {
-
         let server_log = server_log.clone();
         let peer_server = NativeProtocolServer::new(server_log.clone(), peer_listen, server_chans.clone());
         peer_server
@@ -349,15 +347,15 @@ fn main() {
     runtime.spawn(peer_server);
 
     info!(log, "starting snapshot sender");
-    let snapshot = NativeProtocolSnapshot::new(&log.clone(), nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &s_chans, max_snapshots);
+    let snapshot = NativeProtocolSnapshot::new(&log, nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &chans, max_snapshots);
 
-    runtime.spawn(snapshot
+    runtime.block_on(snapshot
         .run()
         .map_err(move |e| {
             s!(peer_errors);
             info!(snap_err_log, "error running snapshot sender"; "error"=>format!("{}", e));
         })
-    );
+    ).expect("unrecoverable error on peer client");
 
     info!(log, "starting management server");
     let m_serv_log = rlog.clone();
@@ -368,9 +366,10 @@ fn main() {
     runtime.spawn(m_server);
 
     info!(log, "starting carbon backend");
-    let carbon =
-        carbon_timer(rlog.clone(), carbon, aggregation, naming, chans.clone());
-    runtime.spawn(carbon);
+    let carbon_log = log.clone();
+    let carbon_t =
+        carbon_timer(log.clone(), carbon, aggregation, naming, chans.clone()).map_err(move |e| error!(carbon_log, "running carbon thread"; "error" => format!("{}", e)));
+    runtime.spawn(carbon_t);
 
     // For each out sync thread we create the buffer flush timer, that sets the atomic value to 1
     // every interval

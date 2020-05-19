@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.7.0-rc1"
+version = "0.7.0-rc5"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -36,14 +36,14 @@ capnp = "^0.12"
 capnp-futures = "^0.12"
 
 resolve="^0.2"
-net2="^0.2"
+socket2 = { version = "^0.3", features = ["reuseport"] }
 combine="^4.0"
 hyper="^0.12"
 mime="^0.3"
 serde="^1.0"
 serde_derive="^1.0"
 serde_json="^1.0"
-slog="^2.4"
+slog= { version = "^2.4", features = ["max_level_debug"] }
 slog-term="^2.4"
 slog-async="^2.3"
 slog-scope="^4.0"

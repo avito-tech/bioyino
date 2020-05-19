@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use capnp::message::{Builder, ReaderOptions, ReaderSegments};
 use capnp_futures::{serialize::write_message};
-use slog::{o, warn, error, Logger};
+use slog::{o, warn, error, Logger, debug};
 use thiserror::Error;
 
 use futures3::channel::mpsc::Sender;
@@ -104,6 +104,7 @@ impl NativeProtocolServer {
 
             let log = log.new(o!("remote"=>peer_addr));
 
+            debug!(log, "got new connection");
             let elog = log.clone();
             let chans = chans.clone();
             let mut chans = chans.into_iter().cycle();
@@ -115,7 +116,8 @@ impl NativeProtocolServer {
                     //while let Some(reader) = futures3::stream::TryStreamExt::try_next(&mut transport).await?
                     let task = {
                         let elog = elog.clone();
-                        parse_and_send(reader).map_err(move |e| {
+                        debug!(log, "received peer message");
+                        parse_and_send(log.clone(), reader).map_err(move |e| {
                             warn!(elog, "bad incoming message"; "error" => e.to_string());
                             e
                         })?
@@ -138,13 +140,13 @@ impl NativeProtocolServer {
 }
 
 //fn parse_and_send(reader: cmsg::Reader<'_>) -> Result<Task, PeerError> {
-fn parse_and_send(reader: capnp::message::Reader<capnp::serialize::OwnedSegments>) -> Result<Task, PeerError> {
-
+fn parse_and_send(log: Logger, reader: capnp::message::Reader<capnp::serialize::OwnedSegments>) -> Result<Task, PeerError> {
     let reader = reader.get_root::<cmsg::Reader>()?;
     match reader.which()? {
         cmsg::Single(reader) => {
             let reader = reader?;
             let (name, metric) = Metric::<Float>::from_capnp(reader)?;
+            debug!(log, "received single-metric message");
             Ok(Task::AddMetric(name, metric))
         }
         cmsg::Multi(reader) => {
@@ -154,6 +156,7 @@ fn parse_and_send(reader: capnp::message::Reader<capnp::serialize::OwnedSegments
                 .iter()
                 .map(|reader| Metric::<Float>::from_capnp(reader).map(|(name, metric)| metrics.push((name, metric))))
                 .last();
+            debug!(log, "received multi-metric message"; "amount"=>format!("{}", metrics.len()));
             Ok(Task::AddMetrics(metrics))
         }
         cmsg::Snapshot(reader) => {
@@ -163,6 +166,8 @@ fn parse_and_send(reader: capnp::message::Reader<capnp::serialize::OwnedSegments
                 .iter()
                 .map(|reader| Metric::<Float>::from_capnp(reader).map(|(name, metric)| metrics.push((name, metric))))
                 .last();
+
+            debug!(log, "received snapshot"; "metrics"=>format!("{}", metrics.len()));
             Ok(Task::AddSnapshot(metrics))
         }
     }
@@ -247,9 +252,10 @@ impl NativeProtocolSnapshot {
             // after that clone snapshots to all nodes' queues
             for ch in &mut node_chans {
                 // sender has sync send method which conflicts with one from Sink
-                futures3::SinkExt::send(ch, all_metrics.clone()).await.map_err(|_| {
-                    s!(queue_errors);
-                    PeerError::SnapshotDropped}).unwrap_or(());
+                futures3::SinkExt::send(ch, all_metrics.clone()).await
+                    .map_err(|_| {
+                        s!(queue_errors);
+                        PeerError::SnapshotDropped}).unwrap_or(());
             }
         };
     }
@@ -295,6 +301,7 @@ impl SnapshotSender {
         loop  {
             let connect_and_send = async {
                 // we connect once
+                debug!(log, "resolving");
                 let addr = resolve_with_port(&options.address, 8136).await?;
                 // use net2::unix::UnixTcpBuilderExt;
                 //use net2::TcpStreamExt;
@@ -306,6 +313,8 @@ impl SnapshotSender {
                 //std_stream.set_write_timeout_ms(Some(1000))?;
                 //info!(log, "connecting");
                 // let conn = TcpStream::connect_std(std_stream, &addr).await?;
+
+                debug!(log, "connecting");
                 let conn = match options.bind {
                     Some(bind_addr) => {
                         let std_stream = bound_stream(&bind_addr)?;
@@ -316,9 +325,11 @@ impl SnapshotSender {
 
                 let mut conn = conn.compat_write();
 
+                debug!(log, "receiving snapshot");
                 // then we read the channel trying to send all data remotely
                 while let Some(metrics) = rx.next().await {
-                    let mlen = metrics.len();
+                    debug!(log, "building snapshot");
+                    let mut mlen = 0;
                     let snapshot_message = {
                         let mut snapshot_message = Builder::new_default();
                         let builder = snapshot_message.init_root::<CBuilder>();
@@ -336,6 +347,7 @@ impl SnapshotSender {
                                 let name = unsafe { ::std::str::from_utf8_unchecked(name.name_with_tags()) };
                                 c_metric.set_name(&name);
                                 metric.fill_capnp(&mut c_metric);
+                                mlen += 1;
                             })
                         .last();
                         snapshot_message
@@ -346,14 +358,16 @@ impl SnapshotSender {
                     for i in 0u32..slen {
                         len = len + snapshot_message.get_segment(i).unwrap().len();
                     }
-                    info!(log, "sending snapshot"; "bytes" => format!("{}", len), "metrics" => format!("{}", mlen));
+                    info!(log, "writing snapshot"; "bytes" => format!("{}", len), "metrics" => format!("{}", mlen));
                     let write = write_message(&mut conn, snapshot_message).map_err(|e| {
                         warn!(log, "error encoding snapshot"; "error"=>e.to_string());
                         PeerError::Capnp(e)
                     });
 
                     tokio2::time::timeout(std::time::Duration::from_millis(30000), write).await.map_err(|_|PeerError::SnapshotWriteTimeout)??;
+                    debug!(log, "flushing");
                     conn.flush().await?;
+                    debug!(log, "done");
                 }
 
                 Ok::<(), PeerError>(())

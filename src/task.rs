@@ -151,10 +151,11 @@ impl TaskRunner {
                 std::mem::swap(&mut self.long, &mut rotated);
                 if let Some(mut c) = channel {
                     let log = self.log.clone();
-                    spawn(async move { c.send(rotated).await.unwrap_or_else(|_|{
-                        s!(queue_errors);
-                        info!(log, "task could not send rotated metric, receiving thread may be dead");
-                    }); });
+                    spawn(async move { c.send(rotated).await
+                        .unwrap_or_else(|_|{
+                            s!(queue_errors);
+                            info!(log, "task could not send rotated metric, receiving thread may be dead");
+                        }); });
                 }
                 self.buffers.retain(|_, (ref mut times, _)| {
                     *times += 1;

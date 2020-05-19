@@ -25,7 +25,7 @@ pub enum GeneralError {
     UnknownState,
 
     #[error("configuration error: {}", _0)]
-    Configuration(String),
+    Configuration(#[from] crate::config::ConfigError),
 
     #[error("utility error")]
     Other(#[from] crate::util::OtherError),

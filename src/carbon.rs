@@ -11,7 +11,7 @@ use futures3::sink::{SinkExt};
 use futures3::stream::{StreamExt};
 
 use log::warn;
-use slog::{error, info, o, Logger};
+use slog::{error, info, o, Logger, debug};
 
 use tokio2::net::TcpStream;
 use tokio2::runtime::Builder;
@@ -21,13 +21,13 @@ use tokio_util::codec::{Decoder, Encoder};
 use bioyino_metric::{aggregate::Aggregate, name::MetricName, metric::MetricTypeName};
 
 use crate::aggregate::{AggregationOptions, Aggregator};
-use crate::config::{Carbon, RoundTimestamp, Aggregation, Naming};
+use crate::config::{Carbon, RoundTimestamp, Aggregation, Naming, ConfigError};
 use crate::errors::GeneralError;
 use crate::task::Task;
 use crate::util::{bound_stream, resolve_with_port, Backoff, retry_with_backoff};
 use crate::{Float, s, IS_LEADER};
 
-pub async fn carbon_timer(log: Logger, mut options: Carbon, aggregation: Aggregation, naming: HashMap<MetricTypeName, Naming>, chans: Vec<Sender<Task>>) {
+pub async fn carbon_timer(log: Logger, mut options: Carbon, aggregation: Aggregation, naming: HashMap<MetricTypeName, Naming>, chans: Vec<Sender<Task>>) -> Result<(), GeneralError> {
     let chans = chans.clone();
 
     let dur = Duration::from_millis(options.interval);
@@ -35,15 +35,14 @@ pub async fn carbon_timer(log: Logger, mut options: Carbon, aggregation: Aggrega
     if options.chunks == 0 {
         options.chunks = 1
     }
+    let agg_opts = AggregationOptions::from_config(aggregation, naming, log.clone())?;
 
-    let agg_opts = AggregationOptions::from_config(aggregation, naming, log.clone()).expect("parsing aggregation options");
     loop {
         carbon_timer.tick().await;
-        let worker = CarbonWorker::new(log.clone(), agg_opts.clone(), options.clone(), chans.clone());
+        let worker = CarbonWorker::new(log.clone(), agg_opts.clone(), options.clone(), chans.clone())?;
         std::thread::Builder::new()
             .name("bioyino_carbon".into())
-            .spawn(move || worker.run())
-            .expect("starting thread for sending to graphite");
+            .spawn(move || worker.run()).map_err(|e|ConfigError::Io("spawning carbon thread".into(), e))?;
     }
 }
 
@@ -56,15 +55,15 @@ pub struct CarbonWorker {
 }
 
 impl CarbonWorker {
-    pub fn new(log: Logger, agg_opts: Arc<AggregationOptions>, backend_opts: Carbon, chans: Vec<Sender<Task>>) -> Self {
-        let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(GeneralError::Time).expect("getting system time").as_secs();
-        Self {
+    pub fn new(log: Logger, agg_opts: Arc<AggregationOptions>, backend_opts: Carbon, chans: Vec<Sender<Task>>) -> Result<Self, GeneralError> {
+        let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(GeneralError::Time)?.as_secs();
+        Ok(Self {
             ts,
             log,
             agg_opts,
             backend_opts,
             chans,
-        }
+        })
     }
 
     pub fn run(self) {
@@ -76,8 +75,9 @@ impl CarbonWorker {
             chans,
         } = self;
 
+        debug!(log, "carbon thread running");
         let mut runtime = Builder::new()
-            .thread_name("bioyino_main")
+            .thread_name("bioyino_carb")
             .basic_scheduler()
             .enable_all()
             .build()
