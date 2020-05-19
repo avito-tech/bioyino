@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures3::{StreamExt, SinkExt};
+use futures3::{StreamExt, SinkExt, TryFutureExt};
 use futures3::channel::mpsc::{self, Sender, UnboundedSender};
 use tokio2::spawn;
 
@@ -174,6 +174,7 @@ impl Aggregator {
             Some(task_tx)
         } else {
             info!(log, "not leader, clearing metrics");
+            drop(task_tx);
             None
         };
 
@@ -181,12 +182,16 @@ impl Aggregator {
 
         // regardless of leader state send rotate tasks with or without response channel
         // we don't need to await send, because we are waiting on task_rx eventually
+        let mut handles = Vec::new();
         for chan in &chans {
             let mut chan = chan.clone();
             let rchan = response_chan.clone();
-            spawn(async move { chan.send(Task::Rotate(rchan)).await });
+            let handle = spawn(async move { chan.send(Task::Rotate(rchan)).map_err(|_|s!(queue_errors)).await });
+            handles.push(handle);
         }
         drop(response_chan);
+        // wait for senders to do their job
+        futures3::future::join_all(handles).await;
 
         // when we are not leader the aggregator job is done here: send_tasks will delete metrics
         if !is_leader {
