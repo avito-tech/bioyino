@@ -46,7 +46,7 @@ pub(crate) fn start_sync_udp(
     let mm_timeout = if mm_timeout == 0 { config.network.buffer_flush_time } else { mm_timeout };
 
     for i in 0..n_threads {
-        let chans = chans.to_owned();
+        let mut chans = chans.to_owned();
         let log = log.new(o!("source"=>"mudp_thread"));
 
         let sck = socket.try_clone().unwrap();
@@ -61,7 +61,7 @@ pub(crate) fn start_sync_udp(
                     use libc::*;
 
                     let chlen = chans.len();
-                    let mut ichans = chans.iter().cycle();
+                    let mut next_chan = chlen - 1;
 
                     // store mmsghdr array so Rust won't free it's memory
                     let mut mheaders: Vec<mmsghdr> = Vec::with_capacity(mm_packets);
@@ -203,10 +203,11 @@ pub(crate) fn start_sync_udp(
                                         let mut hasher = DefaultHasher::new();
                                         hasher.write(&addr);
                                         let ahash = hasher.finish();
-                                        let mut chan = if config.metrics.consistent_parsing {
-                                            chans[ahash as usize % chlen].clone()
+                                        let chan = if config.metrics.consistent_parsing {
+                                            &mut chans[ahash as usize % chlen]
                                         } else {
-                                            ichans.next().unwrap().clone()
+                                            next_chan = if next_chan >= (chlen - 1) { 0 } else { next_chan + 1 };
+                                            &mut chans[next_chan]
                                         };
                                         chan.try_send(Task::Parse(ahash, buf.split()))
                                             .map_err(|_| {

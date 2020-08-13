@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::Ordering};
 
 use bytes::{BufMut, BytesMut};
 use futures3::channel::mpsc::UnboundedSender;
@@ -17,7 +17,7 @@ use bioyino_metric::{name::MetricName, Metric};
 use crate::aggregate::{aggregate_task, AggregationData};
 use crate::config::System;
 
-use crate::{s, Cache, Float};
+use crate::{s, Cache, Float, ConsensusKind, IS_LEADER};
 
 #[derive(Debug)]
 pub enum Task {
@@ -120,14 +120,24 @@ impl TaskRunner {
                 list.drain(..).map(|(name, metric)| update_metric(&mut self.long, name, metric)).last();
             }
             Task::TakeSnapshot(channel) => {
-                // clone short cache for further sending
-                let short = self.short.clone();
-                // join short cache to long cache removing data from short
-                {
-                    let mut long = &mut self.long; // self.long cannot be borrowed in map, so we borrow it earlier
-                    self.short.drain().map(|(name, metric)| update_metric(&mut long, name, metric)).last();
-                }
-
+                let is_leader = IS_LEADER.load(Ordering::SeqCst);
+                let short = if !is_leader && self.config.consensus == ConsensusKind::None {
+                    // there is special case used in agents: when we are not leader and there is
+                    // no consensus, that cannot make us leader, there is no point of aggregating
+                    // long cache at all because it will never be sent anywhere
+                    let mut prev_short = HashMap::with_capacity(self.short.len());
+                    std::mem::swap(&mut prev_short, &mut self.short);
+                    prev_short
+                } else {
+                    // clone short cache for further sending
+                    let short = self.short.clone();
+                    // join short cache to long cache removing data from short
+                    {
+                        let mut long = &mut self.long; // self.long cannot be borrowed in map, so we borrow it earlier
+                        self.short.drain().map(|(name, metric)| update_metric(&mut long, name, metric)).last();
+                    }
+                    short
+                };
                 // self.short now contains empty hashmap because of draining
                 // give a copy of snapshot to requestor
                 channel.send(short).unwrap_or_else(|_| {

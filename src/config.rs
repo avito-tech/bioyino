@@ -57,6 +57,9 @@ pub struct System {
     /// Number of aggregating(worker) threads, set to 0 to use all CPU cores
     pub w_threads: usize,
 
+    /// Number of core threads, doing other work, set to 0 to use all CPU cores
+    pub c_threads: usize,
+
     /// queue size for single counting thread before packet is dropped
     pub task_queue_size: usize,
 
@@ -89,6 +92,7 @@ impl Default for System {
             carbon: Carbon::default(),
             n_threads: 4,
             w_threads: 4,
+            c_threads: 4,
             stats_interval: 10000,
             task_queue_size: 2048,
             start_as_leader: false,

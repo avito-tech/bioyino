@@ -19,7 +19,7 @@ use crate::s;
 pub async fn async_statsd_server(
     log: Logger,
     socket: std::net::UdpSocket,
-    chans: Vec<mpsc::Sender<Task>>,
+    mut chans: Vec<mpsc::Sender<Task>>,
     config: Arc<System>,
     bufsize: usize,
     thread_idx: usize,
@@ -63,14 +63,14 @@ pub async fn async_statsd_server(
                 let mut hasher = DefaultHasher::new();
                 addr.hash(&mut hasher);
                 let ahash = hasher.finish();
-                let mut chan = if config.metrics.consistent_parsing {
+                let chan = if config.metrics.consistent_parsing {
                     let chlen = chans.len();
-                    chans[ahash as usize % chlen].clone()
+                    &mut chans[ahash as usize % chlen]
                 } else {
                     if next >= chans.len() {
                         next = 0;
                     }
-                    let chan = chans[next].clone();
+                    let chan = &mut chans[next];
                     next += 1;
                     chan
                 };

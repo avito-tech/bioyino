@@ -199,19 +199,13 @@ impl Aggregator {
         }
 
         // from now we consider us being a leader
-        info!(log, "leader accumulating metrics");
 
-        let mut cache: Cache = HashMap::new();
+        let mut cache: HashMap<MetricName, Vec<Metric<Float>>> = HashMap::new();
         while let Some(metrics) = task_rx.next().await {
             //     #[allow(clippy::map_entry)] // clippy offers us the entry API here, but it doesn't work without additional cloning
             for (name, metric) in metrics {
-                if cache.contains_key(&name) {
-                    cache.get_mut(&name).unwrap().accumulate(metric).unwrap_or_else(|_| {
-                        s!(agg_errors);
-                    });
-                } else {
-                    cache.insert(name, metric);
-                }
+                let entry = cache.entry(name).or_default();
+                entry.push(metric);
             }
         }
 
@@ -221,10 +215,10 @@ impl Aggregator {
             AggregationMode::Single => {
                 cache
                     .into_iter()
-                    .map(move |(name, metric)| {
+                    .map(move |(name, metrics)| {
                         let task_data = AggregationData {
                             name,
-                            metric,
+                            metrics,
                             options: options.clone(),
                             response: tx.clone(),
                         };
@@ -236,10 +230,10 @@ impl Aggregator {
                 cache
                     .into_iter()
                     .enumerate()
-                    .map(move |(num, (name, metric))| {
+                    .map(move |(num, (name, metrics))| {
                         let task_data = AggregationData {
                             name,
-                            metric,
+                            metrics,
                             options: options.clone(),
                             response: tx.clone(),
                         };
@@ -250,15 +244,15 @@ impl Aggregator {
                 }
             AggregationMode::Separate => {
                 let pool = ThreadPoolBuilder::new()
-                    .thread_name(|i| format!("bioyino_crb{}", i))
+                    .thread_name(|i| format!("bioyino_agg{}", i))
                     .num_threads(options.multi_threads)
                     .build()
                     .unwrap();
                 pool.install(|| {
-                    cache.into_par_iter().for_each(move |(name, metric)| {
+                    cache.into_par_iter().for_each(move |(name, metrics)| {
                         let task_data = AggregationData {
                             name,
-                            metric,
+                            metrics,
                             options: options.clone(),
                             response: tx.clone(),
                         };
@@ -275,7 +269,7 @@ impl Aggregator {
 #[derive(Debug)]
 pub struct AggregationData {
     pub name: MetricName,
-    pub metric: Metric<Float>,
+    pub metrics: Vec<Metric<Float>>,
     pub options: Arc<AggregationOptions>,
     pub response: UnboundedSender<(MetricName, MetricTypeName, Aggregate<Float>, Float)>,
 }
@@ -283,10 +277,26 @@ pub struct AggregationData {
 pub fn aggregate_task(data: AggregationData) {
     let AggregationData {
         name,
-        mut metric,
+        mut metrics,
         options,
         response,
     } = data;
+
+    // accumulate vector of metrics into a single metric first
+    let first = if let Some(metric) = metrics.pop() {
+        metric
+    } else {
+        // empty metric case is not possible actually
+        s!(agg_errors);
+        return
+    };
+
+    let mut metric = metrics.into_iter().fold(first, |mut acc, next| {
+        acc.accumulate(next).unwrap_or_else(|_| {
+            s!(agg_errors);
+        });
+        acc
+    });
 
     let mode = options.mode;
     let typename = MetricTypeName::from_metric(&metric);
@@ -296,6 +306,7 @@ pub fn aggregate_task(data: AggregationData) {
         s!(agg_errors);
         return;
     };
+
     // take all required aggregates
     let calculator = AggregateCalculator::new(&mut metric, aggregates);
     calculator

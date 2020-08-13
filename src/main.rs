@@ -140,6 +140,7 @@ fn main() {
                 carbon,
                 n_threads,
                 w_threads,
+                c_threads,
                 stats_interval: s_interval,
                 task_queue_size,
                 start_as_leader,
@@ -170,7 +171,7 @@ fn main() {
     let mut runtime = Builder::new()
         .thread_name("bioyino_main")
         .threaded_scheduler()
-        .core_threads(4)
+        .core_threads(c_threads)
         .enable_all()
         .build()
         .expect("creating runtime for main thread");
@@ -290,6 +291,8 @@ fn main() {
                     .expect("starting counting worker thread");
                     }
                 ConsensusKind::Consul => {
+                    warn!(compat_log, "CONSUL CONSENSUS IS DEPRECATED AND WILL BE REMOVED IN VERSION 0.8, CONSIDER USING BUILT IN RAFT");
+
                     if start_as_leader {
                         warn!(
                             compat_log,

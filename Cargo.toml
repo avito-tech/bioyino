@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.7.0-rc5"
+version = "0.7.0-rc10"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -32,8 +32,8 @@ url = "^2.1"
 tokio-util = { version = "^0.3", features = ["codec", "compat"] }
 bytes = { version = "^0.5", features = [ "serde" ] }
 ring-channel = {version = "^0.8", features = ["futures_api"]}
-capnp = "^0.12"
-capnp-futures = "^0.12"
+capnp = "^0.13"
+capnp-futures = "^0.13"
 
 resolve="^0.2"
 socket2 = { version = "^0.3", features = ["reuseport"] }

@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use capnp::message::{Builder, ReaderOptions, ReaderSegments};
 use capnp_futures::{serialize::write_message};
-use slog::{o, warn, error, Logger, debug};
+use slog::{o, warn, error, Logger, debug, info};
 use thiserror::Error;
 
 use futures3::channel::mpsc::Sender;
@@ -104,27 +104,35 @@ impl NativeProtocolServer {
 
             let log = log.new(o!("remote"=>peer_addr));
 
-            debug!(log, "got new connection");
+            //           debug!(log, "got new connection");
             let elog = log.clone();
-            let chans = chans.clone();
-            let mut chans = chans.into_iter().cycle();
+            let chlen = chans.len();
+            let mut chans = chans.clone();
+            let mut next_chan = chlen - 1;
 
             let receiver = async move {
                 let elog = log.clone();
-                //let transport = capnp_futures::ReadStream::new(&mut conn, CAPNP_READER_OPTIONS).err_into::<PeerError>();
-                while let Ok(Some(reader)) = capnp_futures::serialize::read_message(&mut conn, CAPNP_READER_OPTIONS).await {
+                //let transport = capnp_futures::ReadStream::new(&mut conn, CAPNP_READER_OPTIONS);
+                //while let Some(reader) = futures3::stream::TryStreamExt::try_next(&mut transport).await?
+                loop {
+                    let reader = if let Some(reader) = capnp_futures::serialize::read_message(&mut conn, CAPNP_READER_OPTIONS).await? {
+                        reader
+                    } else {
+                        break
+                    };
                     //while let Some(reader) = futures3::stream::TryStreamExt::try_next(&mut transport).await?
                     let task = {
                         let elog = elog.clone();
-                        debug!(log, "received peer message");
+                        //                        debug!(log, "received peer message");
                         parse_and_send(log.clone(), reader).map_err(move |e| {
                             warn!(elog, "bad incoming message"; "error" => e.to_string());
                             e
                         })?
                     };
 
-                    let mut next_chan = chans.next().unwrap().clone();
-                    next_chan.send(task).map_err(|_|{ s!(queue_errors); PeerError::TaskSend }).await?;
+                    next_chan = if next_chan >= (chlen - 1) { 0 } else { next_chan + 1 };
+                    let chan = &mut chans[next_chan];
+                    chan.send(task).map_err(|_|{ s!(queue_errors); PeerError::TaskSend }).await?;
                 }
                 Ok::<(), PeerError>(())
             }.map_err(move |e| {
@@ -146,7 +154,7 @@ fn parse_and_send(log: Logger, reader: capnp::message::Reader<capnp::serialize::
         cmsg::Single(reader) => {
             let reader = reader?;
             let (name, metric) = Metric::<Float>::from_capnp(reader)?;
-            debug!(log, "received single-metric message");
+            //            debug!(log, "received single-metric message");
             Ok(Task::AddMetric(name, metric))
         }
         cmsg::Multi(reader) => {
@@ -156,7 +164,7 @@ fn parse_and_send(log: Logger, reader: capnp::message::Reader<capnp::serialize::
                 .iter()
                 .map(|reader| Metric::<Float>::from_capnp(reader).map(|(name, metric)| metrics.push((name, metric))))
                 .last();
-            debug!(log, "received multi-metric message"; "amount"=>format!("{}", metrics.len()));
+            //           debug!(log, "received multi-metric message"; "amount"=>format!("{}", metrics.len()));
             Ok(Task::AddMetrics(metrics))
         }
         cmsg::Snapshot(reader) => {
@@ -204,7 +212,7 @@ impl NativeProtocolSnapshot {
             nodes,
             client_bind,
             interval,
-            chans,
+            mut chans,
             snapshots,
         } = self;
         // Snapshots come every `interval`. When one of the nodes goes down it is possible to leak
@@ -234,7 +242,7 @@ impl NativeProtocolSnapshot {
             timer.tick().await;
             // send snapshot requests to workers
             let mut outs = Vec::new();
-            for mut chan in chans.iter().cloned() {
+            for chan in chans.iter_mut() {
                 let (tx, rx) = oneshot::channel();
                 chan.send(Task::TakeSnapshot(tx)).await.unwrap_or(());
                 outs.push(rx.unwrap_or_else(|_| {
@@ -287,246 +295,239 @@ impl SnapshotSender {
         let Self { mut rx, log, options } = self;
 
         let eaddr = options.address.clone();
-        // snapshot client works in the infinite loop
-        let mut backoff = Backoff {
-            delay: 500,
-            delay_mul: 2f32,
-            delay_max: 5000,
-            retries: usize::MAX,
-        };
 
         let elog = log.clone();
 
-        use slog::info;
-        loop  {
-            let connect_and_send = async {
-                // we connect once
-                debug!(log, "resolving");
-                let addr = resolve_with_port(&options.address, 8136).await?;
-                // use net2::unix::UnixTcpBuilderExt;
-                //use net2::TcpStreamExt;
-                //let builder = net2::TcpBuilder::new_v4()?;
-                //builder.reuse_address(true)?;
-                //builder.reuse_port(true)?;
-                ////builder.bind(addr)?;
-                //let std_stream = builder.to_tcp_stream()?;
-                //std_stream.set_write_timeout_ms(Some(1000))?;
-                //info!(log, "connecting");
-                // let conn = TcpStream::connect_std(std_stream, &addr).await?;
+        while let Some(metrics) = rx.next().await {
+            let mlen = metrics.iter().fold(0, |sum, next| sum+next.len());
+            debug!(log, "popped new snapshot from queue"; "metrics"=>mlen);
 
-                debug!(log, "connecting");
-                let conn = match options.bind {
-                    Some(bind_addr) => {
-                        let std_stream = bound_stream(&bind_addr)?;
-                        TcpStream::connect_std(std_stream, &addr).await?
-                    },
-                    None => TcpStream::connect(&addr).await?,
+            if mlen == 0 {
+                debug!(log, "skipped empty snapshot");
+                continue
+            }
+            let snapshot_message = {
+                let mut snapshot_message = Builder::new_default();
+                let builder = snapshot_message.init_root::<CBuilder>();
+                let mut multi_metric = builder.init_snapshot(mlen as u32);
+                metrics
+                    .iter()
+                    .flat_map(|hmap| hmap.iter())
+                    .enumerate()
+                    .map(|(idx, (name, metric))| {
+                        let mut c_metric = multi_metric.reborrow().get(idx as u32);
+                        // parsing stage has a guarantee that name is a valid unicode
+                        // metrics that come over capnproto also has Text type in schema,
+                        // so capnproto decoder will ensure unicode here
+                        let name = unsafe { ::std::str::from_utf8_unchecked(name.name_with_tags()) };
+                        c_metric.set_name(&name);
+                        metric.fill_capnp(&mut c_metric);
+                    })
+                .last();
+
+                // this is just an approximate capacity to avoid first small allocations
+                let mut buf = Vec::with_capacity(mlen*8);
+                if let Err(e) = capnp::serialize::write_message(&mut buf, &snapshot_message) {
+                    error!(log, "encoding packed message"; "error" => format!("{}", e));
+                    return
                 };
+                buf
+                    // capnp::serialize::write_message_to_words(&snapshot_message)
+            };
 
-                let mut conn = conn.compat_write();
+            let mut backoff = Backoff {
+                delay: 500,
+                delay_mul: 2f32,
+                delay_max: 5000,
+                retries: 5,
+            };
 
-                debug!(log, "receiving snapshot");
-                // then we read the channel trying to send all data remotely
-                while let Some(metrics) = rx.next().await {
-                    debug!(log, "building snapshot");
-                    let mut mlen = 0;
-                    let snapshot_message = {
-                        let mut snapshot_message = Builder::new_default();
-                        let builder = snapshot_message.init_root::<CBuilder>();
-                        let flat_len = metrics.iter().flat_map(|hmap| hmap.iter()).count();
-                        let mut multi_metric = builder.init_snapshot(flat_len as u32);
-                        metrics
-                            .iter()
-                            .flat_map(|hmap| hmap.iter())
-                            .enumerate()
-                            .map(|(idx, (name, metric))| {
-                                let mut c_metric = multi_metric.reborrow().get(idx as u32);
-                                // parsing stage has a guarantee that name is a valid unicode
-                                // metrics that come over capnproto also has Text type in schema,
-                                // so capnproto decoder will ensure unicode here
-                                let name = unsafe { ::std::str::from_utf8_unchecked(name.name_with_tags()) };
-                                c_metric.set_name(&name);
-                                metric.fill_capnp(&mut c_metric);
-                                mlen += 1;
-                            })
-                        .last();
-                        snapshot_message
+            loop  {
+                let connect_and_send = async {
+                    //debug!(log, "resolving");
+                    let addr = resolve_with_port(&options.address, 8136).await?;
+
+                    //debug!(log, "connecting");
+                    let mut conn = match options.bind {
+                        Some(bind_addr) => {
+                            let std_stream = bound_stream(&bind_addr)?;
+                            TcpStream::connect_std(std_stream, &addr).await?
+                        },
+                        None => TcpStream::connect(&addr).await?,
                     };
 
-                    let mut len = 0usize;
-                    let slen = snapshot_message.len() as u32;
-                    for i in 0u32..slen {
-                        len = len + snapshot_message.get_segment(i).unwrap().len();
-                    }
-                    info!(log, "writing snapshot"; "bytes" => format!("{}", len), "metrics" => format!("{}", mlen));
-                    let write = write_message(&mut conn, snapshot_message).map_err(|e| {
+                    use tokio2::io::AsyncWriteExt;
+                    //let mut conn = conn.compat_write();
+
+                    info!(log, "writing snapshot"; "bytes" => format!("{}", snapshot_message.len()), "metrics" => format!("{}", mlen));
+                    //let write = write_message(&mut conn, &snapshot_message).map_err(|e| {
+                    let write = conn.write_all(&snapshot_message).map_err(|e| {
                         warn!(log, "error encoding snapshot"; "error"=>e.to_string());
-                        PeerError::Capnp(e)
+                        PeerError::Io(e)
                     });
 
                     tokio2::time::timeout(std::time::Duration::from_millis(30000), write).await.map_err(|_|PeerError::SnapshotWriteTimeout)??;
                     debug!(log, "flushing");
                     conn.flush().await?;
                     debug!(log, "done");
-                }
+                    Ok::<(), PeerError>(())
+                };
 
-                Ok::<(), PeerError>(())
-            };
-
-            match connect_and_send.await {
-                Err(e) => {
-                    s!(peer_errors);
-                    warn!(elog, "snapshot client error, retrying"; "next_pause"=>format!("{}", backoff.next_sleep()), "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
-                    if backoff.sleep().await.is_err() {
-                        error!(elog, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
-                        break
+                match connect_and_send.await {
+                    Err(e) => {
+                        s!(peer_errors);
+                        warn!(elog, "snapshot client error, retrying"; "next_pause"=>format!("{}", backoff.next_sleep()), "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
+                        if backoff.sleep().await.is_err() {
+                            error!(elog, "snapshot client removed after giving up trying"; "error"=>format!("{:?}", e), "remote"=>format!("{}", eaddr));
+                            break
+                        }
                     }
+                    Ok(()) => break,
                 }
-                Ok(()) => break,
+                }
             }
         }
     }
-}
 
 #[cfg(test)]
-mod test {
+    mod test {
 
-    use std::net::SocketAddr;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+        use std::net::SocketAddr;
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
 
-    //use bytes::BytesMut;
-    use capnp::message::Builder;
-    use futures3::channel::mpsc::{self, Receiver};
-    use slog::{Logger, debug};
+        //use bytes::BytesMut;
+        use capnp::message::Builder;
+        use futures3::channel::mpsc::{self, Receiver};
+        use slog::{Logger, debug};
 
-    use tokio2::runtime::{Builder as RBuilder, Runtime};
-    use tokio2::time::{delay_for};
+        use tokio2::runtime::{Builder as RBuilder, Runtime};
+        use tokio2::time::{delay_for};
 
-    use bioyino_metric::name::{MetricName, TagFormat};
-    use bioyino_metric::{Metric, MetricType};
+        use bioyino_metric::name::{MetricName, TagFormat};
+        use bioyino_metric::{Metric, MetricType};
 
-    use crate::config::System;
-    use crate::task::TaskRunner;
-    use crate::util::prepare_log;
+        use crate::config::System;
+        use crate::task::TaskRunner;
+        use crate::util::prepare_log;
 
-    use super::*;
+        use super::*;
 
-    fn prepare_runtime_with_server(log: Logger) -> (Runtime, Receiver<Task>, SocketAddr) {
-        let mut chans = Vec::new();
-        let (tx, rx) = mpsc::channel(5);
-        chans.push(tx);
+        fn prepare_runtime_with_server(log: Logger) -> (Runtime, Receiver<Task>, SocketAddr) {
+            let mut chans = Vec::new();
+            let (tx, rx) = mpsc::channel(5);
+            chans.push(tx);
 
-        let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
-        let runtime = RBuilder::new()
-            .thread_name("bio_peer_test")
-            .basic_scheduler()
-            .enable_all()
-            .build()
-            .expect("creating runtime for test");
+            let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
+            let runtime = RBuilder::new()
+                .thread_name("bio_peer_test")
+                .basic_scheduler()
+                .enable_all()
+                .build()
+                .expect("creating runtime for test");
 
 
-        let peer_listen = address.clone();
-        let server_log = log.clone();
-        let peer_server = NativeProtocolServer::new(server_log.clone(), peer_listen, chans.clone());
-        let peer_server = peer_server
-            .run()
-            .inspect_err(move |e|{
-                debug!(server_log, "error running snapshot server"; "error"=>format!("{}", e));
-                panic!("shot server");
-            });
-        runtime.spawn(peer_server);
+            let peer_listen = address.clone();
+            let server_log = log.clone();
+            let peer_server = NativeProtocolServer::new(server_log.clone(), peer_listen, chans.clone());
+            let peer_server = peer_server
+                .run()
+                .inspect_err(move |e|{
+                    debug!(server_log, "error running snapshot server"; "error"=>format!("{}", e));
+                    panic!("shot server");
+                });
+            runtime.spawn(peer_server);
 
-        (runtime, rx, address)
+            (runtime, rx, address)
+        }
+
+        #[test]
+        fn test_peer_protocol_capnp() {
+            let log = prepare_log("test_peer_capnp");
+
+            let mut config = System::default();
+            config.metrics.log_parse_errors = true;
+            let mut runner = TaskRunner::new(log.clone(), Arc::new(config), 16);
+
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+            let ts = ts.as_secs() as u64;
+
+            let outmetric = Metric::new(42f64, MetricType::Gauge(None), ts.into(), None).unwrap();
+
+            let metric = outmetric.clone();
+            let (mut runtime, mut rx, address) = prepare_runtime_with_server(log.clone());
+
+            let receiver = async move {
+                while let Some(task) = rx.next().await {
+                    runner.run(task)
+                }
+
+                let mut interm = Vec::with_capacity(128);
+                interm.resize(128, 0u8);
+                let m = TagFormat::Graphite;
+
+                let single_name = MetricName::new("complex.test.bioyino_single".into(), m, &mut interm).unwrap();
+                let multi_name = MetricName::new("complex.test.bioyino_multi".into(), m, &mut interm).unwrap();
+                let shot_name = MetricName::new("complex.test.bioyino_snapshot".into(), m, &mut interm).unwrap();
+                let tagged_name = MetricName::new("complex.test.bioyino_tagged;tag2=val2;tag1=value1".into(), m, &mut interm).unwrap();
+                assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
+                assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
+                assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
+                assert_eq!(runner.get_short_entry(&tagged_name), Some(&outmetric));
+            };
+            runtime.spawn(receiver);
+
+            let sender  = async move {
+                let conn = TcpStream::connect(&address).await.expect("connecting tcp client");
+
+                let mut single_message = Builder::new_default();
+                {
+                    let builder = single_message.init_root::<CBuilder>();
+                    let mut c_metric = builder.init_single();
+                    c_metric.set_name("complex.test.bioyino_single");
+                    metric.fill_capnp(&mut c_metric);
+                }
+
+                let mut tagged_message = Builder::new_default();
+                {
+                    let builder = tagged_message.init_root::<CBuilder>();
+                    let mut c_metric = builder.init_single();
+                    c_metric.set_name("complex.test.bioyino_tagged;tag2=val2;tag1=value1");
+                    metric.fill_capnp(&mut c_metric);
+                }
+
+                let mut multi_message = Builder::new_default();
+                {
+                    let builder = multi_message.init_root::<CBuilder>();
+                    let multi_metric = builder.init_multi(1);
+                    let mut new_metric = multi_metric.get(0);
+                    new_metric.set_name("complex.test.bioyino_multi");
+                    metric.fill_capnp(&mut new_metric);
+                }
+
+                let mut snapshot_message = Builder::new_default();
+                {
+                    let builder = snapshot_message.init_root::<CBuilder>();
+                    let multi_metric = builder.init_snapshot(1);
+                    let mut new_metric = multi_metric.get(0);
+                    new_metric.set_name("complex.test.bioyino_snapshot");
+                    metric.fill_capnp(&mut new_metric);
+                }
+
+                let mut conn = conn.compat_write();
+                write_message(&mut conn, single_message).await.unwrap();
+                write_message(&mut conn, multi_message).await.unwrap();
+                write_message(&mut conn, snapshot_message).await.unwrap();
+            };
+
+            let delayed = async {
+                delay_for(Duration::from_secs(1)).await;
+                sender.await
+            };
+            runtime.spawn(delayed);
+
+            let test_delay = async { delay_for(Duration::from_secs(2)).await };
+            runtime.block_on(test_delay);
+
+        }
     }
-
-    #[test]
-    fn test_peer_protocol_capnp() {
-        let log = prepare_log("test_peer_capnp");
-
-        let mut config = System::default();
-        config.metrics.log_parse_errors = true;
-        let mut runner = TaskRunner::new(log.clone(), Arc::new(config), 16);
-
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let ts = ts.as_secs() as u64;
-
-        let outmetric = Metric::new(42f64, MetricType::Gauge(None), ts.into(), None).unwrap();
-
-        let metric = outmetric.clone();
-        let (mut runtime, mut rx, address) = prepare_runtime_with_server(log.clone());
-
-        let receiver = async move {
-            while let Some(task) = rx.next().await {
-                runner.run(task)
-            }
-
-            let mut interm = Vec::with_capacity(128);
-            interm.resize(128, 0u8);
-            let m = TagFormat::Graphite;
-
-            let single_name = MetricName::new("complex.test.bioyino_single".into(), m, &mut interm).unwrap();
-            let multi_name = MetricName::new("complex.test.bioyino_multi".into(), m, &mut interm).unwrap();
-            let shot_name = MetricName::new("complex.test.bioyino_snapshot".into(), m, &mut interm).unwrap();
-            let tagged_name = MetricName::new("complex.test.bioyino_tagged;tag2=val2;tag1=value1".into(), m, &mut interm).unwrap();
-            assert_eq!(runner.get_long_entry(&shot_name), Some(&outmetric));
-            assert_eq!(runner.get_short_entry(&single_name), Some(&outmetric));
-            assert_eq!(runner.get_short_entry(&multi_name), Some(&outmetric));
-            assert_eq!(runner.get_short_entry(&tagged_name), Some(&outmetric));
-        };
-        runtime.spawn(receiver);
-
-        let sender  = async move {
-            let conn = TcpStream::connect(&address).await.expect("connecting tcp client");
-
-            let mut single_message = Builder::new_default();
-            {
-                let builder = single_message.init_root::<CBuilder>();
-                let mut c_metric = builder.init_single();
-                c_metric.set_name("complex.test.bioyino_single");
-                metric.fill_capnp(&mut c_metric);
-            }
-
-            let mut tagged_message = Builder::new_default();
-            {
-                let builder = tagged_message.init_root::<CBuilder>();
-                let mut c_metric = builder.init_single();
-                c_metric.set_name("complex.test.bioyino_tagged;tag2=val2;tag1=value1");
-                metric.fill_capnp(&mut c_metric);
-            }
-
-            let mut multi_message = Builder::new_default();
-            {
-                let builder = multi_message.init_root::<CBuilder>();
-                let multi_metric = builder.init_multi(1);
-                let mut new_metric = multi_metric.get(0);
-                new_metric.set_name("complex.test.bioyino_multi");
-                metric.fill_capnp(&mut new_metric);
-            }
-
-            let mut snapshot_message = Builder::new_default();
-            {
-                let builder = snapshot_message.init_root::<CBuilder>();
-                let multi_metric = builder.init_snapshot(1);
-                let mut new_metric = multi_metric.get(0);
-                new_metric.set_name("complex.test.bioyino_snapshot");
-                metric.fill_capnp(&mut new_metric);
-            }
-
-            let mut conn = conn.compat_write();
-            write_message(&mut conn, single_message).await.unwrap();
-            write_message(&mut conn, multi_message).await.unwrap();
-            write_message(&mut conn, snapshot_message).await.unwrap();
-        };
-
-        let delayed = async {
-            delay_for(Duration::from_secs(1)).await;
-            sender.await
-        };
-        runtime.spawn(delayed);
-
-        let test_delay = async { delay_for(Duration::from_secs(2)).await };
-        runtime.block_on(test_delay);
-
-    }
-}

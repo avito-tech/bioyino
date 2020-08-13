@@ -36,7 +36,7 @@ pub async fn carbon_timer(log: Logger, mut options: Carbon, aggregation: Aggrega
         options.chunks = 1
     }
     let agg_opts = AggregationOptions::from_config(aggregation, naming, log.clone())?;
-
+    let log = log.new(o!("thread"=>"carbon"));
     loop {
         carbon_timer.tick().await;
         let worker = CarbonWorker::new(log.clone(), agg_opts.clone(), options.clone(), chans.clone())?;
@@ -77,7 +77,6 @@ impl CarbonWorker {
 
         debug!(log, "carbon thread running");
         let mut runtime = Builder::new()
-            .thread_name("bioyino_carb")
             .basic_scheduler()
             .enable_all()
             .build()
@@ -187,7 +186,7 @@ impl CarbonBackend {
             None => TcpStream::connect(&options.addr).await?,
         };
 
-        info!(log, "sending metrics chunk");
+        info!(log, "sending metrics chunk"; "metrics"=>format!("{}", metrics.len()));
         let mut writer = CarbonCodec::new(ts.clone(), options.options.clone()).framed(conn);
 
         for m in metrics.iter().cloned() {
@@ -210,7 +209,7 @@ impl CarbonCodec {
     }
 }
 
-// item: Metric name, aggregate and counted value
+// item: Metric name, type name, aggregate and counted value
 impl Encoder<(MetricName, MetricTypeName, Aggregate<Float>, Float)> for CarbonCodec {
     type Error = GeneralError;
 
