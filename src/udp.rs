@@ -209,10 +209,11 @@ pub(crate) fn start_sync_udp(
                                             next_chan = if next_chan >= (chlen - 1) { 0 } else { next_chan + 1 };
                                             &mut chans[next_chan]
                                         };
-                                        chan.try_send(Task::Parse(ahash, buf.split()))
+                                        let buf = buf.split();
+                                        let buflen = buf.len();
+                                        chan.try_send(Task::Parse(ahash, buf))
                                             .map_err(|_| {
-                                                warn!(log, "error sending buffer(queue full?)");
-                                                STATS.drops.fetch_add(messages as usize, Ordering::Relaxed);
+                                                STATS.drops.fetch_add(buflen, Ordering::Relaxed);
                                             })
                                             .unwrap_or(());
                                     })
