@@ -1,34 +1,40 @@
-use std::net::SocketAddr;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{self, SystemTime, Duration};
+use std::time::{self, Duration, SystemTime};
 
-use bytes::{Bytes, BytesMut, buf::BufMutExt};
+use bytes::{buf::BufMutExt, Bytes, BytesMut};
 use futures3::channel::mpsc::{self, Sender};
-use futures3::{TryFutureExt};
-use futures3::sink::{SinkExt};
-use futures3::stream::{StreamExt};
+use futures3::sink::SinkExt;
+use futures3::stream::StreamExt;
+use futures3::TryFutureExt;
 
 use log::warn;
-use slog::{error, info, o, Logger, debug};
+use slog::{debug, error, info, o, Logger};
 
-use tokio2::spawn;
 use tokio2::net::TcpStream;
 use tokio2::runtime::Builder;
+use tokio2::spawn;
 use tokio2::time::{interval_at, Instant};
 use tokio_util::codec::{Decoder, Encoder};
 
-use bioyino_metric::{aggregate::Aggregate, name::MetricName, metric::MetricTypeName};
+use bioyino_metric::{aggregate::Aggregate, metric::MetricTypeName, name::MetricName};
 
 use crate::aggregate::{AggregationOptions, Aggregator};
-use crate::config::{Carbon, RoundTimestamp, Aggregation, Naming, ConfigError};
+use crate::config::{Aggregation, Carbon, ConfigError, Naming, RoundTimestamp};
 use crate::errors::GeneralError;
 use crate::task::Task;
-use crate::util::{bound_stream, resolve_with_port, Backoff, retry_with_backoff};
-use crate::{Float, s, IS_LEADER};
+use crate::util::{bound_stream, resolve_with_port, retry_with_backoff, Backoff};
+use crate::{s, Float, IS_LEADER};
 
-pub async fn carbon_timer(log: Logger, mut options: Carbon, aggregation: Aggregation, naming: HashMap<MetricTypeName, Naming>, chans: Vec<Sender<Task>>) -> Result<(), GeneralError> {
+pub async fn carbon_timer(
+    log: Logger,
+    mut options: Carbon,
+    aggregation: Aggregation,
+    naming: HashMap<MetricTypeName, Naming>,
+    chans: Vec<Sender<Task>>,
+) -> Result<(), GeneralError> {
     let chans = chans.clone();
 
     let dur = Duration::from_millis(options.interval);
@@ -43,7 +49,8 @@ pub async fn carbon_timer(log: Logger, mut options: Carbon, aggregation: Aggrega
         let worker = CarbonWorker::new(log.clone(), agg_opts.clone(), options.clone(), chans.clone())?;
         std::thread::Builder::new()
             .name("bioyino_carbon".into())
-            .spawn(move || worker.run()).map_err(|e|ConfigError::Io("spawning carbon thread".into(), e))?;
+            .spawn(move || worker.run())
+            .map_err(|e| ConfigError::Io("spawning carbon thread".into(), e))?;
     }
 }
 
@@ -122,9 +129,10 @@ impl CarbonWorker {
                         let client = CarbonBackend::new(options.clone(), ts, chunk.clone(), retry_log.clone());
                         client.run()
                     });
-                    let handle = spawn(async move { retrier.await.unwrap_or_else(move |e| {
-                        error!(elog.clone(), "failed to send chunk to graphite"; "chunk" => format!("{}", nth), "error"=>format!("{:?}",e));
-                    })
+                    let handle = spawn(async move {
+                        retrier.await.unwrap_or_else(move |e| {
+                            error!(elog.clone(), "failed to send chunk to graphite"; "chunk" => format!("{}", nth), "error"=>format!("{:?}",e));
+                        })
                     });
                     senders.push(handle);
                 }
@@ -183,7 +191,7 @@ impl CarbonBackend {
 
         let conn = match options.bind {
             Some(bind_addr) => match bound_stream(&bind_addr) {
-                Ok(std_stream) => TcpStream::connect_std(std_stream, &addr).map_err(|e|GeneralError::Io(e)).await?,
+                Ok(std_stream) => TcpStream::connect_std(std_stream, &addr).map_err(|e| GeneralError::Io(e)).await?,
                 Err(e) => {
                     return Err(GeneralError::Io(e));
                 }
@@ -196,7 +204,7 @@ impl CarbonBackend {
 
         for m in metrics.iter().cloned() {
             writer.send(m).await?
-        };
+        }
 
         info!(log, "finished");
         Ok(())
@@ -221,15 +229,7 @@ impl Encoder<(MetricName, MetricTypeName, Aggregate<Float>, Float)> for CarbonCo
     fn encode(&mut self, item: (MetricName, MetricTypeName, Aggregate<Float>, Float), buf: &mut BytesMut) -> Result<(), Self::Error> {
         let (name, typename, aggregate, value) = item;
         let options = &self.options;
-        if name
-            .put_with_options(
-                buf,
-                typename,
-                aggregate,
-                &options.namings,
-            )
-                .is_err()
-        {
+        if name.put_with_options(buf, typename, aggregate, &options.namings).is_err() {
             warn!("could not serialize '{:?}' with {:?}", &name.name[..], aggregate);
             s!(agg_errors);
             return Ok(());
@@ -249,7 +249,6 @@ impl Encoder<(MetricName, MetricTypeName, Aggregate<Float>, Float)> for CarbonCo
         s!(egress);
         Ok(())
     }
-
 }
 
 impl Decoder for CarbonCodec {
@@ -261,7 +260,6 @@ impl Decoder for CarbonCodec {
     }
 }
 
-
 #[cfg(test)]
 mod test {
 
@@ -269,8 +267,8 @@ mod test {
 
     use tokio2::net::TcpListener;
     use tokio2::runtime::Builder as RBuilder;
-    use tokio2::time::{delay_for};
     use tokio2::stream::StreamExt;
+    use tokio2::time::delay_for;
     use tokio_util::codec::{Decoder, LinesCodec};
 
     use crate::config::{self, Aggregation};
@@ -290,7 +288,6 @@ mod test {
             .build()
             .expect("creating runtime for carbon test");
 
-
         let ts = 1574745744_u64; // this is 24 seconds before start of the minute
 
         let name = MetricName::new(
@@ -298,7 +295,7 @@ mod test {
             TagFormat::Graphite,
             &mut intermediate,
         )
-            .unwrap();
+        .unwrap();
 
         let mut agg_opts = Aggregation::default();
         agg_opts.round_timestamp = RoundTimestamp::Up;
@@ -319,7 +316,7 @@ mod test {
             let mut listener = TcpListener::bind(&"127.0.0.1:2003".parse::<::std::net::SocketAddr>().unwrap()).await.unwrap();
             // we need only one accept here yet
             let (conn, _) = listener.accept().await.expect("server getting next connection");
-            let mut codec =  LinesCodec::new().framed(conn);
+            let mut codec = LinesCodec::new().framed(conn);
             while let Some(line) = codec.next().await {
                 let line = line.unwrap();
                 // with "up" rounding the timestamp have to be rounded to 30th second which is at 1574745750

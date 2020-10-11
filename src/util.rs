@@ -1,16 +1,16 @@
 use std::ffi::CStr;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
 use std::net::TcpStream as StdTcpStream;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::Ordering;
-use std::time::{Duration};
+use std::time::Duration;
 
 use thiserror::Error;
 
 use futures3::future::{Future as Future3, TryFutureExt};
-use socket2::{Socket, Domain, Type};
 use resolve::resolver;
 use slog::{o, warn, Drain, Logger};
+use socket2::{Domain, Socket, Type};
 use trust_dns_resolver::TokioAsyncResolver;
 
 use crate::config::Verbosity;
@@ -59,7 +59,8 @@ pub(crate) fn setup_logging(daemon: bool, verbosity_console: Verbosity, verbosit
             let drain = slog::Discard.fuse();
             async_logger!(drain)
         } else {
-            let console_drain = slog_term::FullFormat::new(decorator).build()
+            let console_drain = slog_term::FullFormat::new(decorator)
+                .build()
                 .filter(move |r: &slog::Record| verbosity_console.level.accepts(r.level()))
                 .fuse();
             async_logger!(console_drain)
@@ -70,13 +71,14 @@ pub(crate) fn setup_logging(daemon: bool, verbosity_console: Verbosity, verbosit
             .unix("/dev/log")
             .start()
             .expect("Failed to start logging to syslog on `/dev/log`")
-            .filter(move |r: &slog::Record| verbosity_syslog.level.accepts(r.level()) )
+            .filter(move |r: &slog::Record| verbosity_syslog.level.accepts(r.level()))
             .fuse();
 
         if daemon {
             async_logger!(syslog_drain)
         } else {
-            let console_drain = slog_term::FullFormat::new(decorator).build()
+            let console_drain = slog_term::FullFormat::new(decorator)
+                .build()
                 .filter(move |r: &slog::Record| verbosity_console.level.accepts(r.level()))
                 .fuse();
             let drain = slog::Duplicate(console_drain, syslog_drain).fuse();
@@ -136,17 +138,13 @@ pub async fn resolve_with_port(host: &str, default_port: u16) -> Result<SocketAd
 }
 
 pub async fn resolve_to_first(host: &str) -> Result<IpAddr, OtherError> {
-    let resolver =
-        TokioAsyncResolver::tokio_from_system_conf().await?;
+    let resolver = TokioAsyncResolver::tokio_from_system_conf().await?;
 
     let response = resolver.lookup_ip(host).await?;
 
     // Run the lookup until it resolves or errors
     // There can be many addresses associated with the name,
-    response
-        .iter()
-        .next()
-        .ok_or(OtherError::NotFound(host.to_string()))
+    response.iter().next().ok_or(OtherError::NotFound(host.to_string()))
 }
 
 /// Get hostname. Copypasted from some crate
@@ -234,16 +232,14 @@ pub async fn retry_with_backoff<F, I, R, E>(mut bo: Backoff, mut f: F) -> Result
 where
     I: Future3<Output = Result<R, E>>,
     F: FnMut() -> I,
-    {
-        loop {
-            match f().await {
-                r @ Ok(_) => {
-                    break r
-                }
-                Err(e) => {
-                    bo.sleep().map_err(|()| e).await?;
-                    continue;
-                }
+{
+    loop {
+        match f().await {
+            r @ Ok(_) => break r,
+            Err(e) => {
+                bo.sleep().map_err(|()| e).await?;
+                continue;
             }
         }
     }
+}

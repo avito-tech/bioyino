@@ -1,23 +1,23 @@
+use std::collections::HashMap;
+use std::iter::FromIterator;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
-use std::collections::HashMap;
-use std::iter::FromIterator;
 
+use bytes::{buf::BufMutExt, BytesMut};
 use futures3::future::{ok, Future};
 use slog::{info, o, warn, Logger};
-use bytes::{BytesMut, buf::BufMutExt};
 
 use hyper13::service::Service;
-use hyper13::{self, http, Body, Method, Response, StatusCode, Request, body::to_bytes, Client};
+use hyper13::{self, body::to_bytes, http, Body, Client, Method, Request, Response, StatusCode};
 
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::stats::STATS_SNAP;
-use crate::{ConsensusState, CONSENSUS_STATE, IS_LEADER, Float};
+use crate::{ConsensusState, Float, CONSENSUS_STATE, IS_LEADER};
 
 #[derive(Error, Debug)]
 pub enum MgmtError {
@@ -147,13 +147,13 @@ impl Service<Request<Body>> for MgmtService {
 
         let log = self.log.clone();
         let (path, query) = match req.uri().path_and_query() {
-            Some(pq) =>{
+            Some(pq) => {
                 let query = pq.query().map(|q| url::form_urlencoded::parse(q.as_bytes()));
                 (pq.path(), query)
             }
             None => {
                 *response.status_mut() = StatusCode::BAD_REQUEST;
-                return Box::pin(ok(response))
+                return Box::pin(ok(response));
             }
         };
         match (req.method(), path, query) {
@@ -179,7 +179,7 @@ impl Service<Request<Body>> for MgmtService {
                     for (k, v) in qry {
                         if k == "format" && v == "json" {
                             json = true;
-                            break
+                            break;
                         }
                     }
                 }
@@ -209,9 +209,12 @@ impl Service<Request<Body>> for MgmtService {
 
                     let snap = JsonSnap {
                         ts: snapshot.ts,
-                        metrics: HashMap::from_iter(snapshot.data.iter().map(|(name, value)| {
-                            (String::from_utf8_lossy(&name[..]).to_string(), *value)
-                        }))
+                        metrics: HashMap::from_iter(
+                            snapshot
+                                .data
+                                .iter()
+                                .map(|(name, value)| (String::from_utf8_lossy(&name[..]).to_string(), *value)),
+                        ),
                     };
                     let mut writer = buf.writer();
                     serde_json::to_writer_pretty(&mut writer, &snap).unwrap_or(());
@@ -226,7 +229,7 @@ impl Service<Request<Body>> for MgmtService {
             }
             (&Method::POST, "/consensus", _) => {
                 let fut = async move {
-                    let body = to_bytes( req.into_body()).await?;
+                    let body = to_bytes(req.into_body()).await?;
                     match serde_json::from_slice(&*body) {
                         Ok(MgmtCommand::ConsensusCommand(consensus_action, leader_action)) => {
                             {
@@ -301,7 +304,8 @@ impl<T> Service<T> for MgmtServer {
 
     fn call(&mut self, _: T) -> Self::Future {
         ok(MgmtService::new(
-                self.0.new(o!("source"=>"management-server", "server"=>format!("{}", self.1.clone())))))
+            self.0.new(o!("source"=>"management-server", "server"=>format!("{}", self.1.clone()))),
+        ))
     }
 }
 
@@ -343,7 +347,7 @@ impl MgmtClient {
                 match parsed {
                     Ok(status) => {
                         println!("{:?}", status);
-                    },
+                    }
                     Err(e) => {
                         println!("Error parsing server response: {}", e.to_string());
                     }
@@ -368,7 +372,7 @@ impl MgmtClient {
                 match parsed {
                     Ok(status) => {
                         println!("New server state: {:?}", status);
-                    },
+                    }
                     Err(e) => {
                         println!("Error parsing server response: {}", e.to_string());
                     }
@@ -383,7 +387,7 @@ impl MgmtClient {
 mod test {
 
     use std::net::SocketAddr;
-    use std::time::{Duration};
+    use std::time::Duration;
     use {slog, slog_async, slog_term};
 
     use slog::{Drain, Logger};
@@ -408,9 +412,7 @@ mod test {
         let runtime = Builder::new().basic_scheduler().enable_all().build().expect("creating runtime for main thread");
 
         let m_serv_log = rlog.clone();
-        let m_server = async move {
-            hyper13::Server::bind(&mgmt_listen).serve(MgmtServer(m_serv_log, mgmt_listen)).await
-        };
+        let m_server = async move { hyper13::Server::bind(&mgmt_listen).serve(MgmtServer(m_serv_log, mgmt_listen)).await };
 
         runtime.spawn(m_server);
 
@@ -446,7 +448,6 @@ mod test {
                     leader_status: true
                 }
             );
-
         };
 
         runtime.spawn(check);

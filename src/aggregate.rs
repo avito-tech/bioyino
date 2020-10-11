@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures3::{StreamExt, SinkExt, TryFutureExt};
 use futures3::channel::mpsc::{self, Sender, UnboundedSender};
+use futures3::{SinkExt, StreamExt, TryFutureExt};
 use tokio2::spawn;
 
 use rayon::{iter::IntoParallelIterator, iter::ParallelIterator, ThreadPoolBuilder};
@@ -18,7 +18,7 @@ use bioyino_metric::{
 
 use crate::config::{all_aggregates, Aggregation, ConfigError, Naming, RoundTimestamp};
 use crate::task::Task;
-use crate::{s, Cache, Float};
+use crate::{s, Float};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -186,7 +186,7 @@ impl Aggregator {
         for chan in &chans {
             let mut chan = chan.clone();
             let rchan = response_chan.clone();
-            let handle = spawn(async move { chan.send(Task::Rotate(rchan)).map_err(|_|s!(queue_errors)).await });
+            let handle = spawn(async move { chan.send(Task::Rotate(rchan)).map_err(|_| s!(queue_errors)).await });
             handles.push(handle);
         }
         drop(response_chan);
@@ -195,7 +195,7 @@ impl Aggregator {
 
         // when we are not leader the aggregator job is done here: send_tasks will delete metrics
         if !is_leader {
-            return
+            return;
         }
 
         // from now we consider us being a leader
@@ -224,8 +224,8 @@ impl Aggregator {
                         };
                         aggregate_task(task_data);
                     })
-                .last();
-                }
+                    .last();
+            }
             AggregationMode::Common => {
                 cache
                     .into_iter()
@@ -240,8 +240,8 @@ impl Aggregator {
                         let mut chan = chans[num % chans.len()].clone();
                         spawn(async move { chan.send(Task::Aggregate(task_data)).await });
                     })
-                .last();
-                }
+                    .last();
+            }
             AggregationMode::Separate => {
                 let pool = ThreadPoolBuilder::new()
                     .thread_name(|i| format!("bioyino_agg{}", i))
@@ -288,7 +288,7 @@ pub fn aggregate_task(data: AggregationData) {
     } else {
         // empty metric case is not possible actually
         s!(agg_errors);
-        return
+        return;
     };
 
     let mut metric = metrics.into_iter().fold(first, |mut acc, next| {
@@ -327,38 +327,36 @@ pub fn aggregate_task(data: AggregationData) {
                 _ => Some((name.clone(), typename, *aggregate, value)),
             }
         })
-    .map(|data| {
-        let mut response = response.clone();
-        let respond = async move {
-            response.send(data).await
-        };
+        .map(|data| {
+            let mut response = response.clone();
+            let respond = async move { response.send(data).await };
 
-        match mode {
-            AggregationMode::Separate => {
-                // In the separate mode there is no runtime, so we just run future
-                // synchronously
-                futures3::executor::block_on(respond).expect("responding thread: error sending aggregated metrics back");
+            match mode {
+                AggregationMode::Separate => {
+                    // In the separate mode there is no runtime, so we just run future
+                    // synchronously
+                    futures3::executor::block_on(respond).expect("responding thread: error sending aggregated metrics back");
+                }
+                _ => {
+                    spawn(respond);
+                }
             }
-            _ => {
-                spawn(respond);
-            },
-        }
-    })
-    .last();
-    }
+        })
+        .last();
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::convert::TryFrom;
     use std::sync::atomic::Ordering;
-    use std::time::{Duration};
+    use std::time::Duration;
 
     use crate::util::prepare_log;
 
     use futures3::channel::mpsc;
-    use tokio2::runtime::{Builder};
-    use tokio2::time::{delay_for};
+    use tokio2::runtime::Builder;
+    use tokio2::time::delay_for;
 
     use bioyino_metric::{name::MetricName, Metric, MetricType};
 
@@ -378,17 +376,22 @@ mod tests {
             .build()
             .expect("creating runtime for test");
 
-
         let mut config = config::Aggregation::default();
 
         let timer = MetricTypeName::Timer;
         // add 0.8th percentile to timer aggregates
-        config.aggregates.get_mut(&timer).unwrap().as_mut().unwrap().push(Aggregate::Percentile(0.8, 80));
+        config
+            .aggregates
+            .get_mut(&timer)
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .push(Aggregate::Percentile(0.8, 80));
 
         //"percentile-80".into());
         /*config.postfix_replacements.insert("percentile-80".into(), "percentile80".into());
-          config.postfix_replacements.insert("min".into(), "lower".into());
-          */
+        config.postfix_replacements.insert("min".into(), "lower".into());
+        */
         // TODO: check tag replacements
         //config.tag_replacements.insert("percentile-80".into(), "p80".into());
         config.update_count_threshold = 1;
@@ -429,7 +432,7 @@ mod tests {
                     .chain(Some(Aggregate::Percentile(0.8, 80)))
                     .map(move |agg| (key.clone(), agg))
             })
-        .flatten()
+            .flatten()
             .collect();
 
         let sent_cache = cache.clone();
@@ -440,7 +443,7 @@ mod tests {
                     // Emulate rotation in task
                     spawn(async move { response.send(sent_cache).await });
                 }
-            };
+            }
         };
 
         runtime.spawn(rotate);
@@ -476,6 +479,5 @@ mod tests {
 
         let test_delay = async { delay_for(Duration::from_secs(2)).await };
         runtime.block_on(test_delay);
-
     }
 }

@@ -9,12 +9,12 @@ use futures3::channel::mpsc;
 use futures3::SinkExt;
 use tokio2::net::UdpSocket;
 
-use slog::{o, error, warn, Logger};
+use slog::{error, o, warn, Logger};
 
 use crate::config::System;
+use crate::s;
 use crate::stats::STATS;
 use crate::task::Task;
-use crate::s;
 
 pub async fn async_statsd_server(
     log: Logger,
@@ -34,7 +34,8 @@ pub async fn async_statsd_server(
     let mut socket = UdpSocket::from_std(socket).expect("adding socket to event loop");
     loop {
         let (size, addr) = match socket.recv_from(&mut readbuf).await {
-            Ok((0, _)) => { // size = 0 means EOF
+            Ok((0, _)) => {
+                // size = 0 means EOF
                 warn!(log, "exiting on EOF");
                 break;
             }
@@ -77,5 +78,5 @@ pub async fn async_statsd_server(
                 chan.send(Task::Parse(ahash, buf)).await.unwrap_or_else(|_| s!(drops));
             }
         }
-    };
+    }
 }

@@ -9,52 +9,52 @@ pub mod management;
 pub mod peer;
 pub mod raft;
 pub mod server;
+pub mod stats;
 pub mod task;
 pub mod udp;
 pub mod util;
-pub mod stats;
 
 use std::collections::HashMap;
+use std::io;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::{thread, panic, process};
 use std::time::{Duration, Instant};
-use std::io;
+use std::{panic, process, thread};
 
 use slog::{info, o};
 
-use futures::future::{empty};
+use futures::future::empty;
+use futures::{Future as Future1, IntoFuture};
 use futures3::channel::mpsc;
 use futures3::stream::StreamExt;
-use futures::{Future as Future1, IntoFuture};
 
 use futures3::future::{pending, TryFutureExt};
 
 use serde_derive::{Deserialize, Serialize};
-use slog::{warn, error};
+use slog::{error, warn};
 
 use tokio2::runtime::Builder;
 use tokio2::time::interval_at;
 
 use tokio::runtime::current_thread::Runtime;
-use tokio::timer::{Delay};
+use tokio::timer::Delay;
 
-use once_cell::sync::Lazy;
 use bioyino_metric::metric::Metric;
 use bioyino_metric::name::MetricName;
+use once_cell::sync::Lazy;
 
-use crate::udp::{start_async_udp, start_sync_udp};
-use crate::carbon::{carbon_timer};
+use crate::carbon::carbon_timer;
 use crate::config::{Command, Consul, Network, System};
 use crate::consul::ConsulConsensus;
 use crate::errors::GeneralError;
-use crate::management::{MgmtClient};
+use crate::management::MgmtClient;
 use crate::peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use crate::raft::start_internal_raft;
-use crate::task::{TaskRunner};
-use crate::util::{try_resolve, Backoff, retry_with_backoff, setup_logging};
 pub use crate::stats::OwnStats;
+use crate::task::TaskRunner;
+use crate::udp::{start_async_udp, start_sync_udp};
+use crate::util::{retry_with_backoff, setup_logging, try_resolve, Backoff};
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
 // precision
@@ -63,7 +63,6 @@ pub type Float = f64;
 
 // a type to store pre-aggregated data
 pub type Cache = HashMap<MetricName, Metric<Float>>;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
@@ -94,7 +93,7 @@ pub enum ConsensusKind {
     Internal,
 }
 
-pub static CONSENSUS_STATE: Lazy<Mutex<ConsensusState>> = Lazy::new(|| Mutex::new(ConsensusState::Disabled) );
+pub static CONSENSUS_STATE: Lazy<Mutex<ConsensusState>> = Lazy::new(|| Mutex::new(ConsensusState::Disabled));
 pub static IS_LEADER: AtomicBool = AtomicBool::new(false);
 
 fn main() {
@@ -125,27 +124,27 @@ fn main() {
                 snapshot_interval,
                 max_snapshots,
             },
-            raft,
-            consul:
-                Consul {
-                    start_as: consul_start_as,
-                    agent,
-                    session_ttl: consul_session_ttl,
-                    renew_time: consul_renew_time,
-                    key_name: consul_key,
-                },
-                metrics: _,
-                aggregation,
-                naming,
-                carbon,
-                n_threads,
-                w_threads,
-                c_threads,
-                stats_interval: s_interval,
-                task_queue_size,
-                start_as_leader,
-                stats_prefix,
-                consensus,
+        raft,
+        consul:
+            Consul {
+                start_as: consul_start_as,
+                agent,
+                session_ttl: consul_session_ttl,
+                renew_time: consul_renew_time,
+                key_name: consul_key,
+            },
+        metrics: _,
+        aggregation,
+        naming,
+        carbon,
+        n_threads,
+        w_threads,
+        c_threads,
+        stats_interval: s_interval,
+        task_queue_size,
+        start_as_leader,
+        stats_prefix,
+        consensus,
     } = system;
 
     if daemon && verbosity_syslog.is_off() {
@@ -215,11 +214,7 @@ fn main() {
             .name(format!("bioyino_cnt{}", i))
             .spawn(move || {
                 let mut runner = TaskRunner::new(tlog, cf, 8192);
-                let mut runtime = Builder::new()
-                    .basic_scheduler()
-                    .enable_all()
-                    .build()
-                    .expect("creating runtime for test");
+                let mut runtime = Builder::new().basic_scheduler().enable_all().build().expect("creating runtime for test");
 
                 let tasks = async {
                     while let Some(task) = rx.next().await {
@@ -229,7 +224,7 @@ fn main() {
 
                 runtime.block_on(tasks);
             })
-        .map_err(|e| error!(log, "worker thread dead: {:?}", e))
+            .map_err(|e| error!(log, "worker thread dead: {:?}", e))
             .expect("starting counting worker thread");
     }
 
@@ -288,10 +283,13 @@ fn main() {
 
                             info!(flog, "consensus thread stopped");
                         })
-                    .expect("starting counting worker thread");
-                    }
+                        .expect("starting counting worker thread");
+                }
                 ConsensusKind::Consul => {
-                    warn!(compat_log, "CONSUL CONSENSUS IS DEPRECATED AND WILL BE REMOVED IN VERSION 0.8, CONSIDER USING BUILT IN RAFT");
+                    warn!(
+                        compat_log,
+                        "CONSUL CONSENSUS IS DEPRECATED AND WILL BE REMOVED IN VERSION 0.8, CONSIDER USING BUILT IN RAFT"
+                    );
 
                     if start_as_leader {
                         warn!(
@@ -324,8 +322,7 @@ fn main() {
 
             runtime.block_on(empty::<(), ()>()).expect("compat thread failed");
         })
-    .expect("starting compat thread");
-
+        .expect("starting compat thread");
 
     // settings safe for asap restart
     info!(log, "starting snapshot receiver");
@@ -341,36 +338,37 @@ fn main() {
     let peer_server = retry_with_backoff(peer_server_bo, move || {
         let server_log = server_log.clone();
         let peer_server = NativeProtocolServer::new(server_log.clone(), peer_listen, server_chans.clone());
-        peer_server
-            .run()
-            .inspect_err(move |e|{
-                info!(server_log, "error running snapshot server"; "error"=>format!("{}", e));
-            })
+        peer_server.run().inspect_err(move |e| {
+            info!(server_log, "error running snapshot server"; "error"=>format!("{}", e));
+        })
     });
     runtime.spawn(peer_server);
 
     info!(log, "starting snapshot sender");
-    let snapshot = NativeProtocolSnapshot::new(&log, nodes, peer_client_bind, Duration::from_millis(snapshot_interval as u64), &chans, max_snapshots);
+    let snapshot = NativeProtocolSnapshot::new(
+        &log,
+        nodes,
+        peer_client_bind,
+        Duration::from_millis(snapshot_interval as u64),
+        &chans,
+        max_snapshots,
+    );
 
-    runtime.spawn(snapshot
-        .run()
-        .map_err(move |e| {
-            s!(peer_errors);
-            info!(snap_err_log, "error running snapshot sender"; "error"=>format!("{}", e));
-        }));
+    runtime.spawn(snapshot.run().map_err(move |e| {
+        s!(peer_errors);
+        info!(snap_err_log, "error running snapshot sender"; "error"=>format!("{}", e));
+    }));
 
     info!(log, "starting management server");
     let m_serv_log = rlog.clone();
-    let m_server = async move {
-        hyper13::Server::bind(&mgmt_listen).serve(management::MgmtServer(m_serv_log, mgmt_listen)).await
-    };
+    let m_server = async move { hyper13::Server::bind(&mgmt_listen).serve(management::MgmtServer(m_serv_log, mgmt_listen)).await };
 
     runtime.spawn(m_server);
 
     info!(log, "starting carbon backend");
     let carbon_log = log.clone();
-    let carbon_t =
-        carbon_timer(log.clone(), carbon, aggregation, naming, chans.clone()).map_err(move |e| error!(carbon_log, "running carbon thread"; "error" => format!("{}", e)));
+    let carbon_t = carbon_timer(log.clone(), carbon, aggregation, naming, chans.clone())
+        .map_err(move |e| error!(carbon_log, "running carbon thread"; "error" => format!("{}", e)));
     runtime.spawn(carbon_t);
 
     // For each out sync thread we create the buffer flush timer, that sets the atomic value to 1

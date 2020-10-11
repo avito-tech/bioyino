@@ -1,12 +1,12 @@
-use std::sync::{Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{self, SystemTime, Duration};
+use std::sync::Mutex;
+use std::time::{self, Duration, SystemTime};
 
-use futures3::sink::{SinkExt};
+use bytes::{Bytes, BytesMut};
 use futures3::channel::mpsc::Sender;
+use futures3::sink::SinkExt;
 use once_cell::sync::Lazy;
-use slog::{Logger, o, info};
-use bytes::{BytesMut, Bytes};
+use slog::{info, o, Logger};
 
 use bioyino_metric::{name::MetricName, Metric, MetricType};
 
@@ -18,7 +18,8 @@ pub struct Stats {
     pub egress: AtomicUsize,
     pub ingress: AtomicUsize,
     pub ingress_metrics: AtomicUsize,
-    pub drops: AtomicUsize, pub parse_errors: AtomicUsize,
+    pub drops: AtomicUsize,
+    pub parse_errors: AtomicUsize,
     pub agg_errors: AtomicUsize,
     pub peer_errors: AtomicUsize,
     pub queue_errors: AtomicUsize,
@@ -28,7 +29,8 @@ pub static STATS: Stats = Stats {
     egress: AtomicUsize::new(0),
     ingress: AtomicUsize::new(0),
     ingress_metrics: AtomicUsize::new(0),
-    drops: AtomicUsize::new(0), parse_errors: AtomicUsize::new(0),
+    drops: AtomicUsize::new(0),
+    parse_errors: AtomicUsize::new(0),
     agg_errors: AtomicUsize::new(0),
     peer_errors: AtomicUsize::new(0),
     queue_errors: AtomicUsize::new(0),
@@ -39,10 +41,8 @@ pub static STATS_SNAP: Lazy<Mutex<OwnSnapshot>> = Lazy::new(|| Mutex::new(OwnSna
 #[macro_export]
 macro_rules! s {
     ($path:ident) => {{
-        crate::stats::STATS
-            .$path
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }};
+        crate::stats::STATS.$path.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }};
 }
 
 pub struct OwnSnapshot {
@@ -53,8 +53,12 @@ pub struct OwnSnapshot {
 impl Default for OwnSnapshot {
     fn default() -> Self {
         Self {
-            ts: SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(GeneralError::Time).expect("getting system time").as_millis(),
-            data: Vec::new()
+            ts: SystemTime::now()
+                .duration_since(time::UNIX_EPOCH)
+                .map_err(GeneralError::Time)
+                .expect("getting system time")
+                .as_millis(),
+            data: Vec::new(),
         }
     }
 }
@@ -69,12 +73,7 @@ pub struct OwnStats {
 }
 
 impl OwnStats {
-    pub fn new(
-        interval: u64,
-        prefix: String,
-        chans: Vec<Sender<Task>>,
-        log: Logger
-    ) -> Self {
+    pub fn new(interval: u64, prefix: String, chans: Vec<Sender<Task>>, log: Logger) -> Self {
         let log = log.new(o!("source"=>"stats"));
         Self {
             interval,
@@ -97,17 +96,13 @@ impl OwnStats {
     async fn count(&mut self) {
         let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
         let mut snapshot = OwnSnapshot::default();
-        let s_interval = if self.interval > 0 {
-            self.interval as f64 / 1000f64
-        } else {
-            1f64
-        };
+        let s_interval = if self.interval > 0 { self.interval as f64 / 1000f64 } else { 1f64 };
 
         // we will start from 1st worker, not 0th, but who cares, we rotate them every second
         self.next_chan += 1;
         // this also covers situation when the number of workers = 1
         if self.next_chan >= self.chans.len() {
-            self.next_chan  = 0;
+            self.next_chan = 0;
         }
 
         macro_rules! add_metric {
@@ -116,10 +111,12 @@ impl OwnStats {
                 if self.interval > 0 {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
                     let (name, metric) = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), $value);
-                    self
-                        .chans[self.next_chan]
+                    self.chans[self.next_chan]
                         .clone()
-                        .send(Task::AddMetric(name, metric)).await.map_err(|_| s!(queue_errors)).unwrap_or(());
+                        .send(Task::AddMetric(name, metric))
+                        .await
+                        .map_err(|_| s!(queue_errors))
+                        .unwrap_or(());
                 }
             };
         };
