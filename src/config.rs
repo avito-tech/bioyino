@@ -1,29 +1,34 @@
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
-use std::net::SocketAddr;
-use std::ops::Range;
-use std::time::Duration;
-
-use failure_derive::Fail;
+use std::{collections::HashMap, convert::TryFrom, fmt::Debug, fs::File, io::Read, net::SocketAddr, ops::Range, str::FromStr, time::Duration};
 
 use clap::{app_from_crate, crate_authors, crate_description, crate_name, crate_version, value_t, Arg, SubCommand};
 use toml;
 
 use serde_derive::{Deserialize, Serialize};
 
+use bytes::Bytes;
 use raft_tokio::RaftOptions;
+use thiserror::Error;
 
 use crate::aggregate::AggregationMode;
 use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
-use crate::{ConsensusKind, ConsensusState};
-use bioyino_metric::name::AggregationDestination;
+use crate::{ConsensusKind, ConsensusState, Float};
+use bioyino_metric::{
+    aggregate::Aggregate,
+    metric::MetricTypeName,
+    name::{AggregationDestination, NamingOptions},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct System {
     /// Logging level
-    pub verbosity: String,
+    pub verbosity_console: Verbosity,
+
+    /// Enable logging to syslog
+    pub verbosity_syslog: Verbosity,
+
+    /// Enable going to background
+    pub daemon: bool,
 
     /// Network settings
     pub network: Network,
@@ -40,6 +45,9 @@ pub struct System {
     /// Aggregation settings
     pub aggregation: Aggregation,
 
+    /// Metric naming overrides by metric type
+    pub naming: HashMap<MetricTypeName, Naming>,
+
     /// Carbon backend settings
     pub carbon: Carbon,
 
@@ -48,6 +56,9 @@ pub struct System {
 
     /// Number of aggregating(worker) threads, set to 0 to use all CPU cores
     pub w_threads: usize,
+
+    /// Number of core threads, doing other work, set to 0 to use all CPU cores
+    pub c_threads: usize,
 
     /// queue size for single counting thread before packet is dropped
     pub task_queue_size: usize,
@@ -69,15 +80,19 @@ pub struct System {
 impl Default for System {
     fn default() -> Self {
         Self {
-            verbosity: "warn".to_string(),
+            verbosity_console: Verbosity::default(),
+            verbosity_syslog: TryFrom::try_from("off").unwrap(),
+            daemon: false,
             network: Network::default(),
             raft: Raft::default(),
             consul: Consul::default(),
             metrics: Metrics::default(),
             aggregation: Aggregation::default(),
+            naming: default_namings(),
             carbon: Carbon::default(),
             n_threads: 4,
             w_threads: 4,
+            c_threads: 4,
             stats_interval: 10000,
             task_queue_size: 2048,
             start_as_leader: false,
@@ -88,10 +103,39 @@ impl Default for System {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields, try_from = "&str")]
+pub struct Verbosity {
+    #[serde(skip)]
+    pub(crate) level: slog::FilterLevel,
+}
+
+impl Verbosity {
+    pub fn is_off(&self) -> bool {
+        self.level == slog::FilterLevel::Off
+    }
+}
+
+impl TryFrom<&str> for Verbosity {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        if let Ok(level) = FromStr::from_str(s) {
+            Ok(Self { level })
+        } else {
+            Err("incorrect verbosity value".to_string())
+        }
+    }
+}
+
+impl Default for Verbosity {
+    fn default() -> Self {
+        TryFrom::try_from("warn").unwrap()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct Metrics {
-    // TODO: Maximum metric array size, 0 for unlimited
-    //  max_metrics: usize,
     /// Consistent parsing
     pub consistent_parsing: bool,
 
@@ -112,7 +156,6 @@ pub struct Metrics {
 impl Default for Metrics {
     fn default() -> Self {
         Self {
-            //           max_metrics: 0,
             consistent_parsing: true,
             log_parse_errors: false,
             max_unparsed_buffer: 10000,
@@ -137,24 +180,8 @@ pub struct Aggregation {
     /// Minimal update count to be reported
     pub update_count_threshold: u32,
 
-    /// Where to put aggregate postfix
-    pub destination: AggregationDestination,
-
-    /// list of aggregates to gather for timer metrics
-    //pub ms_aggregates: Vec<Aggregate<Float>>,
-    pub ms_aggregates: Vec<String>,
-
-    /// replacements for aggregate postfixes
-    pub postfix_replacements: HashMap<String, String>,
-
-    /// replacements for aggregate prefixes
-    pub prefix_replacements: HashMap<String, String>,
-
-    /// replacements for aggregate tag names
-    pub tag_replacements: HashMap<String, String>,
-
-    /// the default tag name to be used for aggregation
-    pub tag_name: String,
+    /// list of aggregates to count for metrics by type
+    pub aggregates: HashMap<MetricTypeName, Option<Vec<Aggregate<Float>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,55 +195,114 @@ pub enum RoundTimestamp {
     Up,
 }
 
-pub fn default_ms_aggregates() -> Vec<String> {
-    [
-        //
-        "count",
-        "last",
-        "min",
-        "max",
-        "sum",
-        "median",
-        "mean",
-        "updates",
-        "percentile-75",
-        "percentile-95",
-        "percentile-98",
-        "percentile-99",
-        "percentile-999",
-    ]
-    .iter()
-    .map(|a| a.to_string())
-    .collect()
-}
-
-pub fn default_replacements() -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    // by default we replace the aggrewgate name with the same name as itselfi
-    // i.e "count" -> "count"
-    ["count", "last", "min", "max", "sum", "median", "mean", "updates"]
-        .iter()
-        .map(|&a| m.insert(a.into(), a.into()))
-        .last();
-    // we can safely skip percentiles here, since they will be autogenerated when converted to real
-    // options
-    m
-}
-
 impl Default for Aggregation {
     fn default() -> Self {
         Self {
-            //
             round_timestamp: RoundTimestamp::No,
             mode: AggregationMode::Single,
             threads: None,
             update_count_threshold: 200,
+            aggregates: all_aggregates().into_iter().map(|(k, v)| (k, Some(v))).collect(),
+        }
+    }
+}
+
+pub(crate) fn all_aggregates() -> HashMap<MetricTypeName, Vec<Aggregate<Float>>> {
+    let mut map = bioyino_metric::aggregate::possible_aggregates();
+    let timers = map.get_mut(&MetricTypeName::Timer).expect("only BUG in possible_aggregates can panic here");
+    timers.push(Aggregate::Percentile(0.75, 75));
+    timers.push(Aggregate::Percentile(0.95, 95));
+    timers.push(Aggregate::Percentile(0.98, 98));
+    //timers.push(Aggregate::Percentile(0.99)); // 99th already exists
+    timers.push(Aggregate::Percentile(0.999, 999));
+    map
+}
+
+pub fn default_namings() -> HashMap<MetricTypeName, Naming> {
+    let mut m = HashMap::new();
+    for (ty, aggs) in all_aggregates() {
+        // for each type there will be own naming defaults
+        let mut tag_values = HashMap::new();
+        let mut postfixes = HashMap::new();
+        for agg in &aggs {
+            tag_values.insert(agg.clone(), agg.to_string());
+            postfixes.insert(agg.clone(), agg.to_string());
+        }
+        let naming = Naming {
             destination: AggregationDestination::Smart,
-            ms_aggregates: default_ms_aggregates(),
-            postfix_replacements: default_replacements(),
-            prefix_replacements: HashMap::new(),
-            tag_replacements: default_replacements(),
-            tag_name: "aggregate".to_string(),
+            prefix: String::new(),
+            prefix_overrides: None,
+            tag: "aggregate".to_string(),
+            tag_values,
+            postfixes,
+        };
+        m.insert(ty, naming);
+    }
+    m
+}
+
+/// there is a difference between prefixes and postfixes/tags due to their semantics
+/// prefix is usually and most probably global, so people often want one
+/// postfix and tags are dynamic in all cases, therefore some global postfix or tag
+/// only exist when aggregates are put each in it's own namespace which is very rare
+/// due to being inconvenient
+/// WARNING: Since the structure's default is metric type dependent, The Default impl does not
+/// show the reality and exists only due to serde::Deserialize requiring it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct Naming {
+    /// Where to put aggregate postfix
+    pub destination: AggregationDestination,
+
+    /// global default prefix
+    pub prefix: String,
+
+    /// prefix options per aggregate
+    pub prefix_overrides: Option<HashMap<Aggregate<Float>, String>>,
+
+    /// names for aggregate postfixes
+    pub postfixes: HashMap<Aggregate<Float>, String>,
+
+    /// the default tag name(i.e. key) to be used for aggregation
+    pub tag: String,
+
+    /// replacements for aggregate tag values, naming is <tag>=<tag_value>
+    pub tag_values: HashMap<Aggregate<Float>, String>,
+}
+
+impl Default for Naming {
+    fn default() -> Self {
+        Self {
+            destination: AggregationDestination::Smart,
+            prefix: String::new(),
+            prefix_overrides: None,
+            tag: "aggregate".to_string(),
+            tag_values: HashMap::new(),
+            postfixes: HashMap::new(),
+        }
+    }
+}
+
+impl Naming {
+    pub(crate) fn as_options(&self, agg: &Aggregate<Float>) -> NamingOptions {
+        let prefix = if let Some(ref overrides) = self.prefix_overrides {
+            if let Some(ov) = overrides.get(agg) {
+                Bytes::copy_from_slice(ov.as_bytes())
+            } else {
+                Bytes::copy_from_slice(self.prefix.as_bytes())
+            }
+        } else {
+            Bytes::copy_from_slice(self.prefix.as_bytes())
+        };
+
+        let tag_value = Bytes::copy_from_slice(self.tag_values.get(agg).unwrap_or(&agg.to_string()).as_bytes());
+        let postfix = Bytes::copy_from_slice(self.postfixes.get(agg).unwrap_or(&agg.to_string()).as_bytes());
+        NamingOptions {
+            prefix,
+            tag: Bytes::copy_from_slice(self.tag.as_bytes()),
+            tag_value,
+            postfix,
+            destination: self.destination.clone(),
         }
     }
 }
@@ -320,6 +406,9 @@ pub struct Network {
 
     /// Interval to send snapshots to nodes, ms
     pub snapshot_interval: usize,
+
+    /// Number of latest snapshots stored
+    pub max_snapshots: usize,
 }
 
 impl Default for Network {
@@ -340,6 +429,7 @@ impl Default for Network {
             async_sockets: 4,
             nodes: Vec::new(),
             snapshot_interval: 1000,
+            max_snapshots: 180,
         }
     }
 }
@@ -426,22 +516,25 @@ impl Raft {
     }
 }
 
-#[derive(Fail, Debug)]
+#[derive(Error, Debug)]
 pub enum ConfigError {
-    #[fail(display = "I/O error while {}: {}", _0, _1)]
-    Io(String, #[cause] ::std::io::Error),
+    #[error("I/O error while {0}")]
+    Io(String, #[source] ::std::io::Error),
 
-    #[fail(display = "config file must be string")]
+    #[error("config file must be string")]
     MustBeString,
 
-    #[fail(display = "parsing toml")]
-    Toml(#[cause] ::toml::de::Error),
+    #[error("parsing toml")]
+    Toml(#[from] ::toml::de::Error),
 
-    #[fail(display = "bad aggregate spec: '{}'", _0)]
+    #[error("bad aggregate spec: '{}'", _0)]
     BadAggregate(String),
 
-    #[fail(display = "bad value for '{}': '{}'", _0, _1)]
+    #[error("bad value for '{}': '{}'", _0, _1)]
     BadValue(String, String),
+
+    #[error("unknown type name '{}'", _0)]
+    BadTypeName(String),
 }
 
 #[derive(Debug)]
@@ -464,7 +557,8 @@ impl System {
                     .takes_value(true)
                     .default_value("/etc/bioyino/bioyino.toml"),
             )
-            .arg(Arg::with_name("verbosity").short("v").help("logging level").takes_value(true))
+            .arg(Arg::with_name("verbosity").short("v").help("console logging level").takes_value(true))
+            .arg(Arg::with_name("foreground").short("f").help("do not daemonize"))
             .subcommand(
                 SubCommand::with_name("query")
                     .about("send a management command to running bioyino server")
@@ -486,9 +580,12 @@ impl System {
         let mut system: System = toml::de::from_str(&config_str).map_err(ConfigError::Toml)?;
 
         if let Some(v) = app.value_of("verbosity") {
-            system.verbosity = v.into()
+            system.verbosity_console = TryFrom::try_from(v).map_err(|_| ConfigError::BadValue("`verbosity` CLI option".to_string(), v.to_string()))?;
         }
 
+        if app.is_present("foreground") {
+            system.daemon = false
+        }
         // all parameter postprocessing goes here
         system.prepare()?;
 
@@ -511,17 +608,6 @@ impl System {
     }
 
     pub fn prepare(&mut self) -> Result<(), ConfigError> {
-        // join replacements with defaults (order of iterators is important here)
-        self.aggregation.postfix_replacements = default_replacements()
-            .into_iter()
-            .chain(self.aggregation.postfix_replacements.clone().into_iter())
-            .collect();
-
-        self.aggregation.tag_replacements = default_replacements()
-            .into_iter()
-            .chain(self.aggregation.tag_replacements.clone().into_iter())
-            .collect();
-
         // it is not OK to specify 0 chunks
         if self.carbon.chunks == 0 {
             return Err(ConfigError::BadValue(
@@ -552,7 +638,19 @@ mod tests {
         config.prepare().expect("preparing config");
 
         let log = prepare_log("parse_full_config test");
-        let _ = AggregationOptions::from_config(config.aggregation, log).expect("checking aggregate options");
+        let aopts = AggregationOptions::from_config(config.aggregation, config.naming, log).expect("checking aggregate options");
+        for (ty, _) in all_aggregates() {
+            // all_aggregates contain all types and all possible aggregate pairs
+            // so we must check aggregation_options has all of them after conversion
+            assert!(aopts.aggregates.get(&ty).is_some(), "{:?} <= {:?}", ty, aopts.aggregates);
+            assert!(aopts.aggregates.get(&ty).unwrap().len() > 0, "{:?}", ty);
+        }
+
+        for (ty, aggs) in &aopts.aggregates {
+            for agg in aggs.into_iter() {
+                assert!(aopts.namings.get(&(ty.clone(), agg.clone())).is_some(), "no naming for {:?}, {:?}", ty, agg);
+            }
+        }
     }
 
     #[test]

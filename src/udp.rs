@@ -9,21 +9,16 @@ use std::sync::Arc;
 use std::thread;
 
 use bytes::{BufMut, BytesMut};
-use futures::future::empty;
-use futures::sync::mpsc::Sender;
-use futures::IntoFuture;
-use net2::unix::UnixUdpBuilderExt;
-use net2::UdpBuilder;
-use slog::{debug, info, o, warn, Logger};
+use futures3::channel::mpsc::Sender;
+use futures3::future::pending;
+use slog::{info, o, warn, Logger};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::os::unix::io::AsRawFd;
-use tokio::net::UdpSocket;
-use tokio::reactor::Handle;
-use tokio::runtime::current_thread::Runtime;
+use tokio2::runtime::Builder;
 
 use crate::config::System;
-use crate::server::StatsdServer;
+use crate::stats::STATS;
 use crate::task::Task;
-use crate::{DROPS, INGRESS};
 
 pub(crate) fn start_sync_udp(
     log: Logger,
@@ -42,19 +37,19 @@ pub(crate) fn start_sync_udp(
     // It is crucial for recvmmsg to have one socket per many threads
     // to avoid drops because at lease two threads have to work on socket
     // simultaneously
-    let socket = UdpBuilder::new_v4().unwrap();
-    socket.reuse_address(true).unwrap();
-    socket.reuse_port(true).unwrap();
-    let sck = socket.bind(listen).unwrap();
-    sck.set_nonblocking(mm_async).unwrap();
+    let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).expect("creating UDP socket");
+    socket.set_reuse_address(true).expect("reusing address");
+    socket.set_reuse_port(true).expect("reusing port");
+    socket.set_nonblocking(mm_async).expect("setting O_NONBLOCK option");
+    socket.bind(&listen.into()).expect("binding");
 
     let mm_timeout = if mm_timeout == 0 { config.network.buffer_flush_time } else { mm_timeout };
 
     for i in 0..n_threads {
-        let chans = chans.to_owned();
+        let mut chans = chans.to_owned();
         let log = log.new(o!("source"=>"mudp_thread"));
 
-        let sck = sck.try_clone().unwrap();
+        let sck = socket.try_clone().unwrap();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
         thread::Builder::new()
@@ -66,7 +61,7 @@ pub(crate) fn start_sync_udp(
                     use libc::*;
 
                     let chlen = chans.len();
-                    let mut ichans = chans.iter().cycle();
+                    let mut next_chan = chlen - 1;
 
                     // store mmsghdr array so Rust won't free it's memory
                     let mut mheaders: Vec<mmsghdr> = Vec::with_capacity(mm_packets);
@@ -139,7 +134,6 @@ pub(crate) fn start_sync_udp(
                     }
 
                     loop {
-                        debug!(log, "recvmsg start");
                         // timeout is mutable and changed by every recvmmsg call, so it MUST be inside loop
                         // creating timeout as &mut fails because it's supposedly not dropped
                         let mut timeout = if mm_timeout > 0 {
@@ -170,7 +164,7 @@ pub(crate) fn start_sync_udp(
                                 let mlen = mheaders[i].msg_len as usize;
                                 total_received += mlen;
 
-                                INGRESS.fetch_add(mlen, Ordering::Relaxed);
+                                STATS.ingress.fetch_add(mlen, Ordering::Relaxed);
 
                                 // create address entry in messagemap
                                 let entry = bufmap.entry(addrs[i]).or_insert_with(|| BytesMut::with_capacity(mlen));
@@ -198,7 +192,7 @@ pub(crate) fn start_sync_udp(
                                         // in some ideal world we want all values from the same host to be parsed by the
                                         // same thread, but this could cause load unbalancing between threads in some
                                         // corner cases, i.e. when only few hosts are sending most
-                                        // metrics
+                                        // of the metrics
                                         // TODO: we can work this around by fast-scanning buffer
                                         // for newlines. if more than 2 newlines are there, buffer
                                         // can be split into 3 parts and the middle part can be
@@ -209,15 +203,17 @@ pub(crate) fn start_sync_udp(
                                         let mut hasher = DefaultHasher::new();
                                         hasher.write(&addr);
                                         let ahash = hasher.finish();
-                                        let mut chan = if config.metrics.consistent_parsing {
-                                            chans[ahash as usize % chlen].clone()
+                                        let chan = if config.metrics.consistent_parsing {
+                                            &mut chans[ahash as usize % chlen]
                                         } else {
-                                            ichans.next().unwrap().clone()
+                                            next_chan = if next_chan >= (chlen - 1) { 0 } else { next_chan + 1 };
+                                            &mut chans[next_chan]
                                         };
-                                        chan.try_send(Task::Parse(ahash, buf.take()))
+                                        let buf = buf.split();
+                                        let buflen = buf.len();
+                                        chan.try_send(Task::Parse(ahash, buf))
                                             .map_err(|_| {
-                                                warn!(log, "error sending buffer(queue full?)");
-                                                DROPS.fetch_add(messages as usize, Ordering::Relaxed);
+                                                STATS.drops.fetch_add(buflen, Ordering::Relaxed);
                                             })
                                             .unwrap_or(());
                                     })
@@ -228,8 +224,8 @@ pub(crate) fn start_sync_udp(
                             if errno == EAGAIN {
                             } else {
                                 warn!(log, "UDP receive error";
-                                      "code"=> format!("{}", res),
-                                      "error"=>format!("{}", io::Error::last_os_error())
+                                    "code"=> format!("{}", res),
+                                    "error"=>format!("{}", io::Error::last_os_error())
                                 );
                             }
                         }
@@ -256,10 +252,11 @@ pub(crate) fn start_async_udp(
     // Create a pool of listener sockets
     let mut sockets = Vec::new();
     for _ in 0..async_sockets {
-        let socket = UdpBuilder::new_v4().unwrap();
-        socket.reuse_address(true).unwrap();
-        socket.reuse_port(true).unwrap();
-        let socket = socket.bind(&listen).unwrap();
+        let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).expect("creating UDP socket");
+        socket.set_reuse_address(true).expect("reusing address");
+        socket.set_reuse_port(true).expect("reusing port");
+        socket.bind(&listen.into()).expect("binding");
+
         sockets.push(socket);
     }
 
@@ -270,41 +267,33 @@ pub(crate) fn start_async_udp(
         let chans = chans.to_owned();
         let flush_flags = flush_flags.clone();
         let config = config.clone();
+        let log = log.clone();
         thread::Builder::new()
             .name(format!("bioyino_udp{}", i))
             .spawn(move || {
                 // each thread runs it's own runtime
-                let mut runtime = Runtime::new().expect("creating runtime for counting worker");
-
+                let mut runtime = Builder::new().basic_scheduler().enable_all().build().expect("creating runtime for test");
                 // Inside each green thread
                 for _ in 0..greens {
                     // start a listener for all sockets
                     for socket in sockets.iter() {
-                        let mut readbuf = BytesMut::with_capacity(bufsize);
-                        unsafe { readbuf.set_len(bufsize) }
                         let chans = chans.clone();
                         // create UDP listener
                         let socket = socket.try_clone().expect("cloning socket");
-                        let socket = UdpSocket::from_std(socket, &Handle::default()).expect("adding socket to event loop");
 
-                        let server = StatsdServer::new(
-                            socket,
+                        runtime.spawn(crate::server::async_statsd_server(
+                            log.clone(),
+                            socket.into(),
                             chans.clone(),
-                            HashMap::new(),
                             config.clone(),
                             bufsize,
-                            0,
                             i,
-                            readbuf,
                             flush_flags.clone(),
-                            i,
-                        );
-
-                        runtime.spawn(server.into_future());
+                        ));
                     }
                 }
 
-                runtime.block_on(empty::<(), ()>()).expect("starting runtime for async UDP");
+                runtime.block_on(pending::<()>())
             })
             .expect("creating UDP reader thread");
     }

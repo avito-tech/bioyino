@@ -2,7 +2,16 @@
 # Required options are filled with default values
 # Non-required options are commented with defaul values in comments
 
-verbosity = "warn"
+# set verbosity of console messages, use "off" to disable
+verbosity-console = "warn"
+
+# set verbosity of syslog messages, use "off" to disable
+#verbosity-syslog = "off"
+
+# become a unix daemon: will be done in a standard unix
+# console verbosity will be turned off in this mode
+# NOTE: syslog verbosity will stay the same, and there will be no loggind at all if it is turned off
+#daemon = false
 
 # Number of network worker threads in any mode, use 0(not recommended) to use all CPU cores
 n-threads = 4
@@ -148,47 +157,67 @@ snapshot-interval = 1000
 # separate - in a separate thread pool
 mode = "single"
 
-# available values: smart (explained below), name, tag, both
-# smart means uto detection based on existence of tags in the metric,
-# so, for example sum for `some.metric` will be aggregated as `some.metric.sum`
-# but for `some.metric;tag=value` it will automatically become `some.metric;tag=value;aggregate=sum`
-destination = "smart"
-
 # updates aggregate is usually a debug value than some real one
 # also thi is the only one used for every type of metric, not only ms
 # so it's reasonable to avoid receiving a doubled amount of all metrics
 # This option allows to receive only metrics updated too often
 update-count-threshold = 200
 
-# a list of aggregates gatheredfor each ms-typed metric
-# please, note that setting this value will define the exact way, so, i.e. ["mean"] will gather ONLY ONE aggregate
+# a list of aggregates gathered per type of metric
+# Setting this value will define the exact way, so, i.e. ["mean"] will gather ONLY ONE aggregate
 #
-# To add new percentiles an integer value with "precentile-" prefix should be used.
+# To add new percentiles an integer value with "percentile-" prefix should be used.
 # It will then be "appended" (in reality this is not string based calculation) with "0."
 # For example, "percentile-9999" will become 0.9999th percentile
 #
-# this is the full list of default values
-#ms-aggregates = [ "count", "last", "min", "max", "sum", "median", "mean", "updates", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
+# this is the full list of default values for timer
+#aggregates.timer = [ "count", "last", "min", "max", "sum", "median", "mean", "updates", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
 
-# these attributes allow to change naming of aggregates in name postfix, prefix or in tags
-# by default names are the same as aggregate names, except for percentiles
-# percentile postfixes by default look like "percentile.99"
+# an example for gauge with "updates" aggregate turned off
+#aggregates.gauge = [ "value" ]
 
-# NOT defaults, just example
-#postfix-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+# Naming section covers all aspects of changing metric name according to different settings
+# there is nothing to set in [naming] section, only subsections
+# Keys of map in this section are metric types: gauge, counter, diff-counter, timer, set
+# All sections have same set of parameters.
+# More examples can be seen in docs/aggregation.md file.
+[naming.default]
+# These setting will be applied for all unspecified naming parts.
+# # for example if naming.set does not exist or naming.set.tag-values is not specified,
+# the tag-values from this section will be used instead, excluding the impossible aggregates
 
-# prefix specific aggregates with specified string
-# all prefixes are empty by default
-# NOTE: you most probably want EITHER prefix or postfix, so having prefix specified here,
-# don't forget to explicitly set postfix to ""
-#
-# NOT defaults, just example
-#prefix-replacements = { "updates" = "resources.monitoring.bioyino.updates" }
+## available values: smart (explained below), name, tag, both
+# smart means detection based on existence of tags in the metric,
+# so, for example sum for `some.metric` will be aggregated as `some.metric.sum`
+# but for `some.metric;tag=value` it will automatically become `some.metric;tag=value;aggregate=sum`
+destination = "smart"
 
-#tag-replacements = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50" }
+## This will be a global prefix for all metrics
+prefix = "resources.monitoring.bioyino"
 
-# the default tag name taken when replacement is not specified
-# tag-name = "aggregate"
+## this allows to override the default prefix for specific metric types
+# Example:
+# This will make all medians and update counters have specific namespace
+#prefix-overrides = { "updates" = "metrics.updates", "median" = "all.medians" }
+
+## Tag name to specific aggregation type in tags
+# tag = "aggregate"
+
+## This aloows overriding postfix names for specific aggregates.
+# By default the names are the same as keys (see aggregation section for a full list)
+# The percentiles are named like in previous versions of bioyino: with dot, got get tree-based structure
+# I.e precentile-99 aggregate for some.metric becomes some.metric.percentile.99
+postfixes = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50", "updates" = "" }
+
+## this is the same as for postfixes, but for tag values
+# Example:
+# This setting will aggregate max for some.metric;tag=value into some.metric;aggregate=upper;tag=value
+# Percentile metrics are by default exactly the same as in postfixes: i.e. percentile.99
+# tag-values = { "max" = "upper" }
+
+## Example of overriding some naming options for timer
+#[naming.timer]
+#prefix-overrides = { "updates" = "metrics.timer.update-counts" }
 
 # Settings for internal Raft
 [raft]

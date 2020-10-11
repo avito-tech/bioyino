@@ -8,7 +8,7 @@ use rand::random;
 use slog::{warn, Logger};
 
 use futures::future::lazy;
-use net2::TcpBuilder;
+use socket2::Socket;
 use tokio::runtime::current_thread::spawn;
 
 use raft_tokio::raft_consensus::persistent_log::mem::MemLog;
@@ -86,11 +86,11 @@ pub(crate) fn start_internal_raft(options: Raft, logger: Logger) {
     let client_bind = options.client_bind;
     let options = options.get_raft_options();
 
-    let conn_hook = move |socket: &mut StdTcpStream| -> Result<(), io::Error> {
+    let conn_hook = move |std_socket: &mut StdTcpStream| -> Result<(), io::Error> {
         if let Some(listen) = client_bind {
-            let builder = unsafe { TcpBuilder::from_raw_fd(socket.as_raw_fd()) };
-            builder.bind(listen)?;
-            *socket = builder.to_tcp_stream()?; // ensure the ownership is passed back from builder
+            let socket = unsafe { Socket::from_raw_fd(std_socket.as_raw_fd()) };
+            socket.bind(&listen.into())?;
+            *std_socket = socket.into_tcp_stream(); // ensure the ownership is passed back from builder
         }
         Ok(())
     };
