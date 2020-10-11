@@ -1,6 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{atomic::Ordering, Arc};
 
 use bytes::{BufMut, BytesMut};
 use futures3::channel::mpsc::UnboundedSender;
@@ -12,12 +12,12 @@ use slog::{info, warn, Logger};
 use tokio2::spawn;
 
 use bioyino_metric::parser::{MetricParser, MetricParsingError, ParseErrorHandler};
-use bioyino_metric::{name::MetricName, Metric};
+use bioyino_metric::{name::MetricName, Metric, MetricTypeName};
 
 use crate::aggregate::{aggregate_task, AggregationData};
 use crate::config::System;
 
-use crate::{s, Cache, Float, ConsensusKind, IS_LEADER};
+use crate::{s, Cache, ConsensusKind, Float, IS_LEADER};
 
 #[derive(Debug)]
 pub enum Task {
@@ -32,16 +32,16 @@ pub enum Task {
 
 fn update_metric(cache: &mut Cache, name: MetricName, metric: Metric<Float>) {
     let ename = name.clone();
-    let em = metric.clone();
+    let em = MetricTypeName::from_metric(&metric);
     match cache.entry(name) {
         Entry::Occupied(ref mut entry) => {
-            let mtype = { entry.get().mtype.clone() };
-            entry.get_mut().accumulate(metric.clone()).unwrap_or_else(|_| {
+            let mtype = MetricTypeName::from_metric(&entry.get());
+            entry.get_mut().accumulate(metric).unwrap_or_else(|_| {
                 logw!(
-                    "could not accumulate {:?} : {:?} into {:?} in task",
+                    "could not accumulate {:?}: type '{}' into type '{}'",
                     String::from_utf8_lossy(&ename.name[..]),
-                    em,
-                    mtype
+                    em.to_string(),
+                    mtype.to_string(),
                 );
                 s!(agg_errors);
             });
@@ -86,7 +86,7 @@ impl TaskRunner {
                         .and_modify(|(times, _)| {
                             *times = 0;
                         })
-                    .or_insert((0, BytesMut::with_capacity(len)));
+                        .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf
@@ -157,15 +157,24 @@ impl TaskRunner {
                 // BUT if we use exactly the same size, it may grow infinitely in long term
                 // so we halve the size so it could be reduced if ingress flow amounts
                 // become lower
+
+                // TODO: we could avoid this allocation when we don't need it
+                // but it would be hard to get size decrease until shrink_to method
+                // is stabilized
+                //
+                // if it does, we can
+                // { long.clear()
+                // long.shrink_to(prev_len / 2) }
                 let mut rotated = HashMap::with_capacity(self.long.len() / 2);
                 std::mem::swap(&mut self.long, &mut rotated);
                 if let Some(mut c) = channel {
                     let log = self.log.clone();
-                    spawn(async move { c.send(rotated).await
-                        .unwrap_or_else(|_|{
+                    spawn(async move {
+                        c.send(rotated).await.unwrap_or_else(|_| {
                             s!(queue_errors);
                             info!(log, "task could not send rotated metric, receiving thread may be dead");
-                        }); });
+                        });
+                    });
                 }
                 self.buffers.retain(|_, (ref mut times, _)| {
                     *times += 1;
