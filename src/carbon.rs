@@ -13,6 +13,7 @@ use futures3::stream::{StreamExt};
 use log::warn;
 use slog::{error, info, o, Logger, debug};
 
+use tokio2::spawn;
 use tokio2::net::TcpStream;
 use tokio2::runtime::Builder;
 use tokio2::time::{interval_at, Instant};
@@ -98,6 +99,7 @@ impl CarbonWorker {
                 let carbon_log = log.clone();
                 let carbon = backend_opts.clone();
                 let chunk_size = if metrics.len() > carbon.chunks { metrics.len() / carbon.chunks } else { 1 };
+                let mut senders = Vec::new();
                 for (nth, chunk) in metrics.chunks(chunk_size).enumerate() {
                     let retry_log = carbon_log.clone();
                     let elog = carbon_log.clone();
@@ -120,10 +122,13 @@ impl CarbonWorker {
                         let client = CarbonBackend::new(options.clone(), ts, chunk.clone(), retry_log.clone());
                         client.run()
                     });
-                    retrier.await.unwrap_or_else(move |e| {
+                    let handle = spawn(async move { retrier.await.unwrap_or_else(move |e| {
                         error!(elog.clone(), "failed to send chunk to graphite"; "chunk" => format!("{}", nth), "error"=>format!("{:?}",e));
+                    })
                     });
+                    senders.push(handle);
                 }
+                futures3::future::join_all(senders).await
             };
             runtime.block_on(carbon_sender);
         } else {
