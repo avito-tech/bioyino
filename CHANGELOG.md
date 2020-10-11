@@ -22,6 +22,7 @@ Instead of sending each snapshot in a single connection with backoff settings, i
 * `max_snapshots` option has been added, allowing to set maximum number of snapshots _per remote node_ stored in ring buffer
 * new endpoint `/stats` is available at management server (HTTP on port 8137)
 * becoming daemon is available via `daemon` option in config, the setting can also be overrided by `-f`/`--foreground` command line options
+* fixed an incorrect behaviour when dropping of incoming data was not actually happening when queue is full, and memory was growing instead
 
 ## Internal changes ##
 * the runtime has been updated to new rust async paradigm with tokio-2 and futures-3 (except raft and consul)
