@@ -86,7 +86,7 @@ impl TaskRunner {
                         .and_modify(|(times, _)| {
                             *times = 0;
                         })
-                        .or_insert((0, BytesMut::with_capacity(len)));
+                    .or_insert((0, BytesMut::with_capacity(len)));
                     prev_buf.reserve(buf.len());
                     prev_buf.put(buf);
                     prev_buf
@@ -297,14 +297,12 @@ mod tests {
         let metric = runner.short.get(&key).unwrap().clone();
         assert_eq!(metric.value, 1000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(1i8)));
-        assert_eq!(metric.sampling, None);
 
         // expect tags to be sorted after parsing
         let key = new_name("gorets2;t2=fuck;tag3=shit");
         let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value, 1000f64);
+        assert_eq!(metric.value, 2000f64);
         assert_eq!(metric.mtype, MetricType::Gauge(Some(-1i8)));
-        assert_eq!(metric.sampling, Some(0.5f32));
     }
 
     /*
