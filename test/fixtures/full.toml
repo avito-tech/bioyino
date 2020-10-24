@@ -24,8 +24,8 @@ round-timestamp = "up"
 mode = "separate"
 threads = 8
 update-count-threshold = 10
-aggregates.timer = [ "count", "updates", "min", "max", "median", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999", "percentile-80" ]
-aggregates.set = [ "count", "count", "value"]
+aggregates.timer = [ "count", "updates", "min", "max", "median", "rate", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999", "percentile-80" ]
+aggregates.set = [ "count", "count", "value", "rate"]
 #ms-aggregates = [ "count",  "min", "max", "sum", "median", "mean", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
 
 [naming.default]

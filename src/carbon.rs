@@ -42,7 +42,9 @@ pub async fn carbon_timer(
     if options.chunks == 0 {
         options.chunks = 1
     }
-    let agg_opts = AggregationOptions::from_config(aggregation, naming, log.clone())?;
+
+    let interval = (options.interval as f64 / 1000f64).into();
+    let agg_opts = AggregationOptions::from_config(aggregation, interval, naming, log.clone())?;
     let log = log.new(o!("thread"=>"carbon"));
     loop {
         carbon_timer.tick().await;
@@ -65,6 +67,8 @@ pub struct CarbonWorker {
 impl CarbonWorker {
     pub fn new(log: Logger, agg_opts: Arc<AggregationOptions>, backend_opts: Carbon, chans: Vec<Sender<Task>>) -> Result<Self, GeneralError> {
         let ts = SystemTime::now().duration_since(time::UNIX_EPOCH).map_err(GeneralError::Time)?.as_secs();
+
+        let log = log.new(o!("ts"=>ts.clone()));
         Ok(Self {
             ts,
             log,
@@ -175,7 +179,7 @@ impl CarbonBackend {
             RoundTimestamp::Up => ts - (ts % interval) + interval,
         };
         let ts = ts.to_string();
-        let log = log.new(o!("module"=>"carbon backend", "ts"=>ts.clone()));
+        let log = log.new(o!("module"=>"carbon backend"));
 
         Self {
             options,
@@ -301,7 +305,7 @@ mod test {
         agg_opts.round_timestamp = RoundTimestamp::Up;
         let naming = config::default_namings();
 
-        let agg_opts = AggregationOptions::from_config(agg_opts, naming, log.clone()).unwrap();
+        let agg_opts = AggregationOptions::from_config(agg_opts, 30f64, naming, log.clone()).unwrap();
         let options = CarbonClientOptions {
             addr: "127.0.0.1:2003".parse().unwrap(),
             bind: None,

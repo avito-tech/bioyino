@@ -207,8 +207,12 @@ impl Default for Aggregation {
     }
 }
 
+// NOTE: while working with configuration values, the rate aggregate is intentionally set
+// to None, because we only want aggregation interval at the very late stage (when we are ready to
+// aggregate something) and in some future it may differ depending on backend type or other
+// settings
 pub(crate) fn all_aggregates() -> HashMap<MetricTypeName, Vec<Aggregate<Float>>> {
-    let mut map = bioyino_metric::aggregate::possible_aggregates();
+    let mut map = bioyino_metric::aggregate::possible_aggregates(None);
     let timers = map.get_mut(&MetricTypeName::Timer).expect("only BUG in possible_aggregates can panic here");
     timers.push(Aggregate::Percentile(0.75, 75));
     timers.push(Aggregate::Percentile(0.95, 95));
@@ -638,7 +642,8 @@ mod tests {
         config.prepare().expect("preparing config");
 
         let log = prepare_log("parse_full_config test");
-        let aopts = AggregationOptions::from_config(config.aggregation, config.naming, log).expect("checking aggregate options");
+        let aopts = AggregationOptions::from_config(config.aggregation, config.carbon.interval as f64 / 1000f64, config.naming, log)
+            .expect("checking aggregate options");
         for (ty, _) in all_aggregates() {
             // all_aggregates contain all types and all possible aggregate pairs
             // so we must check aggregation_options has all of them after conversion

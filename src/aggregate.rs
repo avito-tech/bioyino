@@ -41,7 +41,7 @@ pub struct AggregationOptions {
 }
 
 impl AggregationOptions {
-    pub(crate) fn from_config(config: Aggregation, naming: HashMap<MetricTypeName, Naming>, log: Logger) -> Result<Arc<Self>, ConfigError> {
+    pub(crate) fn from_config(config: Aggregation, interval: Float, naming: HashMap<MetricTypeName, Naming>, log: Logger) -> Result<Arc<Self>, ConfigError> {
         let Aggregation {
             round_timestamp,
             mode,
@@ -78,7 +78,7 @@ impl AggregationOptions {
         // First task: deal with aggregates to be counted
         // consider 2 cases:
         // 1. aggregates is not specified at all, then the default value of all_aggregates() has
-        //    been  used already
+        //    been used already
         // 2. aggregates is defined partially per type, then we take only replacements specified
         //    for type and take others from defaults wich is in all_aggregates()
 
@@ -130,6 +130,16 @@ impl AggregationOptions {
                 opts.namings.insert((ty.clone(), agg.clone()), noptions);
             }
         }
+
+        // Now we can set the correct rate value
+        for aggs in opts.aggregates.values_mut() {
+            for agg in aggs {
+                if let Aggregate::Rate(ref mut r) = agg {
+                    *r = Some(interval)
+                }
+            }
+        }
+
         Ok(Arc::new(opts))
     }
 }
@@ -400,7 +410,7 @@ mod tests {
 
         let naming = config::default_namings(); //;.get(&timer).unwrap().clone();
 
-        let options = AggregationOptions::from_config(config, naming, log.clone()).unwrap();
+        let options = AggregationOptions::from_config(config, 30f64, naming, log.clone()).unwrap();
 
         let (backend_tx, backend_rx) = mpsc::unbounded();
 

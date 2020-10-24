@@ -203,6 +203,7 @@ pub(crate) fn start_sync_udp(
                                         let mut hasher = DefaultHasher::new();
                                         hasher.write(&addr);
                                         let ahash = hasher.finish();
+
                                         let chan = if config.metrics.consistent_parsing {
                                             &mut chans[ahash as usize % chlen]
                                         } else {
