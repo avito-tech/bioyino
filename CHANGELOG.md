@@ -1,3 +1,8 @@
+# Release 0.7.1 #
+
+* fixed a bug when all snapshots were going to first thread, making this thread more busy than others bottlenecking aggregation
+
+ 
 # Release 0.7.0 #
 
 ## Incompatible changes ##
