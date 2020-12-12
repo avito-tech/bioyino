@@ -127,7 +127,11 @@ impl AggregationOptions {
                     // aggregate we use an empty value as a 'signal'
                     noptions.tag = b""[..].into();
                 }
-                opts.namings.insert((ty.clone(), agg.clone()), noptions);
+                if let Aggregate::Rate(None) = agg {
+                    opts.namings.insert((ty.clone(), Aggregate::Rate(Some(interval))), noptions);
+                } else {
+                    opts.namings.insert((ty.clone(), agg.clone()), noptions);
+                }
             }
         }
 
@@ -234,8 +238,8 @@ impl Aggregator {
                         };
                         aggregate_task(task_data);
                     })
-                    .last();
-            }
+                .last();
+                }
             AggregationMode::Common => {
                 cache
                     .into_iter()
@@ -250,8 +254,8 @@ impl Aggregator {
                         let mut chan = chans[num % chans.len()].clone();
                         spawn(async move { chan.send(Task::Aggregate(task_data)).await });
                     })
-                    .last();
-            }
+                .last();
+                }
             AggregationMode::Separate => {
                 let pool = ThreadPoolBuilder::new()
                     .thread_name(|i| format!("bioyino_agg{}", i))
@@ -337,23 +341,23 @@ pub fn aggregate_task(data: AggregationData) {
                 _ => Some((name.clone(), typename, *aggregate, value)),
             }
         })
-        .map(|data| {
-            let mut response = response.clone();
-            let respond = async move { response.send(data).await };
+    .map(|data| {
+        let mut response = response.clone();
+        let respond = async move { response.send(data).await };
 
-            match mode {
-                AggregationMode::Separate => {
-                    // In the separate mode there is no runtime, so we just run future
-                    // synchronously
-                    futures3::executor::block_on(respond).expect("responding thread: error sending aggregated metrics back");
-                }
-                _ => {
-                    spawn(respond);
-                }
+        match mode {
+            AggregationMode::Separate => {
+                // In the separate mode there is no runtime, so we just run future
+                // synchronously
+                futures3::executor::block_on(respond).expect("responding thread: error sending aggregated metrics back");
             }
-        })
-        .last();
-}
+            _ => {
+                spawn(respond);
+            }
+        }
+    })
+    .last();
+    }
 
 #[cfg(test)]
 mod tests {
@@ -400,8 +404,8 @@ mod tests {
 
         //"percentile-80".into());
         /*config.postfix_replacements.insert("percentile-80".into(), "percentile80".into());
-        config.postfix_replacements.insert("min".into(), "lower".into());
-        */
+          config.postfix_replacements.insert("min".into(), "lower".into());
+          */
         // TODO: check tag replacements
         //config.tag_replacements.insert("percentile-80".into(), "p80".into());
         config.update_count_threshold = 1;
@@ -439,10 +443,15 @@ mod tests {
                     .clone()
                     .into_iter()
                     .map(|agg| Aggregate::<f64>::try_from(agg).unwrap())
-                    .chain(Some(Aggregate::Percentile(0.8, 80)))
+                    .map(|agg| if agg == Aggregate::Rate(None) {
+                        Aggregate::Rate(Some(30f64))
+                    } else {
+                        agg
+                    })
+                .chain(Some(Aggregate::Percentile(0.8, 80)))
                     .map(move |agg| (key.clone(), agg))
             })
-            .flatten()
+        .flatten()
             .collect();
 
         let sent_cache = cache.clone();
@@ -460,34 +469,55 @@ mod tests {
         runtime.spawn(aggregator.run());
 
         let required_len = required_aggregates.len();
+
+        // When things happen inside threads, panics are catched by runtime.
+        // So test did not fail correctly event on asserts inside
+        // To avoid this, we make a fail counter which we check afterwards
+
+        use std::sync::Mutex;
+        let fails = Arc::new(Mutex::new(0usize));
+
+        let inner_fails = fails.clone();
         let receive = async move {
             let result = backend_rx.collect::<Vec<_>>().await;
             // ensure aggregated data has ONLY required aggregates and no other shit
             for (n, _) in cache {
                 // each metric should have all aggregates
                 for (rname, ragg) in &required_aggregates {
-                    assert!(
-                        result.iter().position(|(name, _, ag, _)| (name, ag) == (&rname, &ragg)).is_some(),
-                        "could not find {:?}",
-                        ragg
-                    );
-                    //dbg!(result);
+                    if !result
+                        .iter()
+                            .position(|(name, _, ag, _)| {
+                                //
+                                //if let (&Aggregate::Rate(_), &Aggregate::Rate(_)) = (ag, &ragg) {
+                                if false {
+                                    // compare rate aggregate without internal value
+                                    &name == &rname
+                                } else {
+                                    (name, ag) == (&rname, &ragg)
+                                }
+                            })
+                            .is_some()
+                            {
+                                let mut fails = inner_fails.lock().unwrap();
+                                *fails += 1;
+                                println!("could not find {:?}", ragg);
+                            }
+                            }
+
+                    // length should match the length of aggregates
+
+                    if result.len() != required_len {
+                        let mut fails = inner_fails.lock().unwrap();
+                        *fails += 1;
+                        println!("found other than required aggregates for {}", String::from_utf8_lossy(&n.name),);
+                    }
                 }
+            };
 
-                // length should match the length of aggregates
+            runtime.spawn(receive);
 
-                assert_eq!(
-                    result.len(),
-                    required_len,
-                    "found other than required aggregates for {}",
-                    String::from_utf8_lossy(&n.name),
-                );
-            }
-        };
-
-        runtime.spawn(receive);
-
-        let test_delay = async { delay_for(Duration::from_secs(2)).await };
-        runtime.block_on(test_delay);
+            let test_delay = async { delay_for(Duration::from_secs(2)).await };
+            runtime.block_on(test_delay);
+            assert_eq!(Arc::try_unwrap(fails).unwrap().into_inner().unwrap(), 0);
+        }
     }
-}

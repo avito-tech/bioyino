@@ -38,7 +38,7 @@ tag-values = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.5
 
 [naming.timer]
 prefix = "split.timers"
-prefix-overrides = { "updates" = "qewr" }
+prefix-overrides = { "updates" = "qewr", "rate" = "rate30" }
 
 [naming.set]
 tag-values = { "count" = "set.counts" }
