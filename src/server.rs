@@ -56,7 +56,8 @@ pub async fn async_statsd_server(
         if buf.remaining_mut() < bufsize {
             buf.reserve(size + 1)
         }
-        buf.put_slice(&readbuf);
+
+        buf.put_slice(&readbuf[..size]);
 
         let flush = flush_flags.get(thread_idx).unwrap().swap(false, Ordering::SeqCst);
         if recv_counter >= config.network.buffer_flush_length || flush {
