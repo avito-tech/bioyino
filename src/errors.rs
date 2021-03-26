@@ -7,7 +7,7 @@ pub enum GeneralError {
     Io(#[from] ::std::io::Error),
 
     #[error("Error when creating timer: {}", _0)]
-    Timer(#[from] ::tokio::timer::Error),
+    Timer(#[from] ::tokio1::timer::Error),
 
     #[error("getting system time")]
     Time(#[from] ::std::time::SystemTimeError),
@@ -23,6 +23,9 @@ pub enum GeneralError {
 
     #[error("unknown consensus state")]
     UnknownState,
+
+    #[error("metric error")]
+    Metric(#[from] bioyino_metric::MetricError),
 
     #[error("configuration error: {}", _0)]
     Configuration(#[from] crate::config::ConfigError),

@@ -1,5 +1,11 @@
-use vergen::{generate_cargo_keys, ConstantsFlags};
+use vergen::{vergen, Config, ShaKind};
 
 fn main() {
-    generate_cargo_keys(ConstantsFlags::all()).expect("Unable to generate cargo keys!");
+    let mut config = Config::default();
+    *config.build_mut().timestamp_mut() = true;
+    *config.git_mut().commit_timestamp_mut() = true;
+    *config.git_mut().sha_kind_mut() = ShaKind::Short;
+
+    // Generate the instructions
+    vergen(config).expect("Unable to generate cargo keys!");
 }

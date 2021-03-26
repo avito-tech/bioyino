@@ -9,14 +9,20 @@ use bytes::Bytes;
 use raft_tokio::RaftOptions;
 use thiserror::Error;
 
-use crate::aggregate::AggregationMode;
 use crate::management::{ConsensusAction, LeaderAction, MgmtCommand};
-use crate::{ConsensusKind, ConsensusState, Float};
+use crate::Float;
 use bioyino_metric::{
     aggregate::Aggregate,
-    metric::MetricTypeName,
+    metric::{MetricTypeName, ProtocolVersion},
     name::{AggregationDestination, NamingOptions},
 };
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ConsensusKind {
+    None,
+    Internal,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
@@ -36,9 +42,6 @@ pub struct System {
     /// Internal Raft settings
     pub raft: Raft,
 
-    /// Consul settings
-    pub consul: Consul,
-
     /// Metric settings
     pub metrics: Metrics,
 
@@ -54,10 +57,13 @@ pub struct System {
     /// Number of networking threads, use 0 for number of CPUs
     pub n_threads: usize,
 
-    /// Number of aggregating(worker) threads, set to 0 to use all CPU cores
+    /// Number of parsing threads, set to 0 to use all CPU cores
+    pub p_threads: usize,
+
+    /// Number of worker threads, set to 0 to use all CPU cores
     pub w_threads: usize,
 
-    /// Number of core threads, doing other work, set to 0 to use all CPU cores
+    /// Number of async core threads, doing async work, set to 0 to use all CPU cores
     pub c_threads: usize,
 
     /// queue size for single counting thread before packet is dropped
@@ -85,12 +91,12 @@ impl Default for System {
             daemon: false,
             network: Network::default(),
             raft: Raft::default(),
-            consul: Consul::default(),
             metrics: Metrics::default(),
             aggregation: Aggregation::default(),
             naming: default_namings(),
             carbon: Carbon::default(),
             n_threads: 4,
+            p_threads: 4,
             w_threads: 4,
             c_threads: 4,
             stats_interval: 10000,
@@ -171,12 +177,6 @@ pub struct Aggregation {
     /// Timestamp rounding
     pub round_timestamp: RoundTimestamp,
 
-    /// Choose the way of aggregation
-    pub mode: AggregationMode,
-
-    /// Number of threads when aggregating in "multi" mode
-    pub threads: Option<usize>,
-
     /// Minimal update count to be reported
     pub update_count_threshold: u32,
 
@@ -199,8 +199,6 @@ impl Default for Aggregation {
     fn default() -> Self {
         Self {
             round_timestamp: RoundTimestamp::No,
-            mode: AggregationMode::Single,
-            threads: None,
             update_count_threshold: 200,
             aggregates: all_aggregates().into_iter().map(|(k, v)| (k, Some(v))).collect(),
         }
@@ -212,7 +210,7 @@ impl Default for Aggregation {
 // aggregate something) and in some future it may differ depending on backend type or other
 // settings
 pub(crate) fn all_aggregates() -> HashMap<MetricTypeName, Vec<Aggregate<Float>>> {
-    let mut map = bioyino_metric::aggregate::possible_aggregates(None);
+    let mut map = bioyino_metric::aggregate::possible_aggregates(None, None);
     let timers = map.get_mut(&MetricTypeName::Timer).expect("only BUG in possible_aggregates can panic here");
     timers.push(Aggregate::Percentile(0.75, 75));
     timers.push(Aggregate::Percentile(0.95, 95));
@@ -374,6 +372,9 @@ pub struct Network {
     /// Snapshot client bind address
     pub peer_client_bind: Option<SocketAddr>,
 
+    /// Version of Cap'n Proto protocol to use for encoding peer messages
+    pub peer_protocol: ProtocolVersion,
+
     /// Address and port for management server to listen on
     pub mgmt_listen: SocketAddr,
 
@@ -421,6 +422,7 @@ impl Default for Network {
             listen: "127.0.0.1:8125".parse().unwrap(),
             peer_listen: "127.0.0.1:8136".parse().unwrap(),
             peer_client_bind: None,
+            peer_protocol: ProtocolVersion::V2,
             mgmt_listen: "127.0.0.1:8137".parse().unwrap(),
             bufsize: 1500,
             multimessage: false,
@@ -434,37 +436,6 @@ impl Default for Network {
             nodes: Vec::new(),
             snapshot_interval: 1000,
             max_snapshots: 180,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
-pub struct Consul {
-    /// Start in disabled leader finding mode
-    pub start_as: ConsensusState,
-
-    /// Consul agent address
-    pub agent: SocketAddr,
-
-    /// TTL of consul session, ms (consul cannot set it to less than 10s)
-    pub session_ttl: usize,
-
-    /// How often to renew consul session, ms
-    pub renew_time: usize,
-
-    /// Name of ke to be locked in consul
-    pub key_name: String,
-}
-
-impl Default for Consul {
-    fn default() -> Self {
-        Self {
-            start_as: ConsensusState::Disabled,
-            agent: "127.0.0.1:8500".parse().unwrap(),
-            session_ttl: 11000,
-            renew_time: 1000,
-            key_name: "service/bioyino/lock".to_string(),
         }
     }
 }
@@ -551,7 +522,13 @@ impl System {
     pub fn load() -> Result<(Self, Command), ConfigError> {
         // This is a first copy of args - with the "config" option
         let app = app_from_crate!()
-            .long_version(concat!(crate_version!(), " ", env!("VERGEN_COMMIT_DATE"), " ", env!("VERGEN_SHA_SHORT")))
+            .long_version(concat!(
+                crate_version!(),
+                " ",
+                env!("VERGEN_GIT_COMMIT_TIMESTAMP"),
+                " ",
+                env!("VERGEN_GIT_SEMVER")
+            ))
             .arg(
                 Arg::with_name("config")
                     .help("configuration file path")

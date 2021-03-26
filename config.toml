@@ -151,12 +151,6 @@ snapshot-interval = 1000
 # "no" - use exact timestamp, i.e. no rounding
 # round-timestamp = "no"
 
-# the threading mode of aggregation:
-# single - in a single thread
-# common - in the general thread pool along with parsing ang aggregating metrics
-# separate - in a separate thread pool
-mode = "single"
-
 # updates aggregate is usually a debug value than some real one
 # also thi is the only one used for every type of metric, not only ms
 # so it's reasonable to avoid receiving a doubled amount of all metrics
@@ -181,6 +175,7 @@ update-count-threshold = 200
 # Keys of map in this section are metric types: gauge, counter, diff-counter, timer, set
 # All sections have same set of parameters.
 # More examples can be seen in docs/aggregation.md file.
+
 [naming.default]
 # These setting will be applied for all unspecified naming parts.
 # # for example if naming.set does not exist or naming.set.tag-values is not specified,
@@ -246,20 +241,3 @@ nodes = {}
 # allow binding raft outgoing connnections to specific IP
 # default: not specified, so no bind happens
 # client-bind = "127.0.0.1:8138"
-
-[consul]
-# Start in disabled leader finding mode. This only works while consul is bootstrapping.
-# Can be helpful when there is a danger of agent being inaccessible.
-start-as = "disabled"
-
-# Consul agent address
-agent = "127.0.0.1:8500"
-
-# TTL of consul session, ms (Consul cannot set it to less than 10s)
-session-ttl = 11000
-
-# How often to renew Consul session, ms
-renew-time = 1000
-
-# Key name to lock in Consul
-key-name = "service/bioyino/lock"

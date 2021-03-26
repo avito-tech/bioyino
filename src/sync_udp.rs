@@ -9,21 +9,19 @@ use std::sync::Arc;
 use std::thread;
 
 use bytes::{BufMut, BytesMut};
-use futures3::channel::mpsc::Sender;
-use futures3::future::pending;
+use crossbeam_channel::Sender;
 use slog::{info, o, warn, Logger};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::os::unix::io::AsRawFd;
-use tokio2::runtime::Builder;
 
 use crate::config::System;
+use crate::fast_task::FastTask;
 use crate::stats::STATS;
-use crate::task::Task;
 
 pub(crate) fn start_sync_udp(
     log: Logger,
     listen: SocketAddr,
-    chans: &[Sender<Task>],
+    chans: &[Sender<FastTask>],
     config: Arc<System>,
     n_threads: usize,
     bufsize: usize,
@@ -37,7 +35,7 @@ pub(crate) fn start_sync_udp(
     // It is crucial for recvmmsg to have one socket per many threads
     // to avoid drops because at lease two threads have to work on socket
     // simultaneously
-    let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).expect("creating UDP socket");
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).expect("creating UDP socket");
     socket.set_reuse_address(true).expect("reusing address");
     socket.set_reuse_port(true).expect("reusing port");
     socket.set_nonblocking(mm_async).expect("setting O_NONBLOCK option");
@@ -212,7 +210,7 @@ pub(crate) fn start_sync_udp(
                                         };
                                         let buf = buf.split();
                                         let buflen = buf.len();
-                                        chan.try_send(Task::Parse(ahash, buf))
+                                        chan.try_send(FastTask::Parse(ahash, buf))
                                             .map_err(|_| {
                                                 STATS.drops.fetch_add(buflen, Ordering::Relaxed);
                                             })
@@ -234,68 +232,5 @@ pub(crate) fn start_sync_udp(
                 }
             })
             .expect("starting multimsg thread");
-    }
-}
-
-pub(crate) fn start_async_udp(
-    log: Logger,
-    listen: SocketAddr,
-    chans: &[Sender<Task>],
-    config: Arc<System>,
-    n_threads: usize,
-    greens: usize,
-    async_sockets: usize,
-    bufsize: usize,
-    flush_flags: Arc<Vec<AtomicBool>>,
-) {
-    info!(log, "multimessage is disabled, starting in async UDP mode");
-
-    // Create a pool of listener sockets
-    let mut sockets = Vec::new();
-    for _ in 0..async_sockets {
-        let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).expect("creating UDP socket");
-        socket.set_reuse_address(true).expect("reusing address");
-        socket.set_reuse_port(true).expect("reusing port");
-        socket.bind(&listen.into()).expect("binding");
-
-        sockets.push(socket);
-    }
-
-    for i in 0..n_threads {
-        // Each thread gets the clone of a socket pool
-        let sockets = sockets.iter().map(|s| s.try_clone().unwrap()).collect::<Vec<_>>();
-
-        let chans = chans.to_owned();
-        let flush_flags = flush_flags.clone();
-        let config = config.clone();
-        let log = log.clone();
-        thread::Builder::new()
-            .name(format!("bioyino_udp{}", i))
-            .spawn(move || {
-                // each thread runs it's own runtime
-                let mut runtime = Builder::new().basic_scheduler().enable_all().build().expect("creating runtime for test");
-                // Inside each green thread
-                for _ in 0..greens {
-                    // start a listener for all sockets
-                    for socket in sockets.iter() {
-                        let chans = chans.clone();
-                        // create UDP listener
-                        let socket = socket.try_clone().expect("cloning socket");
-
-                        runtime.spawn(crate::server::async_statsd_server(
-                            log.clone(),
-                            socket.into(),
-                            chans.clone(),
-                            config.clone(),
-                            bufsize,
-                            i,
-                            flush_flags.clone(),
-                        ));
-                    }
-                }
-
-                runtime.block_on(pending::<()>())
-            })
-            .expect("creating UDP reader thread");
     }
 }

@@ -18,27 +18,30 @@ thiserror="^1.0"
 
 libc="^0.2"
 num_cpus="^1.8"
-futures="^0.1"
-tokio="^0.1"
+futures1 = { package = "futures", version = "^0.1" }
+tokio1 = { package = "tokio", version = "^0.1" }
 tokio-io="^0.1"
 #tokio-codec="^0.1"
 
 # new wave
-tokio2 = { package = "tokio", version = "^0.2", features = ["net", "time", "sync", "macros", "io-util", "io-driver", "rt-core", "rt-util", "rt-threaded"] }
-futures3 = { package = "futures", version = "^0.3", features = ["compat"] }
-hyper13 = { package = "hyper", version = "^0.13" }
-trust-dns-resolver = { version = "^0.19" }
+tokio = { version = "^1.0", features = ["net", "time", "sync", "macros", "rt", "rt-multi-thread", "io-util"] }
+tokio-stream = "^0.1"
+tokio-util = { version = "^0.6", features = ["codec", "compat"] }
+futures = { version = "^0.3", features = ["compat"] }
+hyper = { version = "^0.14", features = ["client", "server", "http1", "http2", "tcp"] }
+trust-dns-resolver = { version = "^0.20" }
 url = "^2.1"
-tokio-util = { version = "^0.3", features = ["codec", "compat"] }
-bytes = { version = "^0.5", features = [ "serde" ] }
-ring-channel = {version = "^0.8", features = ["futures_api"]}
-capnp = "^0.13"
-capnp-futures = "^0.13"
+bytes = { version = "^1.0", features = [ "serde" ] }
+async-channel = "^1.6"
+ring-channel = { version = "^0.8", features = ["futures_api"] }
+capnp = "^0.14"
+capnp-futures = "^0.14"
+crossbeam-channel =  "^0.5"
 
 resolve="^0.2"
-socket2 = { version = "^0.3", features = ["reuseport"] }
+array-init="^1.0"
+socket2 = { version = "^0.4", features = ["all"] }
 combine="^4.0"
-hyper="^0.12"
 mime="^0.3"
 serde="^1.0"
 serde_derive="^1.0"
@@ -54,12 +57,11 @@ toml="^0.5"
 ftoa = "^0.1"
 
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
-rand = "^0.7"
-rayon = "^1.0"
+rand = "^0.8"
 #bioyino-metric = "^0.3"
-bioyino-metric = { git = "https://github.com/Albibek/bioyino-metric", branch="0.4.0" }
-#bioyino-metric = { path = "/home/albibek/projects/rust/bioyino-metric" }
+#bioyino-metric = { git = "https://github.com/Albibek/bioyino-metric", branch="0.4.0" }
+bioyino-metric = { path = "/home/albibek/projects/rust/bioyino-metric" }
 
 [build-dependencies]
-capnpc = "^0.12"
-vergen = "^3"
+capnpc = "^0.14"
+vergen = "^5"
