@@ -64,7 +64,7 @@ pub struct System {
     pub w_threads: usize,
 
     /// Number of async core threads, doing async work, set to 0 to use all CPU cores
-    pub c_threads: usize,
+    pub a_threads: usize,
 
     /// queue size for single counting thread before packet is dropped
     pub task_queue_size: usize,
@@ -98,7 +98,7 @@ impl Default for System {
             n_threads: 4,
             p_threads: 4,
             w_threads: 4,
-            c_threads: 4,
+            a_threads: 4,
             stats_interval: 10000,
             task_queue_size: 2048,
             start_as_leader: false,

@@ -1,3 +1,36 @@
+# Release 0.8.0 #
+**WARNING!** This release has **lots** of incompatible changes. Please make sure to read the section below before doing
+important changes in critical infrastructures.
+
+## Incompatible changes ##
+* Consul support has been completely removed. Ensure to remove the consul section from your configuration files and use internal Raft.
+* Threading model received a big rework and should lead to lower memory consumption and lower latencies, especially on higher metric cardinalities. See docs/threading.md for more details.
+* Due to changes in threading:
+    * the following options are removed: `aggregation.mode`, `aggregation.threads`
+    * the following option has been added: `p-threads`
+    * the `c-threads` option is now `a-threads`
+* statsd sampling rate is now completely supported
+* The peer protocol and it's capnp schema is now considered only for internal use. It received a new version and is better structured for this purpose and internal
+metrics representation. Due to this changes:
+    * the new option `network.peer-protocol` has been added to specify an exact version
+    * version 2 **is the default value in 0.8.0**, please consider setting `network.peer-protocol = "1"` explicitly in client configs before upgrading
+    * version 1 will be removed in 0.9.0, all users are recommended to migrate to using v2 since it's release
+* diff-counter metric type has been deprecated to being unituitive and therefore avoided of being unused by anyone
+
+See config.toml for further configuration instructions
+
+## Major changes ##
+* `.rate` aggregate has been added to show number of incoming values per second
+
+## Internal changes ##
+* the internal structure of metrics has changed to make a type system more helping
+* many libraries have their versions updated to latest major versions
+
+## Minor changes
+* two new internal metrics has been added:
+    * `slow-q-len` - number of pending tasks in "slow" threadpool queue
+    * `ingress-metrics-peer` - number of metrics received via TCP
+
 # Release 0.7.0 #
 
 ## Incompatible changes ##

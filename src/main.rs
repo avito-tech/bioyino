@@ -94,7 +94,7 @@ fn main() {
             naming,
             carbon,
             n_threads,
-            c_threads,
+            a_threads,
             stats_interval: s_interval,
             start_as_leader,
             stats_prefix,
@@ -124,7 +124,7 @@ fn main() {
 
     let runtime = Builder::new_multi_thread()
         .thread_name("bioyino_async")
-        .worker_threads(c_threads)
+        .worker_threads(a_threads)
         .enable_all()
         .build()
         .expect("creating runtime for main thread");

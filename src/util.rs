@@ -31,7 +31,7 @@ pub enum OtherError {
     NotFound(String),
 }
 
-#[test]
+#[cfg(test)]
 pub fn prepare_log(root: &'static str) -> Logger {
     // Set logging
     let decorator = slog_term::TermDecorator::new().build();
