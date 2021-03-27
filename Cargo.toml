@@ -59,8 +59,7 @@ ftoa = "^0.1"
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
 rand = "^0.8"
 #bioyino-metric = "^0.3"
-#bioyino-metric = { git = "https://github.com/Albibek/bioyino-metric", branch="0.4.0" }
-bioyino-metric = { path = "/home/albibek/projects/rust/bioyino-metric" }
+bioyino-metric = { git = "https://github.com/Albibek/bioyino-metric", branch="0.5.0" }
 
 [build-dependencies]
 capnpc = "^0.14"
