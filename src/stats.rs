@@ -17,6 +17,7 @@ pub struct Stats {
     pub egress: AtomicUsize,
     pub ingress: AtomicUsize,
     pub ingress_metrics: AtomicUsize,
+    pub ingress_metrics_peer: AtomicUsize,
     pub drops: AtomicUsize,
     pub parse_errors: AtomicUsize,
     pub agg_errors: AtomicUsize,
@@ -28,6 +29,7 @@ pub static STATS: Stats = Stats {
     egress: AtomicUsize::new(0),
     ingress: AtomicUsize::new(0),
     ingress_metrics: AtomicUsize::new(0),
+    ingress_metrics_peer: AtomicUsize::new(0),
     drops: AtomicUsize::new(0),
     parse_errors: AtomicUsize::new(0),
     agg_errors: AtomicUsize::new(0),
@@ -81,12 +83,12 @@ impl OwnStats {
         }
     }
 
-    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8], value: Float) -> (MetricName, Metric<Float>) {
+    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8], value: MetricValue<Float>) -> (MetricName, Metric<Float>) {
         buf.extend_from_slice(self.prefix.as_bytes());
         buf.extend_from_slice(&b"."[..]);
         buf.extend_from_slice(suffix);
         let name = MetricName::new_untagged(buf.split());
-        let metric = Metric::new(MetricValue::Counter(value), None, 1.);
+        let metric = Metric::new(value, None, 1.);
         (name, metric)
     }
 
@@ -100,41 +102,57 @@ impl OwnStats {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
                 if self.interval > 0 {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
-                    let (name, metric) = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), $value);
-                    tokio::task::block_in_place(||
-                        self.chan
+                    let value = MetricValue::Counter($value);
+                    let (name, metric) = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), value);
+                    self.chan
                         .send(SlowTask::AddMetric(name, metric))
                         .map_err(|_| s!(queue_errors))
                         .unwrap_or(())
-                    );
                 }
             };
         }
 
-        add_metric!(egress, "egress");
-        add_metric!(ingress, "ingress");
-        add_metric!(ingress_metrics, "ingress-metric");
-        add_metric!(drops, "drop");
-        add_metric!(agg_errors, "agg-error");
-        add_metric!(parse_errors, "parse-error");
-        add_metric!(queue_errors, "queue-error");
-        add_metric!(peer_errors, "peer-error");
-        {
-            let mut prev = STATS_SNAP.lock().unwrap();
-            *prev = snapshot;
-        }
-        if self.interval > 0 {
-            info!(self.log, "stats";
-                "egress" => format!("{:2}", egress / s_interval),
-                "ingress" => format!("{:2}", ingress / s_interval),
-                "ingress-m" => format!("{:2}", ingress_metrics / s_interval),
-                "drops" => format!("{:2}", drops / s_interval),
-                "a-err" => format!("{:2}", agg_errors / s_interval),
-                "p-err" => format!("{:2}", parse_errors / s_interval),
-                "pe-err" => format!("{:2}", peer_errors / s_interval),
-                "qu-err" => format!("{:2}", queue_errors / s_interval),
-            );
-        }
+        tokio::task::block_in_place(||{
+            add_metric!(egress, "egress");
+            add_metric!(ingress, "ingress");
+            add_metric!(ingress_metrics, "ingress-metric");
+            add_metric!(ingress_metrics_peer, "ingress-metric-peer");
+            add_metric!(drops, "drop");
+            add_metric!(agg_errors, "agg-error");
+            add_metric!(parse_errors, "parse-error");
+            add_metric!(queue_errors, "queue-error");
+            add_metric!(peer_errors, "peer-error");
+
+            // queue len has other type, so macro does not fit here
+            let chlen = self.chan.len() as f64;
+            let qlen = MetricValue::Gauge(chlen);
+            snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
+            let (name, metric) = self.format_metric_carbon(&mut buf, "slow-q-len".as_bytes(), qlen);
+            self.chan
+                .send(SlowTask::AddMetric(name, metric))
+                .map_err(|_| s!(queue_errors))
+                .unwrap_or(());
+
+            // update global snapshot
+            {
+                let mut prev = STATS_SNAP.lock().unwrap();
+                *prev = snapshot;
+            }
+            if self.interval > 0 {
+                info!(self.log, "stats";
+                    "egress" => format!("{:2}", egress / s_interval),
+                    "ingress" => format!("{:2}", ingress / s_interval),
+                    "ingress-m" => format!("{:2}", ingress_metrics / s_interval),
+                    "ingress-m-p" => format!("{:2}", ingress_metrics_peer / s_interval),
+                    "drops" => format!("{:2}", drops / s_interval),
+                    "a-err" => format!("{:2}", agg_errors / s_interval),
+                    "p-err" => format!("{:2}", parse_errors / s_interval),
+                    "pe-err" => format!("{:2}", peer_errors / s_interval),
+                    "qu-err" => format!("{:2}", queue_errors / s_interval),
+                    "qu-len" => format!("{:2}", self.chan.len()),
+                );
+            }
+        });
     }
 
     pub async fn run(mut self) {

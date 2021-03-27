@@ -30,7 +30,8 @@ use crate::slow_task::SlowTask;
 use crate::fast_task::FastTask;
 use crate::util::{bound_stream, resolve_with_port, Backoff};
 use crate::config::System;
-use crate::{s, Cache, Float, ConsensusKind, IS_LEADER};
+use crate::stats::STATS;
+use crate::{s, Cache, Float, ConsensusKind, IS_LEADER,};
 
 const CAPNP_READER_OPTIONS: ReaderOptions = ReaderOptions {
     traversal_limit_in_words: Some(8 * 1024 * 1024 * 1024),
@@ -165,6 +166,7 @@ fn parse_capnp(log: Logger, reader: capnp::message::Reader<capnp::serialize::Own
                         .last();
 
                     debug!(log, "received snapshot v2"; "metrics"=>format!("{}", metrics.len()));
+                    STATS.ingress_metrics_peer.fetch_add(metrics.len(), Ordering::Relaxed);
                     Ok(Some(SlowTask::AddSnapshot(metrics)))
                 }
             }
@@ -176,6 +178,7 @@ fn parse_capnp(log: Logger, reader: capnp::message::Reader<capnp::serialize::Own
         cmsg::Single(reader) => {
             let reader = reader?;
             let (name, metric) = Metric::<Float>::from_capnp_v1(reader)?;
+            STATS.ingress_metrics_peer.fetch_add(1, Ordering::Relaxed);
             Ok(Some(SlowTask::AddMetric(name, metric)))
         }
         cmsg::Multi(reader) => {
@@ -185,6 +188,7 @@ fn parse_capnp(log: Logger, reader: capnp::message::Reader<capnp::serialize::Own
                 .iter()
                 .map(|reader| Metric::<Float>::from_capnp_v1(reader).map(|(name, metric)| metrics.push((name, metric))))
                 .last();
+            STATS.ingress_metrics_peer.fetch_add(metrics.len(), Ordering::Relaxed);
             Ok(Some(SlowTask::AddMetrics(metrics)))
         }
         cmsg::Snapshot(reader) => {
@@ -196,6 +200,7 @@ fn parse_capnp(log: Logger, reader: capnp::message::Reader<capnp::serialize::Own
                 .last();
 
             debug!(log, "received snapshot v1"; "metrics"=>format!("{}", metrics.len()));
+            STATS.ingress_metrics_peer.fetch_add(metrics.len(), Ordering::Relaxed);
             Ok(Some(SlowTask::AddSnapshot(metrics)))
         }
     }
@@ -274,6 +279,7 @@ impl NativeProtocolSnapshot {
             timer.tick().await;
             // send snapshot requests to workers
             let mut outs = Vec::new();
+            debug!(log, "taking snapshot from UDP");
             tokio::task::block_in_place(||{
                 for chan in &fast_chans {
                     let (tx, rx) = oneshot::channel();
@@ -293,6 +299,7 @@ impl NativeProtocolSnapshot {
             // so we wrap them in Arc first
 
             let caches = caches.into_iter().map(Arc::new).collect::<Vec<_>>();
+
             // Send snapshots to aggregation if required
             let is_leader = IS_LEADER.load(Ordering::SeqCst);
 
@@ -300,6 +307,7 @@ impl NativeProtocolSnapshot {
             // no consensus, that cannot make us leader, there is no point of aggregating
             // long cache at all because it will never be sent anywhere
             if !is_leader && config.consensus == ConsensusKind::None {
+                debug!(log, "skipped aggregating UDP snapshot (not leader)");
             } else  {
                 tokio::task::block_in_place(||{
                     for cache in &caches {
@@ -308,7 +316,7 @@ impl NativeProtocolSnapshot {
                             info!(log, "task could not send snapshot, receiving thread may be dead");
                         });
                     }
-                })
+                });
             }
             // after that clone snapshots to all nodes' queues
             for ch in &mut node_chans {
@@ -321,6 +329,7 @@ impl NativeProtocolSnapshot {
                     })
                 .unwrap_or(());
             }
+            debug!(log, "UDP snapshot done");
         }
     }
 }
@@ -342,7 +351,7 @@ pub struct SnapshotSender {
 
 impl SnapshotSender {
     pub fn new(rx: RingReceiver<Vec<Arc<Cache>>>, options: SnapshotClientOptions, log: Logger) -> Self {
-        let log = log.new(o!("remote"=>options.address.clone()));
+        let log = log.new(o!("task"=>"snapshot sender", "remote"=>options.address.clone()));
         Self { rx, options, log }
     }
 
