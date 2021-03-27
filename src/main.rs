@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{panic, process, thread};
 
-use slog::{info, o};
+use slog::{info, o, debug};
 
 use futures::future::{pending, TryFutureExt};
 
@@ -123,7 +123,7 @@ fn main() {
     slog_stdlog::init().unwrap();
 
     let runtime = Builder::new_multi_thread()
-        .thread_name("bioyino_main")
+        .thread_name("bioyino_async")
         .worker_threads(c_threads)
         .enable_all()
         .build()
@@ -157,7 +157,7 @@ fn main() {
     }));
 
     let elog = log.clone();
-    let fast_chans = start_fast_threads(log.clone(), config.clone())
+    let (fast_chans, fast_prio_chans) = start_fast_threads(log.clone(), config.clone())
         .map_err(move |e| error!(elog, "starting parsing worker threads"; "error" => format!("{}", e)))
         .expect("starting parsing worker thread");
 
@@ -265,7 +265,7 @@ fn main() {
     let snapshot = NativeProtocolSnapshot::new(
         &log,
         config.clone(),
-        &fast_chans,
+        &fast_prio_chans,
         slow_chan.clone(),
     );
 
@@ -303,7 +303,7 @@ fn main() {
 
             loop {
                 timer.tick().await;
-                info!(rlog, "buffer flush requested");
+                debug!(rlog, "buffer flush requested");
                 flags.iter().map(|flag| flag.swap(true, Ordering::SeqCst)).last();
             }
         };

@@ -48,6 +48,7 @@ pub async fn carbon_timer(
         carbon_timer.tick().await;
         let is_leader = IS_LEADER.load(Ordering::SeqCst);
         if is_leader {
+
             info!(log, "leader ready to aggregate metrics");
 
             // create rotation task, send it and wait for an answer
@@ -61,6 +62,7 @@ pub async fn carbon_timer(
                 error!(log, "error receiving metric cache, worker thread may have panicked");
                 continue
             };
+
             let (agg_tx, mut agg_rx) = async_channel::unbounded();
 
             // then send each shard to be aggregated separately
@@ -75,6 +77,7 @@ pub async fn carbon_timer(
                         error!(log, "error sending aggregation task");
                     });
             }
+            drop(agg_tx);
 
             // wait for answers nd collect data for further sending
             let mut aggregated = Vec::new();
@@ -280,7 +283,9 @@ impl CarbonBackend {
             None => TcpStream::connect(&addr).await?,
         };
 
-        info!(log, "sending metrics chunk"; "metrics"=>format!("{}", metrics.len()));
+
+        let chunk_len = metrics.iter().fold(0, |acc, elem| { acc + elem.len() } );
+        info!(log, "sending metrics chunk"; "metrics"=>format!("{}", chunk_len));
         let mut writer = CarbonCodec::new(ts.clone(), options.agg.clone()).framed(conn);
 
         for m in metrics.iter().flatten() {

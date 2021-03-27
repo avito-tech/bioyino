@@ -31,12 +31,17 @@ pub enum OtherError {
     NotFound(String),
 }
 
+#[test]
 pub fn prepare_log(root: &'static str) -> Logger {
     // Set logging
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
     let filter = slog::LevelFilter::new(drain, slog::Level::Trace).fuse();
-    let drain = slog_async::Async::new(filter).build().fuse();
+    let drain = slog_async::Async::new(filter)
+        .overflow_strategy(slog_async::OverflowStrategy::Block)
+        .thread_name("bioyino_log".into())
+        .chan_size(2048)
+        .build().fuse();
     slog::Logger::root(drain, o!("program"=>"test", "test"=>root))
 }
 
@@ -45,7 +50,11 @@ pub(crate) fn setup_logging(daemon: bool, verbosity_console: Verbosity, verbosit
         ($drain:ident) => {
             {
                 let values = o!("program"=>"bioyino");
-                let drain = slog_async::Async::new($drain).build().fuse();
+                let drain = slog_async::Async::new($drain)
+                    .thread_name("bioyino_log".into())
+                    .chan_size(2048)
+                    .build()
+                    .fuse();
                 slog::Logger::root(drain, values)
             }
         }

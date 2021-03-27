@@ -24,20 +24,27 @@ pub enum FastTask {
     TakeSnapshot(oneshot::Sender<Cache>),
 }
 
-pub fn start_fast_threads(log: Logger, config: Arc<System>) -> Result<Vec<Sender<FastTask>>, std::io::Error> {
+pub fn start_fast_threads(log: Logger, config: Arc<System>) -> Result<(Vec<Sender<FastTask>>, Vec<Sender<FastTask>>), std::io::Error> {
     info!(log, "starting parsing threads");
     let threads = config.p_threads;
     let mut chans = Vec::with_capacity(threads);
+    let mut prio_chans = Vec::with_capacity(threads);
     for i in 0..threads {
         let (tx, rx) = crossbeam_channel::bounded(config.task_queue_size);
-
+        let (prio_tx, prio_rx) = crossbeam_channel::bounded(config.task_queue_size);
         chans.push(tx);
+        prio_chans.push(prio_tx);
         let tlog = log.clone();
         let elog = log.clone();
         let cf = config.clone();
         std::thread::Builder::new().name(format!("bioyino_fast{}", i)).spawn(move || {
             let mut runner = FastTaskRunner::new(tlog, cf, 8192);
             loop {
+                // First, check the higher priority channel
+                while let Ok(task) = prio_rx.try_recv() {
+                    runner.run(task)
+                }
+                // only after high priority tasks are done, go to lower priority
                 match rx.recv() {
                     Ok(task) => {
                         runner.run(task);
@@ -51,7 +58,7 @@ pub fn start_fast_threads(log: Logger, config: Arc<System>) -> Result<Vec<Sender
         })?;
     }
 
-    Ok(chans)
+    Ok((chans, prio_chans))
 }
 
 fn update_metric(cache: &mut Cache, name: MetricName, metric: StatsdMetric<Float>) {
@@ -157,10 +164,12 @@ impl FastTaskRunner {
 
                 let mut rotated = HashMap::with_capacity(self.short.len() / 2);
                 std::mem::swap(&mut self.short, &mut rotated);
+
                 channel.send(rotated).unwrap_or_else(|_| {
                     s!(queue_errors);
                     info!(self.log, "task could not send snapshot, receiving thread may be dead");
                 });
+
                 let interval = self.config.carbon.interval;
                 self.buffers.retain(|_, (ref mut times, _)| {
                     *times += 1;

@@ -44,7 +44,7 @@ pub(crate) fn start_sync_udp(
     let mm_timeout = if mm_timeout == 0 { config.network.buffer_flush_time } else { mm_timeout };
 
     for i in 0..n_threads {
-        let mut chans = chans.to_owned();
+        let chans = chans.to_owned();
         let log = log.new(o!("source"=>"mudp_thread"));
 
         let sck = socket.try_clone().unwrap();
@@ -203,10 +203,10 @@ pub(crate) fn start_sync_udp(
                                         let ahash = hasher.finish();
 
                                         let chan = if config.metrics.consistent_parsing {
-                                            &mut chans[ahash as usize % chlen]
+                                            &chans[ahash as usize % chlen]
                                         } else {
                                             next_chan = if next_chan >= (chlen - 1) { 0 } else { next_chan + 1 };
-                                            &mut chans[next_chan]
+                                            &chans[next_chan]
                                         };
                                         let buf = buf.split();
                                         let buflen = buf.len();
