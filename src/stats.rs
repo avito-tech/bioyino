@@ -14,7 +14,8 @@ use crate::slow_task::SlowTask;
 use crate::Float;
 
 pub struct Stats {
-    pub egress: AtomicUsize,
+    pub egress_carbon: AtomicUsize,
+    pub egress_peer: AtomicUsize,
     pub ingress: AtomicUsize,
     pub ingress_metrics: AtomicUsize,
     pub ingress_metrics_peer: AtomicUsize,
@@ -26,7 +27,8 @@ pub struct Stats {
 }
 
 pub static STATS: Stats = Stats {
-    egress: AtomicUsize::new(0),
+    egress_carbon: AtomicUsize::new(0),
+    egress_peer: AtomicUsize::new(0),
     ingress: AtomicUsize::new(0),
     ingress_metrics: AtomicUsize::new(0),
     ingress_metrics_peer: AtomicUsize::new(0),
@@ -113,7 +115,8 @@ impl OwnStats {
         }
 
         tokio::task::block_in_place(||{
-            add_metric!(egress, "egress");
+            add_metric!(egress_carbon, "egress-carbon");
+            add_metric!(egress_peer, "egress-peer");
             add_metric!(ingress, "ingress");
             add_metric!(ingress_metrics, "ingress-metric");
             add_metric!(ingress_metrics_peer, "ingress-metric-peer");
@@ -140,7 +143,8 @@ impl OwnStats {
             }
             if self.interval > 0 {
                 info!(self.log, "stats";
-                    "egress" => format!("{:2}", egress / s_interval),
+                    "egress-c" => format!("{:2}", egress_carbon / s_interval),
+                    "egress-p" => format!("{:2}", egress_peer / s_interval),
                     "ingress" => format!("{:2}", ingress / s_interval),
                     "ingress-m" => format!("{:2}", ingress_metrics / s_interval),
                     "ingress-m-p" => format!("{:2}", ingress_metrics_peer / s_interval),

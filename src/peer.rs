@@ -449,7 +449,8 @@ impl SnapshotSender {
 
                     //let mut conn = conn.compat_write();
 
-                    info!(log, "writing snapshot"; "bytes" => format!("{}", snapshot_message.len()), "metrics" => format!("{}", mlen));
+                    STATS.egress_peer.fetch_add(mlen, Ordering::Relaxed);
+                    debug!(log, "writing snapshot"; "bytes" => format!("{}", snapshot_message.len()), "metrics" => format!("{}", mlen));
                     //let write = write_message(&mut conn, &snapshot_message).map_err(|e| {
                     let write = conn.write_all(&snapshot_message).map_err(|e| {
                         warn!(log, "error encoding snapshot"; "error"=>e.to_string());

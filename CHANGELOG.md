@@ -16,11 +16,13 @@ metrics representation. Due to this changes:
     * version 2 **is the default value in 0.8.0**, please consider setting `network.peer-protocol = "1"` explicitly in client configs before upgrading
     * version 1 will be removed in 0.9.0, all users are recommended to migrate to using v2 since it's release
 * diff-counter metric type has been deprecated to being unituitive and therefore avoided of being unused by anyone
+* bioynio's own internal metric - `egress` is now called `egress-carbon` which better points to it's real meaning
 
 See config.toml for further configuration instructions
 
 ## Major changes ##
 * `.rate` aggregate has been added to show number of incoming values per second
+* new internal own metrics added - `egress-peer` - showing number of metrics sent to peers per second
 
 ## Internal changes ##
 * the internal structure of metrics has changed to make a type system more helping

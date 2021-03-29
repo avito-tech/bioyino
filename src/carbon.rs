@@ -332,7 +332,7 @@ impl<'a> Encoder<&'a (MetricName, MetricTypeName, Aggregate<Float>, Float)> for 
         buf.extend_from_slice(&b" "[..]);
         buf.extend_from_slice(&self.ts[..]);
         buf.extend_from_slice(&b"\n"[..]);
-        s!(egress);
+        s!(egress_carbon);
         Ok(())
     }
 }
