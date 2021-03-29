@@ -205,8 +205,11 @@ impl Service<Request<Body>> for MgmtService {
                         }
                     }
                 }
-                if !json {
+                let snapshot = {
                     let snapshot = STATS_SNAP.lock().unwrap();
+                    snapshot.clone()
+                };
+                if !json {
                     let ts = snapshot.ts.to_string();
                     for (name, value) in &snapshot.data {
                         buf.extend_from_slice(&name[..]);
@@ -220,8 +223,8 @@ impl Service<Request<Body>> for MgmtService {
                         buf.extend_from_slice(ts.as_bytes());
                         buf.extend_from_slice(&b"\n"[..]);
                     }
+
                 } else {
-                    let snapshot = STATS_SNAP.lock().unwrap();
 
                     #[derive(Serialize)]
                     struct JsonSnap {

@@ -49,6 +49,7 @@ macro_rules! s {
     }};
 }
 
+#[derive(Clone)]
 pub struct OwnSnapshot {
     pub ts: u128,
     pub data: Vec<(Bytes, Float)>,
@@ -171,7 +172,6 @@ impl OwnStats {
                 next_chan = if next_chan >= (num_chans - 1) { 0 } else { next_chan + 1 };
                 let chan = &self.fast_chans[next_chan];
                 self.count(chan);
-
             });
         }
     }
