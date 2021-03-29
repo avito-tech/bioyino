@@ -1,12 +1,9 @@
-use std::collections::HashMap;
-use std::iter::FromIterator;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
-use bytes::{BytesMut, BufMut};
 use futures::future::{ok, Future};
 use slog::{info, o, warn, Logger};
 
@@ -18,7 +15,7 @@ use thiserror::Error;
 
 use crate::stats::STATS_SNAP;
 use crate::GeneralError;
-use crate::{Float, CONSENSUS_STATE, IS_LEADER};
+use crate::{CONSENSUS_STATE, IS_LEADER};
 
 #[derive(Error, Debug)]
 pub enum MgmtError {
@@ -153,6 +150,8 @@ impl MgmtService {
             log,
         }
     }
+
+
 }
 
 impl Service<Request<Body>> for MgmtService {
@@ -195,7 +194,6 @@ impl Service<Request<Body>> for MgmtService {
                 Box::pin(ok(response))
             }
             (&Method::GET, "/stats", qry) => {
-                let mut buf = BytesMut::new();
                 let mut json = false;
                 if let Some(qry) = qry {
                     for (k, v) in qry {
@@ -205,48 +203,16 @@ impl Service<Request<Body>> for MgmtService {
                         }
                     }
                 }
-                let snapshot = {
-                    let snapshot = STATS_SNAP.lock().unwrap();
-                    snapshot.clone()
-                };
-                if !json {
-                    let ts = snapshot.ts.to_string();
-                    for (name, value) in &snapshot.data {
-                        buf.extend_from_slice(&name[..]);
-                        buf.extend_from_slice(&b" "[..]);
-                        // write somehow doesn't extend buffer size giving "cannot fill buffer" error
-                        buf.reserve(64);
-                        let mut writer = buf.writer();
-                        ftoa::write(&mut writer, *value).unwrap_or(()); // TODO: think if we should not ignore float error
-                        buf = writer.into_inner();
-                        buf.extend_from_slice(&b" "[..]);
-                        buf.extend_from_slice(ts.as_bytes());
-                        buf.extend_from_slice(&b"\n"[..]);
-                    }
 
-                } else {
-
-                    #[derive(Serialize)]
-                    struct JsonSnap {
-                        ts: u128,
-                        metrics: HashMap<String, Float>,
-                    }
-
-                    let snap = JsonSnap {
-                        ts: snapshot.ts,
-                        metrics: HashMap::from_iter(
-                            snapshot
-                            .data
-                            .iter()
-                            .map(|(name, value)| (String::from_utf8_lossy(&name[..]).to_string(), *value)),
-                        ),
+                Box::pin(async move {
+                    let snapshot = {
+                        let snapshot = STATS_SNAP.read().await;
+                        snapshot.clone()
                     };
-                    let mut writer = buf.writer();
-                    serde_json::to_writer_pretty(&mut writer, &snap).unwrap_or(());
-                    buf = writer.into_inner();
-                }
-                *response.body_mut() = Body::from(buf.freeze());
-                Box::pin(ok(response))
+                    let buf = snapshot.render(json);
+                    *response.body_mut() = Body::from(buf);
+                    Ok(response)
+                })
             }
             (&Method::GET, _, _) => {
                 *response.status_mut() = StatusCode::NOT_FOUND;

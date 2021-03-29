@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bytes::{BufMut, BytesMut};
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Select, Sender, TryRecvError};
 use futures::channel::oneshot;
 use log::warn as logw;
 use slog::{error, info, warn, Logger};
@@ -40,19 +40,28 @@ pub fn start_fast_threads(log: Logger, config: Arc<System>) -> Result<(Vec<Sende
         let cf = config.clone();
         std::thread::Builder::new().name(format!("bioyino_fast{}", i)).spawn(move || {
             let mut runner = FastTaskRunner::new(tlog, cf, 8192);
+            let mut select = Select::new();
+            let prio_op = select.recv(&prio_rx);
+            let lower_op = select.recv(&rx);
             loop {
-                // First, check the higher priority channel
-                while let Ok(task) = prio_rx.try_recv() {
-                    runner.run(task)
-                }
-                // only after high priority tasks are done, go to lower priority
-                match rx.recv() {
-                    Ok(task) => {
-                        runner.run(task);
+                let op = select.ready();
+
+                if op == prio_op {
+                    // on higher priority operation try to get all
+                    // data from the priority channel
+                    while let Ok(task) = prio_rx.try_recv() {
+                        runner.run(task)
                     }
-                    Err(_) => {
-                        error!(elog, "UDP thread closed connection");
-                        return;
+                } else if op == lower_op {
+                    match rx.try_recv() {
+                        Ok(task) => {
+                            runner.run(task);
+                        }
+                        Err(TryRecvError::Empty) => {}
+                        Err(TryRecvError::Disconnected) => {
+                            error!(elog, "UDP thread closed connection");
+                            return;
+                        }
                     }
                 }
             }

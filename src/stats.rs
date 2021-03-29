@@ -1,11 +1,15 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::iter::FromIterator;
 use std::time::{self, Duration, SystemTime};
 
-use bytes::{Bytes, BytesMut};
+use serde::Serialize;
+use bytes::{Bytes, BytesMut, BufMut};
 use once_cell::sync::Lazy;
 use slog::{info, o, Logger};
 use crossbeam_channel::Sender;
+
+use tokio::sync::RwLock;
 
 use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType};
 
@@ -40,7 +44,7 @@ pub static STATS: Stats = Stats {
     queue_errors: AtomicUsize::new(0),
 };
 
-pub static STATS_SNAP: Lazy<Mutex<OwnSnapshot>> = Lazy::new(|| Mutex::new(OwnSnapshot::default()));
+pub static STATS_SNAP: Lazy<RwLock<OwnSnapshot>> = Lazy::new(|| RwLock::new(OwnSnapshot::default()));
 
 #[macro_export]
 macro_rules! s {
@@ -68,10 +72,56 @@ impl Default for OwnSnapshot {
     }
 }
 
+
+impl OwnSnapshot {
+    pub(crate) fn render(&self, json: bool) -> Bytes {
+        let mut buf = BytesMut::new();
+
+        if !json {
+            let ts = self.ts.to_string();
+            for (name, value) in &self.data {
+                buf.extend_from_slice(&name[..]);
+                buf.extend_from_slice(&b" "[..]);
+                // write somehow doesn't extend buffer size giving "cannot fill buffer" error
+                buf.reserve(64);
+                let mut writer = buf.writer();
+                ftoa::write(&mut writer, *value).unwrap_or(()); // TODO: think if we should not ignore float error
+                buf = writer.into_inner();
+                buf.extend_from_slice(&b" "[..]);
+                buf.extend_from_slice(ts.as_bytes());
+                buf.extend_from_slice(&b"\n"[..]);
+            }
+
+        } else {
+
+            #[derive(Serialize)]
+            struct JsonSnap {
+                ts: u128,
+                metrics: HashMap<String, Float>,
+            }
+
+            let snap = JsonSnap {
+                ts: self.ts,
+                metrics: HashMap::from_iter(
+                    self
+                    .data
+                    .iter()
+                    .map(|(name, value)| (String::from_utf8_lossy(&name[..]).to_string(), *value)),
+                ),
+            };
+            let mut writer = buf.writer();
+            serde_json::to_writer_pretty(&mut writer, &snap).unwrap_or(());
+            buf = writer.into_inner();
+        }
+        buf.freeze()
+    }
+}
+
 // A future to send own stats. Never gets ready.
 pub struct OwnStats {
     interval: u64,
     prefix: String,
+    next_chan: usize,
     slow_chan: Sender<SlowTask>,
     fast_chans: Vec<Sender<FastTask>>,
     log: Logger,
@@ -83,6 +133,7 @@ impl OwnStats {
         Self {
             interval,
             prefix,
+            next_chan: fast_chans.len(),
             slow_chan,
             fast_chans,
             log,
@@ -97,7 +148,12 @@ impl OwnStats {
         name
     }
 
-    fn count(&self, next_chan: &Sender<FastTask>) {
+    fn next_chan(&mut self) -> &Sender<FastTask> {
+        self.next_chan = if self.next_chan >= (self.fast_chans.len() - 1) { 0 } else { self.next_chan + 1 };
+        &self.fast_chans[self.next_chan]
+    }
+
+    fn count(&mut self) -> OwnSnapshot {
         let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
         let mut snapshot = OwnSnapshot::default();
         let s_interval = if self.interval > 0 { self.interval as f64 / 1000f64 } else { 1f64 };
@@ -109,7 +165,8 @@ impl OwnStats {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
                     let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
                     let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes());
-                    next_chan
+                    let chan = self.next_chan();
+                    chan
                         .send(FastTask::Accumulate(name, metric))
                         .map_err(|_| s!(queue_errors))
                         .unwrap_or(())
@@ -133,16 +190,14 @@ impl OwnStats {
         let qlen = StatsdMetric::new(chlen, StatsdType::Gauge(None), None).unwrap();
         snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
         let name = self.format_metric_carbon(&mut buf, "slow-w-len".as_bytes());
-        next_chan
+
+        let chan = self.next_chan();
+        chan
             .send(FastTask::Accumulate(name, qlen))
             .map_err(|_| s!(queue_errors))
             .unwrap_or(());
 
-        // update global snapshot
-        {
-            let mut prev = STATS_SNAP.lock().unwrap();
-            *prev = snapshot;
-        }
+
         if self.interval > 0 {
             info!(self.log, "stats";
                 "egress-c" => format!("{:2}", egress_carbon / s_interval),
@@ -157,22 +212,24 @@ impl OwnStats {
                 "qu-err" => format!("{:2}", queue_errors / s_interval),
                 "qu-len" => format!("{:2}", chlen),
             );
-        }
+        };
+        snapshot
     }
 
-    pub async fn run(self) {
+    pub async fn run(mut self) {
         let now = tokio::time::Instant::now();
         let dur = Duration::from_millis(if self.interval < 100 { 1000 } else { self.interval }); // avoid too short intervals
         let mut interval = tokio::time::interval_at(now + dur, dur);
-        let mut next_chan = self.fast_chans.len();
-        let num_chans = self.fast_chans.len();
         loop {
             interval.tick().await;
-            tokio::task::block_in_place(||{
-                next_chan = if next_chan >= (num_chans - 1) { 0 } else { next_chan + 1 };
-                let chan = &self.fast_chans[next_chan];
-                self.count(chan);
+            let snapshot = tokio::task::block_in_place(||{
+                self.count()
             });
+            // update global snapshot
+            {
+                let mut prev = STATS_SNAP.write().await;
+                *prev = snapshot
+            }
         }
     }
 }
