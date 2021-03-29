@@ -21,6 +21,7 @@ use crate::{s, Cache, Float};
 #[derive(Debug)]
 pub enum FastTask {
     Parse(u64, BytesMut),
+    Accumulate(MetricName, StatsdMetric<Float>),
     TakeSnapshot(oneshot::Sender<Cache>),
 }
 
@@ -155,6 +156,7 @@ impl FastTaskRunner {
                     update_metric(&mut self.short, name, metric);
                 }
             }
+            FastTask::Accumulate(name, metric) => update_metric(&mut self.short, name, metric),
             FastTask::TakeSnapshot(channel) => {
                 // we need our cache to be sent for processing
                 // in place of it we need a new cache with most probably the same size

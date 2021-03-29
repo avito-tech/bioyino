@@ -170,7 +170,7 @@ fn main() {
     let stats_prefix = stats_prefix.trim_end_matches('.').to_string();
     // Spawn future gatering bioyino own stats
     info!(own_stat_log, "starting own stats counter");
-    let own_stats = OwnStats::new(s_interval, stats_prefix, slow_chan.clone(), own_stat_log);
+    let own_stats = OwnStats::new(s_interval, stats_prefix, slow_chan.clone(), fast_prio_chans.clone(), own_stat_log);
     runtime.spawn(own_stats.run());
 
     let compat_log = rlog.new(o!("thread" => "compat"));

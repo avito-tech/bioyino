@@ -7,9 +7,10 @@ use once_cell::sync::Lazy;
 use slog::{info, o, Logger};
 use crossbeam_channel::Sender;
 
-use bioyino_metric::{name::MetricName, Metric, MetricValue};
+use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType};
 
 use crate::errors::GeneralError;
+use crate::fast_task::FastTask;
 use crate::slow_task::SlowTask;
 use crate::Float;
 
@@ -70,31 +71,32 @@ impl Default for OwnSnapshot {
 pub struct OwnStats {
     interval: u64,
     prefix: String,
-    chan: Sender<SlowTask>,
+    slow_chan: Sender<SlowTask>,
+    fast_chans: Vec<Sender<FastTask>>,
     log: Logger,
 }
 
 impl OwnStats {
-    pub fn new(interval: u64, prefix: String, chan: Sender<SlowTask>, log: Logger) -> Self {
+    pub fn new(interval: u64, prefix: String, slow_chan: Sender<SlowTask>, fast_chans: Vec<Sender<FastTask>>, log: Logger) -> Self {
         let log = log.new(o!("source"=>"stats"));
         Self {
             interval,
             prefix,
-            chan,
+            slow_chan,
+            fast_chans,
             log,
         }
     }
 
-    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8], value: MetricValue<Float>) -> (MetricName, Metric<Float>) {
+    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8]) -> MetricName {
         buf.extend_from_slice(self.prefix.as_bytes());
         buf.extend_from_slice(&b"."[..]);
         buf.extend_from_slice(suffix);
         let name = MetricName::new_untagged(buf.split());
-        let metric = Metric::new(value, None, 1.);
-        (name, metric)
+        name
     }
 
-    async fn count(&mut self) {
+    fn count(&self, next_chan: &Sender<FastTask>) {
         let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
         let mut snapshot = OwnSnapshot::default();
         let s_interval = if self.interval > 0 { self.interval as f64 / 1000f64 } else { 1f64 };
@@ -104,68 +106,73 @@ impl OwnStats {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
                 if self.interval > 0 {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
-                    let value = MetricValue::Counter($value);
-                    let (name, metric) = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), value);
-                    self.chan
-                        .send(SlowTask::AddMetric(name, metric))
+                    let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes());
+                    next_chan
+                        .send(FastTask::Accumulate(name, metric))
                         .map_err(|_| s!(queue_errors))
                         .unwrap_or(())
                 }
             };
         }
 
-        tokio::task::block_in_place(||{
-            add_metric!(egress_carbon, "egress-carbon");
-            add_metric!(egress_peer, "egress-peer");
-            add_metric!(ingress, "ingress");
-            add_metric!(ingress_metrics, "ingress-metric");
-            add_metric!(ingress_metrics_peer, "ingress-metric-peer");
-            add_metric!(drops, "drop");
-            add_metric!(agg_errors, "agg-error");
-            add_metric!(parse_errors, "parse-error");
-            add_metric!(queue_errors, "queue-error");
-            add_metric!(peer_errors, "peer-error");
+        add_metric!(egress_carbon, "egress-carbon");
+        add_metric!(egress_peer, "egress-peer");
+        add_metric!(ingress, "ingress");
+        add_metric!(ingress_metrics, "ingress-metric");
+        add_metric!(ingress_metrics_peer, "ingress-metric-peer");
+        add_metric!(drops, "drop");
+        add_metric!(agg_errors, "agg-error");
+        add_metric!(parse_errors, "parse-error");
+        add_metric!(queue_errors, "queue-error");
+        add_metric!(peer_errors, "peer-error");
 
-            // queue len has other type, so macro does not fit here
-            let chlen = self.chan.len() as f64;
-            let qlen = MetricValue::Gauge(chlen);
-            snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
-            let (name, metric) = self.format_metric_carbon(&mut buf, "slow-q-len".as_bytes(), qlen);
-            self.chan
-                .send(SlowTask::AddMetric(name, metric))
-                .map_err(|_| s!(queue_errors))
-                .unwrap_or(());
+        // queue len has other type, so macro does not fit here
+        let chlen = self.slow_chan.len() as f64;
+        let qlen = StatsdMetric::new(chlen, StatsdType::Gauge(None), None).unwrap();
+        snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
+        let name = self.format_metric_carbon(&mut buf, "slow-w-len".as_bytes());
+        next_chan
+            .send(FastTask::Accumulate(name, qlen))
+            .map_err(|_| s!(queue_errors))
+            .unwrap_or(());
 
-            // update global snapshot
-            {
-                let mut prev = STATS_SNAP.lock().unwrap();
-                *prev = snapshot;
-            }
-            if self.interval > 0 {
-                info!(self.log, "stats";
-                    "egress-c" => format!("{:2}", egress_carbon / s_interval),
-                    "egress-p" => format!("{:2}", egress_peer / s_interval),
-                    "ingress" => format!("{:2}", ingress / s_interval),
-                    "ingress-m" => format!("{:2}", ingress_metrics / s_interval),
-                    "ingress-m-p" => format!("{:2}", ingress_metrics_peer / s_interval),
-                    "drops" => format!("{:2}", drops / s_interval),
-                    "a-err" => format!("{:2}", agg_errors / s_interval),
-                    "p-err" => format!("{:2}", parse_errors / s_interval),
-                    "pe-err" => format!("{:2}", peer_errors / s_interval),
-                    "qu-err" => format!("{:2}", queue_errors / s_interval),
-                    "qu-len" => format!("{:2}", self.chan.len()),
-                );
-            }
-        });
+        // update global snapshot
+        {
+            let mut prev = STATS_SNAP.lock().unwrap();
+            *prev = snapshot;
+        }
+        if self.interval > 0 {
+            info!(self.log, "stats";
+                "egress-c" => format!("{:2}", egress_carbon / s_interval),
+                "egress-p" => format!("{:2}", egress_peer / s_interval),
+                "ingress" => format!("{:2}", ingress / s_interval),
+                "ingress-m" => format!("{:2}", ingress_metrics / s_interval),
+                "ingress-m-p" => format!("{:2}", ingress_metrics_peer / s_interval),
+                "drops" => format!("{:2}", drops / s_interval),
+                "a-err" => format!("{:2}", agg_errors / s_interval),
+                "p-err" => format!("{:2}", parse_errors / s_interval),
+                "pe-err" => format!("{:2}", peer_errors / s_interval),
+                "qu-err" => format!("{:2}", queue_errors / s_interval),
+                "qu-len" => format!("{:2}", chlen),
+            );
+        }
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(self) {
         let now = tokio::time::Instant::now();
         let dur = Duration::from_millis(if self.interval < 100 { 1000 } else { self.interval }); // avoid too short intervals
         let mut interval = tokio::time::interval_at(now + dur, dur);
+        let mut next_chan = self.fast_chans.len();
+        let num_chans = self.fast_chans.len();
         loop {
             interval.tick().await;
-            self.count().await;
+            tokio::task::block_in_place(||{
+                next_chan = if next_chan >= (num_chans - 1) { 0 } else { next_chan + 1 };
+                let chan = &self.fast_chans[next_chan];
+                self.count(chan);
+
+            });
         }
     }
 }
