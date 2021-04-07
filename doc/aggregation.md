@@ -17,7 +17,7 @@ It will then be threated in the same way as appending a "0." before that number.
 By default the percentiles for timer are: 75th, 95th, 98th, 99th and 999th.
 
 `updates` is a special aggregate, showing the number of metrics with this name that came in during the aggregation period.
-It is counted always, even if disabled by configuration and can be additionaly filtered by `aggregation.update-count-threshold` parameter.
+It is counted always, even if disabled by configuration and can be additionally filtered by `aggregation.update-count-threshold` parameter.
 
 By default, bioyino counts all the aggregates. This behaviour can be changed by `aggregation.aggregates` option.
 If a type is not specified, the default value(meaning all aggregates) will be used.
@@ -61,7 +61,7 @@ Note the important differences in aggregation here:
 * someone wants the separate namespace for update counting on gauges since this is an internal aggregate that needs to be separated from business aggregates
 * someone wants the modern way aggregation with tags and (e.g. for better prometheus support) leaving the name as is and putting everything into tags
 
-Bioyino tries to supports almost all of such cases.
+Bioyino tries to support almost all of such cases.
 
 ## Defining naming for aggregates
 
