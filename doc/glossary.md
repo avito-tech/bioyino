@@ -5,7 +5,7 @@ usually, single value
 
 **leader node** - a node chosen(by consensus or manually) to be the one who sends metrics to backends
 
-**consensus** - subsystem reponsible for selecting leader node between many connected nodes
+**consensus** - subsystem responsible for selecting leader node between many connected nodes
 
 **snapshot** - a pack of metrics received during a short period (usually an order of magnitude shorter than 
 aggregation period) used for data redundancy

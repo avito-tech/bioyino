@@ -102,7 +102,7 @@ mm-async = false
 # incoming data buffer forcing it to be sent even if it's not full
 buffer-flush-time = 0
 
-# Same as buffer-flush-time, but riggers on buffer length. Please, notice that multimessage
+# Same as buffer-flush-time, but triggers on buffer length. Please, notice that multimessage
 # mode can only consider timer, so this check is only possible every mm-packets packets.
 # zero value means automatic management depending on memory allocator internal logic,
 # which on tests was found to reach 30Mb
@@ -158,7 +158,7 @@ snapshot-interval = 1000
 mode = "single"
 
 # updates aggregate is usually a debug value than some real one
-# also thi is the only one used for every type of metric, not only ms
+# also this is the only one used for every type of metric, not only ms
 # so it's reasonable to avoid receiving a doubled amount of all metrics
 # This option allows to receive only metrics updated too often
 update-count-threshold = 200

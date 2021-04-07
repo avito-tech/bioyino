@@ -9,8 +9,8 @@ heavily. That means your metrics are there, but have been stuck in buffers. What
 # I have N nodes in consensus and I want to upgrade/reboot one. How to avoid losing metrics?
 First of all check if node is a leader. If it's not, all you need to do is remove metric traffic from that node.
 If the node is leader, you need to migrate leader away from it **after** you've done with the traffic. With internal 
-Raft this is probably not nesessary, because switching leader there is very fast - less than a second. If this not a case,
-you'll need to do it manyally.  One of the best ways is managing the leader manually for the time of updating. To do that:
+Raft this is probably not necessary, because switching leader there is very fast - less than a second. If this not a case,
+you'll need to do it manually.  One of the best ways is managing the leader manually for the time of updating. To do that:
 
 0. Pause consensus on all nodes in the cluster disabling leader on all nodes except one. This "one" must *not* be the one
 you are going to turn off.
