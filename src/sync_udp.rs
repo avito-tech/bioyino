@@ -28,8 +28,7 @@ pub(crate) fn start_sync_udp(
     mm_packets: usize,
     mm_async: bool,
     mm_timeout: u64,
-    flush_flags: Arc<Vec<AtomicBool>>,
-) {
+) -> Arc<Vec<AtomicBool>> {
     info!(log, "multimessage enabled, starting in sync UDP mode"; "socket-is-blocking"=>!mm_async, "packets"=>mm_packets);
 
     // It is crucial for recvmmsg to have one socket per many threads
@@ -42,6 +41,16 @@ pub(crate) fn start_sync_udp(
     socket.bind(&listen.into()).expect("binding");
 
     let mm_timeout = if mm_timeout == 0 { config.network.buffer_flush_time } else { mm_timeout };
+
+    // For each out sync thread we create the buffer flush timer, that sets the atomic value to 1
+    // every interval
+    let mut flush_flags = Vec::new();
+
+    for _ in 0..n_threads {
+        flush_flags.push(AtomicBool::new(false));
+    }
+
+    let flush_flags = Arc::new(flush_flags);
 
     for i in 0..n_threads {
         let chans = chans.to_owned();
@@ -233,4 +242,5 @@ pub(crate) fn start_sync_udp(
             })
             .expect("starting multimsg thread");
     }
+    flush_flags
 }

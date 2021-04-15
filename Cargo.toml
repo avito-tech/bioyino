@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.8.0-alpha3"
+version = "0.8.0-alpha4"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -24,8 +24,8 @@ tokio-io="^0.1"
 #tokio-codec="^0.1"
 
 # new wave
-tokio = { version = "^1.0", features = ["net", "time", "sync", "macros", "rt", "rt-multi-thread", "io-util"] }
-tokio-stream = "^0.1"
+tokio = { version = "^1.5", features = ["net", "time", "sync", "macros", "rt", "rt-multi-thread", "io-util"] }
+tokio-stream = { version = "^0.1", features = ["sync" ]}
 tokio-util = { version = "^0.6", features = ["codec", "compat"] }
 futures = { version = "^0.3", features = ["compat"] }
 hyper = { version = "^0.14", features = ["client", "server", "http1", "http2", "tcp"] }
@@ -39,7 +39,7 @@ capnp-futures = "^0.14"
 crossbeam-channel =  "^0.5"
 
 resolve="^0.2"
-array-init="^1.0"
+array-init="^2.0"
 socket2 = { version = "^0.4", features = ["all"] }
 combine="^4.0"
 mime="^0.3"

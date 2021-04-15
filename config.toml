@@ -68,6 +68,11 @@ connect-delay-max = 10000
 #note, that 0 means 1 try
 send-retries = 30
 
+# The resulting aggregated set can be split into chunks to be sent to i.e. a cluster
+# of receiving nodes in parallel in `chunks` parallel TCP connections.
+# This may speedup a delivery and make a postprocessing in parallel
+chunks = 1
+
 # Network settings
 [network]
 # address and UDP port to listen for statsd metrics at

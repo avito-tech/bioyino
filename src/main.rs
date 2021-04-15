@@ -83,9 +83,6 @@ fn main() {
                 mm_async,
                 mm_timeout,
                 buffer_flush_time,
-                buffer_flush_length: _,
-                greens,
-                async_sockets,
                 ..
             },
             raft,
@@ -286,32 +283,9 @@ fn main() {
         .map_err(move |e| error!(carbon_log, "running carbon thread"; "error" => format!("{}", e)));
     runtime.spawn(carbon_t);
 
-    // For each out sync thread we create the buffer flush timer, that sets the atomic value to 1
-    // every interval
-    let mut flush_flags = Arc::new(Vec::new());
-    if let Some(flags) = Arc::get_mut(&mut flush_flags) {
-        for _ in 0..n_threads {
-            flags.push(AtomicBool::new(false));
-        }
-    }
-
-    if buffer_flush_time > 0 {
-        let flags = flush_flags.clone();
-        let flush_timer = async move {
-            let dur = Duration::from_millis(buffer_flush_time);
-            let mut timer = interval_at(tokio::time::Instant::now() + dur, dur);
-
-            loop {
-                timer.tick().await;
-                debug!(rlog, "buffer flush requested");
-                flags.iter().map(|flag| flag.swap(true, Ordering::SeqCst)).last();
-            }
-        };
-        runtime.spawn(flush_timer);
-    }
 
     if multimessage {
-        start_sync_udp(
+        let flush_flags = start_sync_udp(
             log,
             listen,
             &fast_chans,
@@ -321,21 +295,39 @@ fn main() {
             mm_packets,
             mm_async,
             mm_timeout,
-            flush_flags.clone(),
         );
+        // spawn a flushing timer if required
+        if buffer_flush_time > 0 {
+            let flush_timer = async move {
+                let dur = Duration::from_millis(buffer_flush_time);
+                let mut timer = interval_at(tokio::time::Instant::now() + dur, dur);
+
+                loop {
+                    timer.tick().await;
+                    debug!(rlog, "buffer flush requested");
+                    flush_flags.iter().map(|flag| flag.swap(true, Ordering::SeqCst)).last();
+                }
+            };
+            runtime.spawn(flush_timer);
+        }
     } else {
-        start_async_udp(
-            log,
-            listen,
-            &fast_chans,
-            config.clone(),
-            n_threads,
-            greens,
-            async_sockets,
-            bufsize,
-            flush_flags.clone(),
-        );
-    }
+        info!(log, "multimessage is disabled, starting in async UDP mode");
+        let flush_sender = start_async_udp(log, &fast_chans, config.clone());
+
+        if buffer_flush_time > 0 {
+            let flush_timer = async move {
+                let dur = Duration::from_millis(buffer_flush_time);
+                let mut timer = interval_at(tokio::time::Instant::now() + dur, dur);
+
+                loop {
+                    timer.tick().await;
+                    debug!(rlog, "buffer flush requested");
+                    flush_sender.notify_waiters();
+                }
+            };
+            runtime.spawn(flush_timer);
+        }
+    };
 
     runtime.block_on(pending::<()>());
 }

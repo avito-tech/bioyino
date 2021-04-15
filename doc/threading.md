@@ -12,8 +12,9 @@ dropping UDP packets.
 To avoid blocking situations, UDP processing is moved to 2 separate thread pools:
 
 * UDP networking thread pool.
-    Contains blocking synchronous threads, responsible for listening UDP sockets and periodically flushing the
+    In sync UDP mode(i.e. when multimessage is set to true) contains blocking synchronous threads responsible for listening UDP sockets and periodically flushing the
     collected raw data to parsing threads.
+    In async UDP mode this is a separate async threadpool dedicated only to reading a number of UDP sockets asynchronously along with one main thread to rule them all.
 
 * "fast" UDP parsing thread pool.
     These threads are also blocking and are responsible for parsing raw data and accumulating such data inrelatively small

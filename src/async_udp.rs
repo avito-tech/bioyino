@@ -1,147 +1,204 @@
-use std::collections::hash_map::DefaultHasher;
+use std::{collections::hash_map::DefaultHasher, sync::atomic::AtomicBool};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::net::SocketAddr;
+use std::io;
 
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::Sender;
-use futures::future::pending;
-use tokio::net::UdpSocket;
+use futures::future::{pending, select};
+use tokio::{net::UdpSocket, sync::Notify};
 use tokio::runtime::Builder;
 use socket2::{Domain, Protocol, Socket, Type};
 
-use slog::{info, error, o, warn, Logger};
+use slog::{ error, o, warn, Logger};
 
 use crate::config::System;
 use crate::s;
 use crate::stats::STATS;
 use crate::fast_task::FastTask;
+use crate::errors::GeneralError;
 
 pub(crate) fn start_async_udp(
-    log: Logger,
-    listen: SocketAddr,
-    chans: &[Sender<FastTask>],
-    config: Arc<System>,
-    n_threads: usize,
-    greens: usize,
-    async_sockets: usize,
-    bufsize: usize,
-    flush_flags: Arc<Vec<AtomicBool>>,
-) {
-    info!(log, "multimessage is disabled, starting in async UDP mode");
+    log: Logger, chans: &[Sender<FastTask>], config: Arc<System>
+) -> Arc<Notify> {
 
-    // Create a pool of listener sockets
-    let mut sockets = Vec::new();
-    for _ in 0..async_sockets {
-        let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).expect("creating UDP socket");
-        socket.set_reuse_address(true).expect("reusing address");
-        socket.set_reuse_port(true).expect("reusing port");
-        socket.bind(&listen.into()).expect("binding");
 
-        sockets.push(socket);
-    }
+    let flush_notify_ret = Arc::new(Notify::new());
 
-    for i in 0..n_threads {
-        // Each thread gets the clone of a socket pool
-        let sockets = sockets.iter().map(|s| s.try_clone().unwrap()).collect::<Vec<_>>();
+    let chans = chans.to_vec();
 
-        let chans = chans.to_owned();
-        let flush_flags = flush_flags.clone();
-        let config = config.clone();
-        let log = log.clone();
-        std::thread::Builder::new()
-            .name(format!("bioyino_audp{}", i))
-            .spawn(move || {
-                // each thread runs it's own runtime
-                let runtime = Builder::new_current_thread().enable_all().build().expect("creating runtime for test");
-                // Inside each green thread
-                for _ in 0..greens {
-                    // start a listener for all sockets
-                    for socket in sockets.iter() {
+    let flush_notify = flush_notify_ret.clone();
+    // to provide a multithreading listerning of multiple sockets, we start a separate
+    // tokio runtime with a separate threadpool of `n_threads`
+    std::thread::Builder::new()
+        .name("bioyino_udp".into())
+        .spawn(move || {
+            let runtime = Builder::new_multi_thread()
+                .thread_name("bioyino_audp")
+                .worker_threads(config.n_threads)
+                .enable_all()
+                .build()
+                .expect("creating runtime for async UDP threads");
+
+            runtime.spawn(async move {
+                // Create a pool of listener sockets
+                for _ in 0..config.network.async_sockets {
+                    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).expect("creating UDP socket");
+                    socket.set_reuse_address(true).expect("reusing address");
+                    socket.set_reuse_port(true).expect("reusing port");
+                    socket.set_nonblocking(true).expect("setting nonblocking");
+                    socket.bind(&config.network.listen.into()).expect("binding");
+
+                    let socket = UdpSocket::from_std(socket.into()).expect("adding socket to event loop");
+                    let socket = Arc::new(socket);
+
+                    // for every single socket we want a number of green threads (specified by `greens`) listening for it
+                    for _ in 0..config.network.greens {
+
+                        let config = config.clone();
+                        let log = log.clone();
+                        let flush_notify = flush_notify.clone();
                         let chans = chans.clone();
-                        // create UDP listener
-                        let socket = socket.try_clone().expect("cloning socket");
+                        let socket = socket.clone();
+                        let worker = AsyncUdpWorker::new(
+                            log,
+                            chans,
+                            config,
+                            socket,
+                            flush_notify,
+                        );
 
-                        runtime.spawn(async_statsd_server(
-                                log.clone(),
-                                socket.into(),
-                                chans.clone(),
-                                config.clone(),
-                                bufsize,
-                                i,
-                                flush_flags.clone(),
-                        ));
+                        tokio::spawn(worker.run());
                     }
                 }
+            });
 
-                runtime.block_on(pending::<()>())
-            })
-        .expect("creating UDP reader thread");
-        }
+            runtime.block_on(pending::<()>())
+        })
+    .expect("starting thread for async UDP threadpool");
+
+    flush_notify_ret
 }
 
-pub async fn async_statsd_server(
+struct AsyncUdpWorker {
     log: Logger,
-    socket: std::net::UdpSocket,
-    mut chans: Vec<Sender<FastTask>>,
+    chans: Vec<Sender<FastTask>>,
     config: Arc<System>,
-    bufsize: usize,
-    thread_idx: usize,
-    flush_flags: Arc<Vec<AtomicBool>>,
-) {
-    let mut bufmap = HashMap::new();
-    let mut readbuf = Vec::with_capacity(bufsize);
-    readbuf.resize(bufsize, 0);
-    let mut recv_counter = 0;
-    let mut next = thread_idx;
-    let log = log.new(o!("source"=>"async_udp_server", "tid"=>thread_idx));
-    let socket = UdpSocket::from_std(socket).expect("adding socket to event loop");
-    loop {
-        let (size, addr) = match socket.recv_from(&mut readbuf).await {
-            Ok((0, _)) => {
-                // size = 0 means EOF
-                warn!(log, "exiting on EOF");
-                break;
-            }
-            Ok((size, addr)) => (size, addr),
-            Err(e) => {
-                error!(log, "error receiving UDP packet {:?}", e);
-                break;
-            }
-        };
-        // we only get here in case of success
-        STATS.ingress.fetch_add(size, Ordering::Relaxed);
+    socket: Arc<UdpSocket>,
+    flush: Arc<Notify>,
+}
 
-        let buf = bufmap
-            .entry(addr)
-            .or_insert_with(|| BytesMut::with_capacity(config.network.buffer_flush_length));
-        recv_counter += size;
-        // check we can fit the buffer
-        if buf.remaining_mut() < bufsize {
-            buf.reserve(size + 1)
+impl AsyncUdpWorker {
+
+    fn new(
+        log: Logger,
+        chans: Vec<Sender<FastTask>>,
+        config: Arc<System>,
+        socket: Arc<UdpSocket>,
+        flush: Arc<Notify>,
+    ) -> Self {
+
+        Self {
+            log,
+            chans,
+            config,
+            socket,
+            flush,
         }
-        buf.put_slice(&readbuf[..size]);
+    }
 
-        let flush = flush_flags.get(thread_idx).unwrap().swap(false, Ordering::SeqCst);
-        if recv_counter >= config.network.buffer_flush_length || flush {
-            for (addr, buf) in bufmap.drain() {
-                let mut hasher = DefaultHasher::new();
-                addr.hash(&mut hasher);
-                let ahash = hasher.finish();
-                let chan = if config.metrics.consistent_parsing {
-                    let chlen = chans.len();
-                    &mut chans[ahash as usize % chlen]
-                } else {
-                    if next >= chans.len() {
-                        next = 0;
+    async fn run(
+        self,
+    ) -> Result<(), GeneralError> {
+
+        let Self {
+            log,
+            mut chans,
+            config,
+            socket,
+            flush,
+        } = self;
+        let mut  bufmap = HashMap::new();
+        let bufsize = config.network.bufsize;
+        let mut readbuf = Vec::with_capacity(bufsize);
+        readbuf.resize(bufsize, 0);
+        let log = log.new(o!("source"=>"async_udp_worker"));
+
+        let do_flush = AtomicBool::new(false);
+        let mut next_chan = config.p_threads;
+        let mut recv_counter = 0usize;
+
+        loop {
+
+            let f1 = async {
+                socket.readable().await
+            };
+
+            let f2 = async {
+                flush.notified().await;
+                do_flush.swap(true, Ordering::Relaxed);
+            };
+
+            futures::pin_mut!(f1);
+            futures::pin_mut!(f2);
+
+            select(f1, f2).await;
+
+            loop {
+                // read everything from socket while it's readable
+                let (size, addr) = match socket.try_recv_from(&mut readbuf) {
+                    Ok((0, _)) => {
+                        // size = 0 means EOF
+                        warn!(log, "exiting on EOF");
+                        return Ok(())
                     }
-                    let chan = &mut chans[next];
-                    next += 1;
-                    chan
+                    Ok((size, addr)) => (size, addr),
+                    Err(e)  if e.kind() == io::ErrorKind::WouldBlock => {
+                        //continue
+                        break
+                            //return Ok(())
+                    }
+                    Err(e) => {
+                        error!(log, "error reading UDP socket {:?}", e);
+                        return Err(GeneralError::Io(e))
+                    }
                 };
-                chan.send(FastTask::Parse(ahash, buf)).unwrap_or_else(|_| s!(drops));
+
+                // we only get here in case of success
+                STATS.ingress.fetch_add(size, Ordering::Relaxed);
+
+                let buf = bufmap
+                    .entry(addr)
+                    .or_insert_with(|| BytesMut::with_capacity(config.network.buffer_flush_length));
+                recv_counter += size;
+                // check we can fit the buffer
+                if buf.remaining_mut() < config.network.bufsize {
+                    buf.reserve(size + 1)
+                }
+                buf.put_slice(&readbuf[..size]);
+
+                let flush = do_flush.swap(false, Ordering::Relaxed);
+                if recv_counter >= config.network.buffer_flush_length || flush {
+                    for (addr, buf) in bufmap.drain() {
+                        let mut hasher = DefaultHasher::new();
+                        addr.hash(&mut hasher);
+                        let ahash = hasher.finish();
+                        let chan = if config.metrics.consistent_parsing {
+                            let chlen = chans.len();
+                            &mut chans[ahash as usize % chlen]
+                        } else {
+                            if next_chan >= chans.len() {
+                                next_chan = 0;
+                            }
+                            let chan = &mut chans[next_chan];
+                            next_chan += 1;
+                            chan
+                        };
+                        chan.send(FastTask::Parse(ahash, buf)).unwrap_or_else(|_| s!(drops));
+                    }
+                }
             }
         }
     }
