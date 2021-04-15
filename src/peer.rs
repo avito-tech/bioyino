@@ -217,8 +217,6 @@ pub struct NativeProtocolSnapshot {
 
 impl NativeProtocolSnapshot {
     pub fn new(log: &Logger,
-        //nodes: Vec<String>, client_bind: Option<SocketAddr>,
-        //interval: Duration,
         config: Arc<System>,
         fast_chans: &[Sender<FastTask>],
         slow_chan: Sender<SlowTask>) -> Self {

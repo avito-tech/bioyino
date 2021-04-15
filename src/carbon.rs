@@ -11,7 +11,7 @@ use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 
 use log::warn;
-use slog::{ error, info, o, Logger};
+use slog::{ error, info, o, Logger, debug};
 
 use tokio::net::TcpStream;
 use tokio::spawn;
@@ -186,17 +186,16 @@ impl CarbonSender {
             backend_opts,
         } = self;
 
-
-        // at this point we have metrics as Vec<Vec((some, shit))>
-        // but we want to send them in other chunk sizes without iterating
-        // over those, probably very big, vectors
-        // to do this, we give each chunk sender 2 pairs of indexes: start and stop
-
-        if metrics.len() == 0 {
+        let total_len = metrics.iter().fold(0, |acc, elem| { acc + elem.len() } );
+        if total_len == 0 {
+            info!(log, "metric set is empty, not sending");
             return
         }
 
-
+        // at this point we have metrics as Vec<Vec((some, shit))>
+        // but we want to send them in other chunk sizes without iterating
+        // over those, probably very big, vectors, so we change the chunks
+        // using maybe a few allocations but avoiding lots of iterations
 
         let chunks = rechunk(metrics, backend_opts.chunks);
 
@@ -283,8 +282,13 @@ impl CarbonBackend {
             None => TcpStream::connect(&addr).await?,
         };
 
-
         let chunk_len = metrics.iter().fold(0, |acc, elem| { acc + elem.len() } );
+
+        if chunk_len == 0 {
+            debug!(log, "empty chunk, skipping");
+            return Ok(())
+        }
+
         info!(log, "sending metrics chunk"; "metrics"=>format!("{}", chunk_len));
         let mut writer = CarbonCodec::new(ts.clone(), options.agg.clone()).framed(conn);
 
