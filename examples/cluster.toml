@@ -7,7 +7,7 @@
 # Between other parameters only the most important ones are commented
 # For other comments, see config.toml
 
-verbosity = "debug"
+verbosity-console = "debug"
 n-threads = 26
 w-threads = 26
 task-queue-size = 2024
@@ -19,15 +19,19 @@ stats-prefix = "resources.monitoring.bioyino.bioyino01"
 consensus = "internal"
 
 [metrics]
-# in prod we want to gather bioyino's own metrics and find who is sending too much of them
-# (more than 200 per aggregation period)
-count-updates = true
-# TODO probably include node name instead of `test-server` here
-update-counter-prefix = "resources.monitoring.bioyino.test-server.updates"
-update-counter-suffix = ""
-update-counter-threshold = 200
+consistent-parsing = true
 # this can be changed to true if you suspect someone sending incorrect metrics
 log-parse-errors = false
+
+[aggregation]
+mode = "single"
+update-count-threshold = 200
+
+[naming.default]
+destination = "smart"
+prefix = "resources.monitoring.bioyino.test-server.updates"
+postfixes = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.50", "updates" = "" }
+
 
 [carbon]
 # TODO where to send results to
@@ -55,6 +59,8 @@ mm-async = false
 buffer-flush-time = 10000
 # we setup a large buffer for incoming metrics
 buffer-flush-length = 655360
+greens = 4
+async-sockets = 4
 # TODO:
 # This is the most meaningful part config
 # each node should have the other two nodes in this array
