@@ -18,7 +18,7 @@ use tokio::spawn;
 use tokio::time::{interval_at, Instant};
 use tokio_util::codec::{Decoder, Encoder};
 
-use bioyino_metric::{aggregate::Aggregate, metric::MetricTypeName, name::MetricName};
+use bioyino_metric::{aggregate::Aggregate, metric::MetricTypeName, name::MetricName, FromF64};
 
 use crate::aggregate::{AggregationOptions, AggregationData, Aggregated};
 use crate::config::{Aggregation, Carbon, Naming, RoundTimestamp};
@@ -41,7 +41,7 @@ pub async fn carbon_timer(
         options.chunks = 1
     }
 
-    let interval = (options.interval as f64 / 1000f64).into();
+    let interval = Float::from_f64(options.interval as f64 / 1000f64);
     let agg_opts = AggregationOptions::from_config(aggregation, interval, naming, log.clone())?;
     let log = log.new(o!("task"=>"carbon"));
     loop {

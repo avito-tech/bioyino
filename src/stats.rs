@@ -11,7 +11,7 @@ use crossbeam_channel::Sender;
 
 use tokio::sync::RwLock;
 
-use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType};
+use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType, FromF64};
 
 use crate::errors::GeneralError;
 use crate::fast_task::FastTask;
@@ -157,6 +157,7 @@ impl OwnStats {
         let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
         let mut snapshot = OwnSnapshot::default();
         let s_interval = if self.interval > 0 { self.interval as f64 / 1000f64 } else { 1f64 };
+        let s_interval = Float::from_f64(s_interval);
 
         macro_rules! add_metric {
             ($value:ident, $suffix:expr) => {
@@ -186,7 +187,7 @@ impl OwnStats {
         add_metric!(peer_errors, "peer-error");
 
         // queue len has other type, so macro does not fit here
-        let chlen = self.slow_chan.len() as f64;
+        let chlen = Float::from_f64(self.slow_chan.len() as f64);
         let qlen = StatsdMetric::new(chlen, StatsdType::Gauge(None), None).unwrap();
         snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
         let name = self.format_metric_carbon(&mut buf, "slow-w-len".as_bytes());

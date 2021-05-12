@@ -54,7 +54,10 @@ use crate::config::ConsensusKind;
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
 // precision
-// TODO: make in into compilation feature
+#[cfg(feature = "f32")]
+pub type Float = f32;
+
+#[cfg(not(feature = "f32"))]
 pub type Float = f64;
 
 // a type to store pre-aggregated data

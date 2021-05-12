@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.8.0-alpha4"
+version = "0.8.0-alpha5"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -64,3 +64,7 @@ bioyino-metric = { git = "https://github.com/Albibek/bioyino-metric", branch="0.
 [build-dependencies]
 capnpc = "^0.14"
 vergen = "^5"
+
+[features]
+default = []
+f32 = []

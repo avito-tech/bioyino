@@ -9,6 +9,7 @@ use bioyino_metric::{
     aggregate::{Aggregate, AggregateCalculator},
     metric::MetricTypeName,
     name::{MetricName, NamingOptions},
+    FromF64,
 };
 
 use crate::cache::RotatedCacheShard;
@@ -33,7 +34,7 @@ impl AggregationOptions {
 
         let mut opts = Self {
             round_timestamp,
-            update_count_threshold: Float::from(update_count_threshold),
+            update_count_threshold: Float::from_f64(update_count_threshold as f64),
             aggregates: HashMap::new(),
             namings: HashMap::new(),
         };
