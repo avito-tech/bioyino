@@ -29,6 +29,8 @@ See config.toml for further configuration instructions
 * many libraries have their versions updated to latest major versions
 
 ## Minor changes
+* bioyino can now be compiled with 32-bit floats instead of 64-bit. This may bring some storage economy at the price of
+lower precision
 * two new internal metrics has been added:
     * `slow-q-len` - number of pending tasks in "slow" threadpool queue
     * `ingress-metrics-peer` - number of metrics received via TCP
