@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.8.0-alpha5"
+version = "0.8.0-alpha6"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -54,7 +54,7 @@ slog-stdlog="^4.0"
 slog-syslog="^0.12"
 log="^0.4"
 toml="^0.5"
-ftoa = "^0.1"
+dtoa = "^0.4"
 
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
 rand = "^0.8"

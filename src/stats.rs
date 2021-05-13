@@ -85,7 +85,7 @@ impl OwnSnapshot {
                 // write somehow doesn't extend buffer size giving "cannot fill buffer" error
                 buf.reserve(64);
                 let mut writer = buf.writer();
-                ftoa::write(&mut writer, *value).unwrap_or(()); // TODO: think if we should not ignore float error
+                dtoa::write(&mut writer, *value).map(|_|()).unwrap_or(()); // TODO: think if we should not ignore float error
                 buf = writer.into_inner();
                 buf.extend_from_slice(&b" "[..]);
                 buf.extend_from_slice(ts.as_bytes());

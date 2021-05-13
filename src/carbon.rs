@@ -328,7 +328,7 @@ impl<'a> Encoder<&'a (MetricName, MetricTypeName, Aggregate<Float>, Float)> for 
         buf.extend_from_slice(&b" "[..]);
         // write somehow doesn't extend buffer size giving "cannot fill sholw buffer" error
         buf.reserve(64);
-        if let Err(e) = ftoa::write(&mut buf.writer(), *value) {
+        if let Err(e) = dtoa::write(&mut buf.writer(), *value) {
             warn!("buffer write error {:?}", e);
             s!(agg_errors);
             return Ok(());
