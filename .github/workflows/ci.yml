@@ -1,0 +1,30 @@
+on: 
+  push:
+  pull_request:
+
+name: Continuous integration
+
+jobs:
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+    steps:
+      - uses: actions/checkout@v2.3.4
+      - name: Install capnproto
+        run: sudo apt-get install capnproto libcapnp-dev
+      - uses: actions-rs/toolchain@v1.0.7
+        with:
+          profile: minimal
+          toolchain: ${{ matrix.rust }}
+          override: true
+      - uses: Swatinem/rust-cache@v1
+      - name: Build and test
+        uses: actions-rs/cargo@v1.0.3
+        with:
+          command: test
