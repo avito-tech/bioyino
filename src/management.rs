@@ -114,14 +114,19 @@ struct ServerStatus {
 impl ServerStatus {
     fn new() -> Self {
         let state = &*CONSENSUS_STATE.lock().unwrap();
-        let config = CONFIG.read().unwrap().clone();
+        let config = CONFIG.as_ref().map(|c| c.read().unwrap().clone());
         Self {
             leader_status: IS_LEADER.load(Ordering::SeqCst),
             consensus_status: state.clone(),
-            cluster_nodes: if config.consensus == ConsensusKind::Internal {
-                Some(Vec::from_iter(config.raft.nodes.into_keys()))
-            } else {
-                None
+            cluster_nodes: match config {
+                Some(c) => {
+                    if c.consensus == ConsensusKind::Internal {
+                        Some(Vec::from_iter(c.raft.nodes.into_keys()))
+                    } else {
+                        None
+                    }
+                }
+                None => None,
             },
         }
     }
@@ -452,12 +457,13 @@ mod test {
                 state,
                 ServerStatus {
                     consensus_status: ConsensusState::Enabled,
-                    leader_status: true
+                    leader_status: true,
+                    cluster_nodes: None,
                 }
             );
         };
 
-        runtime.spawn(check);
+        runtime.block_on(check);
         let test_delay = async { delay_for(Duration::from_secs(3)).await };
         runtime.block_on(test_delay);
     }

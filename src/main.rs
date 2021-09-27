@@ -95,15 +95,15 @@ pub enum ConsensusKind {
 
 pub static CONSENSUS_STATE: Lazy<Mutex<ConsensusState>> = Lazy::new(|| Mutex::new(ConsensusState::Disabled));
 pub static IS_LEADER: AtomicBool = AtomicBool::new(false);
-pub static CONFIG: Lazy<RwLock<System>> = Lazy::new(|| {
-    let (system, _) = System::load().expect("loading config");
-    RwLock::new(system)
+pub static CONFIG: Lazy<Option<RwLock<System>>> = Lazy::new(|| match System::load() {
+    Ok((system, _)) => Some(RwLock::new(system)),
+    Err(_) => None,
 });
 
 fn main() {
     let (_, command) = System::load().expect("loading config");
 
-    let config = CONFIG.read().unwrap().to_owned();
+    let config = CONFIG.as_ref().expect("loading config").read().unwrap().to_owned();
     #[allow(clippy::unneeded_field_pattern)]
     let System {
         verbosity_console,
