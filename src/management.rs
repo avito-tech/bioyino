@@ -17,7 +17,7 @@ use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::stats::STATS_SNAP;
-use crate::{ConsensusState, Float, CONSENSUS_STATE, IS_LEADER};
+use crate::{ConsensusKind, ConsensusState, Float, CONFIG, CONSENSUS_STATE, IS_LEADER};
 
 #[derive(Error, Debug)]
 pub enum MgmtError {
@@ -107,15 +107,22 @@ impl FromStr for LeaderAction {
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 struct ServerStatus {
     leader_status: bool,
+    cluster_nodes: Option<Vec<String>>,
     consensus_status: ConsensusState,
 }
 
 impl ServerStatus {
     fn new() -> Self {
         let state = &*CONSENSUS_STATE.lock().unwrap();
+        let config = CONFIG.read().unwrap().clone();
         Self {
             leader_status: IS_LEADER.load(Ordering::SeqCst),
             consensus_status: state.clone(),
+            cluster_nodes: if config.consensus == ConsensusKind::Internal {
+                Some(Vec::from_iter(config.raft.nodes.into_keys()))
+            } else {
+                None
+            },
         }
     }
 }

@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::io;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 use std::{panic, process, thread};
 
@@ -95,11 +95,15 @@ pub enum ConsensusKind {
 
 pub static CONSENSUS_STATE: Lazy<Mutex<ConsensusState>> = Lazy::new(|| Mutex::new(ConsensusState::Disabled));
 pub static IS_LEADER: AtomicBool = AtomicBool::new(false);
+pub static CONFIG: Lazy<RwLock<System>> = Lazy::new(|| {
+    let (system, _) = System::load().expect("loading config");
+    RwLock::new(system)
+});
 
 fn main() {
-    let (system, command) = System::load().expect("loading config");
+    let (_, command) = System::load().expect("loading config");
 
-    let config = system.clone();
+    let config = CONFIG.read().unwrap().to_owned();
     #[allow(clippy::unneeded_field_pattern)]
     let System {
         verbosity_console,
@@ -145,7 +149,7 @@ fn main() {
         start_as_leader,
         stats_prefix,
         consensus,
-    } = system;
+    } = config.clone();
 
     if daemon && verbosity_syslog.is_off() {
         eprintln!("syslog is disabled, while daemon mode is on, no logging will be performed");
