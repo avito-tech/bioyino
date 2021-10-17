@@ -133,13 +133,13 @@ fn rechunk<T>(mut input: Vec<Vec<T>>, chunks: usize) -> Vec<Vec<Vec<T>>> {
         let last = recipient.len() -1;
         if donor.len() >= len_required { // donor has more len than required
             let new = donor.split_off(donor.len() - len_required); // remove that amount from donor
-            &mut recipient[last].push(new); // give it as a part of current chunk
+            recipient[last].push(new); // give it as a part of current chunk
             len_required = chunk_size; // reset the required len
             recipient.push(Vec::new()); // recipient is satisfied
         } else { // donor has not enough len
             // give what is left to recipient
             len_required -= donor.len();
-            &mut recipient[last].push(donor);
+            recipient[last].push(donor);
             // get a new donor or end
             if let Some(new) = input.pop() {
                 donor = new
@@ -392,7 +392,7 @@ mod test {
         agg_opts.round_timestamp = RoundTimestamp::Up;
         let naming = config::default_namings();
 
-        let agg_opts = AggregationOptions::from_config(agg_opts, 30f64, naming, log.clone()).unwrap();
+        let agg_opts = AggregationOptions::from_config(agg_opts, 30., naming, log.clone()).unwrap();
         let options = CarbonClientOptions {
             addr: "127.0.0.1:2003".parse().unwrap(),
             bind: None,
@@ -401,7 +401,7 @@ mod test {
         };
 
         //pub(crate) fn new(options: CarbonClientOptions, ts: u64, metrics: Arc<Vec<(MetricName, MetricTypeName, Aggregate<Float>, Float)>>, log: Logger) -> Self
-        let backend = CarbonBackend::new(options, ts, Arc::new(vec![vec![(name, MetricTypeName::Gauge, Aggregate::Value, 42f64)]]), log.clone());
+        let backend = CarbonBackend::new(options, ts, Arc::new(vec![vec![(name, MetricTypeName::Gauge, Aggregate::Value, 42.)]]), log.clone());
 
         let server = async {
             let listener = TcpListener::bind(&"127.0.0.1:2003".parse::<::std::net::SocketAddr>().unwrap()).await.unwrap();

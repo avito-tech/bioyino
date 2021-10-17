@@ -607,6 +607,7 @@ mod tests {
 
     use crate::aggregate::AggregationOptions;
     use crate::util::prepare_log;
+    use bioyino_metric::FromF64;
 
     #[test]
     fn parsing_full_config() {
@@ -619,8 +620,8 @@ mod tests {
         config.prepare().expect("preparing config");
 
         let log = prepare_log("parse_full_config test");
-        let aopts = AggregationOptions::from_config(config.aggregation, config.carbon.interval as f64 / 1000f64, config.naming, log)
-            .expect("checking aggregate options");
+        let interval: Float = Float::from_f64(config.carbon.interval as f64 / 1000.);
+        let aopts = AggregationOptions::from_config(config.aggregation, interval, config.naming, log).expect("checking aggregate options");
         for (ty, _) in all_aggregates() {
             // all_aggregates contain all types and all possible aggregate pairs
             // so we must check aggregation_options has all of them after conversion

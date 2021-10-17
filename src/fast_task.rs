@@ -162,6 +162,7 @@ impl FastTaskRunner {
                         let untagged = MetricName::new_untagged(self.names_arena.split());
                         update_metric(&mut self.short, untagged, metric.clone());
                     }
+
                     update_metric(&mut self.short, name, metric);
                 }
             }
@@ -238,13 +239,13 @@ mod tests {
         let key = MetricName::new("gorets;t1=v1;t2=v2".into(), mode, &mut intermediate).unwrap();
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value(), &MetricValue::Counter(2000f64));
+        assert_eq!(metric.value(), &MetricValue::Counter(2000.));
 
         // must be aggregated into separate
         let key = MetricName::new("gorets;t1=v1;t2=v3".into(), mode, &mut intermediate).unwrap();
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value(), &MetricValue::Counter(1000f64));
+        assert_eq!(metric.value(), &MetricValue::Counter(1000.));
     }
 
     #[test]
@@ -264,21 +265,21 @@ mod tests {
         let key = new_name("tagged.metric;t1=v1;t2=v2");
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value(), &MetricValue::Counter(2000f64));
-        assert_eq!(metric.updates(), 2f64);
+        assert_eq!(metric.value(), &MetricValue::Counter(2000.));
+        assert_eq!(metric.updates(), 2.);
 
         // ensure "independent" untagged version of tagged metric also exists with same values
         let key = new_name("tagged.metric");
         assert!(runner.short.contains_key(&key), "could not find {:?}", key);
         let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value(), &MetricValue::Counter(2000f64));
+        assert_eq!(metric.value(), &MetricValue::Counter(2000.));
         assert_eq!(metric.updates(), 2.);
     }
 
     #[test]
     fn parse_trashed_metric_buf() {
         let mut data = BytesMut::new();
-        data.extend_from_slice(b"trash\ngorets1:+1000|g\nTRASH\ngorets2;tag3=shit;t2=fuck:-1000|g|@0.5\nMORE;tra=sh;|TrasH\nFUUU");
+        data.extend_from_slice(b"trash\ngorets1:+1000|g\nTRASH\ngorets2;tag3=shit;t2=fuuck:-1000|g|@0.5\nMORE;tra=sh;|TrasH\nFUUU");
 
         let mut config = System::default();
         config.metrics.log_parse_errors = true;
@@ -287,11 +288,11 @@ mod tests {
 
         let key = new_name("gorets1");
         let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value(), &MetricValue::Gauge(1000f64));
+        assert_eq!(metric.value(), &MetricValue::Gauge(1000.));
 
         // expect tags to be sorted after parsing
-        let key = new_name("gorets2;t2=fuck;tag3=shit");
+        let key = new_name("gorets2;t2=fuuck;tag3=shit");
         let metric = runner.short.get(&key).unwrap().clone();
-        assert_eq!(metric.value(), &MetricValue::Gauge(-1000f64));
+        assert_eq!(metric.value(), &MetricValue::Gauge(-1000.));
     }
 }
