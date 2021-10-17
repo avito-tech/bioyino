@@ -223,15 +223,15 @@ mod tests {
 
         let naming = config::default_namings(); //;.get(&timer).unwrap().clone();
 
-        let agg_opts = AggregationOptions::from_config(config.clone(), 30f64, naming, log.clone()).unwrap();
+        let agg_opts = AggregationOptions::from_config(config.clone(), 30., naming, log.clone()).unwrap();
 
         let counter = std::sync::atomic::AtomicUsize::new(0);
 
         // Create some cache data, send it to be joined into long cache
         let mut cache = HashMap::new();
-        for i in 0..10 {
+        for i in 0..10u16 { // u16 can be converted to f32
             let mut metric = Metric::new(MetricValue::Timer(vec![0.]), None, 1.);
-            for j in 1..100 {
+            for j in 1..100u16 {
                 let new_metric = Metric::new(MetricValue::Timer(vec![j.into()]), None, 1.);
                 metric.accumulate(new_metric).unwrap();
             }
@@ -247,7 +247,7 @@ mod tests {
 
 
         // the result of timer aggregations we want is each key mapped to name
-        let required_aggregates: Vec<(MetricName, Aggregate<f64>)> = cache
+        let required_aggregates: Vec<(MetricName, Aggregate<Float>)> = cache
             .keys()
             .map(|key| {
                 config::all_aggregates()
@@ -255,8 +255,8 @@ mod tests {
                     .unwrap()
                     .clone()
                     .into_iter()
-                    .map(|agg| Aggregate::<f64>::try_from(agg).unwrap())
-                    .map(|agg| if agg == Aggregate::Rate(None) { Aggregate::Rate(Some(30f64)) } else { agg })
+                    .map(|agg| Aggregate::<Float>::try_from(agg).unwrap())
+                    .map(|agg| if agg == Aggregate::Rate(None) { Aggregate::Rate(Some(30.)) } else { agg })
                     .chain(Some(Aggregate::Percentile(0.8, 80)))
                     .map(move |agg| (key.clone(), agg))
             })

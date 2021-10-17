@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.8.0-alpha6"
+version = "0.8.0-alpha7"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -33,7 +33,7 @@ trust-dns-resolver = { version = "^0.20" }
 url = "^2.1"
 bytes = { version = "^1.0", features = [ "serde" ] }
 async-channel = "^1.6"
-ring-channel = { version = "^0.8", features = ["futures_api"] }
+ring-channel = { version = "^0.9", features = ["futures_api"] }
 capnp = "^0.14"
 capnp-futures = "^0.14"
 crossbeam-channel =  "^0.5"
@@ -51,14 +51,13 @@ slog-term="^2.4"
 slog-async="^2.3"
 slog-scope="^4.0"
 slog-stdlog="^4.0"
-slog-syslog="^0.12"
+slog-syslog="^0.13"
 log="^0.4"
 toml="^0.5"
 dtoa = "^0.4"
 
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
 rand = "^0.8"
-#bioyino-metric = "^0.3"
 bioyino-metric = { git = "https://github.com/Albibek/bioyino-metric", branch="0.5.0" }
 
 [build-dependencies]
