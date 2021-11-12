@@ -4,14 +4,14 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{self, Duration, SystemTime};
 
-use bytes::{Bytes, BytesMut, BufMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use crossbeam_channel::Sender;
 use futures::channel::oneshot;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 
 use log::warn;
-use slog::{ error, info, o, Logger, debug};
+use slog::{debug, error, info, o, Logger};
 
 use tokio::net::TcpStream;
 use tokio::spawn;
@@ -20,7 +20,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use bioyino_metric::{aggregate::Aggregate, metric::MetricTypeName, name::MetricName, FromF64};
 
-use crate::aggregate::{AggregationOptions, AggregationData, Aggregated};
+use crate::aggregate::{Aggregated, AggregationData, AggregationOptions};
 use crate::config::{Aggregation, Carbon, Naming, RoundTimestamp};
 use crate::errors::GeneralError;
 use crate::slow_task::SlowTask;
@@ -34,7 +34,6 @@ pub async fn carbon_timer(
     naming: HashMap<MetricTypeName, Naming>,
     chan: Sender<SlowTask>,
 ) -> Result<(), GeneralError> {
-
     let dur = Duration::from_millis(options.interval);
     let mut carbon_timer = interval_at(Instant::now() + dur, dur);
     if options.chunks == 0 {
@@ -48,19 +47,18 @@ pub async fn carbon_timer(
         carbon_timer.tick().await;
         let is_leader = IS_LEADER.load(Ordering::SeqCst);
         if is_leader {
-
             info!(log, "leader ready to aggregate metrics");
 
             // create rotation task, send it and wait for an answer
             let (tx, rx) = oneshot::channel();
-            chan.send(SlowTask::Rotate(Some(tx))).unwrap_or_else(|_|{
+            chan.send(SlowTask::Rotate(Some(tx))).unwrap_or_else(|_| {
                 error!(log, "error sending rotation task");
             });
             let rotated = if let Ok(r) = rx.await {
                 r
             } else {
                 error!(log, "error receiving metric cache, worker thread may have panicked");
-                continue
+                continue;
             };
 
             let (agg_tx, mut agg_rx) = async_channel::unbounded();
@@ -72,10 +70,9 @@ pub async fn carbon_timer(
                     options: agg_opts.clone(),
                     response: agg_tx.clone(),
                 };
-                chan.send(SlowTask::Aggregate(agg_data))
-                    .unwrap_or_else(|_|{
-                        error!(log, "error sending aggregation task");
-                    });
+                chan.send(SlowTask::Aggregate(agg_data)).unwrap_or_else(|_| {
+                    error!(log, "error sending aggregation task");
+                });
             }
             drop(agg_tx);
 
@@ -93,10 +90,9 @@ pub async fn carbon_timer(
 
             let sender = CarbonSender::new(log.clone(), aggregated, agg_opts.clone(), options.clone())?;
             spawn(sender.run());
-
         } else {
             info!(log, "not leader, clearing metrics");
-            chan.send(SlowTask::Rotate(None)).unwrap_or_else(|_|{
+            chan.send(SlowTask::Rotate(None)).unwrap_or_else(|_| {
                 error!(log, "error sending rotation task");
             });
         }
@@ -111,7 +107,7 @@ fn rechunk<T>(mut input: Vec<Vec<T>>, chunks: usize) -> Vec<Vec<Vec<T>>> {
     if chunks == 1 {
         let mut res = Vec::new();
         res.push(input);
-        return res
+        return res;
     }
 
     let mut len = 0;
@@ -130,13 +126,15 @@ fn rechunk<T>(mut input: Vec<Vec<T>>, chunks: usize) -> Vec<Vec<Vec<T>>> {
     // create first donor
     let mut donor = input.pop().unwrap();
     loop {
-        let last = recipient.len() -1;
-        if donor.len() >= len_required { // donor has more len than required
+        let last = recipient.len() - 1;
+        if donor.len() >= len_required {
+            // donor has more len than required
             let new = donor.split_off(donor.len() - len_required); // remove that amount from donor
             recipient[last].push(new); // give it as a part of current chunk
             len_required = chunk_size; // reset the required len
             recipient.push(Vec::new()); // recipient is satisfied
-        } else { // donor has not enough len
+        } else {
+            // donor has not enough len
             // give what is left to recipient
             len_required -= donor.len();
             recipient[last].push(donor);
@@ -144,12 +142,12 @@ fn rechunk<T>(mut input: Vec<Vec<T>>, chunks: usize) -> Vec<Vec<Vec<T>>> {
             if let Some(new) = input.pop() {
                 donor = new
             } else {
-                break
+                break;
             }
         }
     }
 
-    if recipient.len() > 1 && recipient[recipient.len() -1 ].is_empty() {
+    if recipient.len() > 1 && recipient[recipient.len() - 1].is_empty() {
         recipient.pop().unwrap();
     }
     recipient
@@ -186,10 +184,10 @@ impl CarbonSender {
             backend_opts,
         } = self;
 
-        let total_len = metrics.iter().fold(0, |acc, elem| { acc + elem.len() } );
+        let total_len = metrics.iter().fold(0, |acc, elem| acc + elem.len());
         if total_len == 0 {
             info!(log, "metric set is empty, not sending");
-            return
+            return;
         }
 
         // at this point we have metrics as Vec<Vec((some, shit))>
@@ -282,11 +280,11 @@ impl CarbonBackend {
             None => TcpStream::connect(&addr).await?,
         };
 
-        let chunk_len = metrics.iter().fold(0, |acc, elem| { acc + elem.len() } );
+        let chunk_len = metrics.iter().fold(0, |acc, elem| acc + elem.len());
 
         if chunk_len == 0 {
             debug!(log, "empty chunk, skipping");
-            return Ok(())
+            return Ok(());
         }
 
         info!(log, "sending metrics chunk"; "metrics"=>format!("{}", chunk_len));
@@ -350,8 +348,6 @@ impl Decoder for CarbonCodec {
     }
 }
 
-
-
 #[cfg(test)]
 mod test {
 
@@ -386,7 +382,7 @@ mod test {
             TagFormat::Graphite,
             &mut intermediate,
         )
-            .unwrap();
+        .unwrap();
 
         let mut agg_opts = Aggregation::default();
         agg_opts.round_timestamp = RoundTimestamp::Up;
@@ -401,7 +397,12 @@ mod test {
         };
 
         //pub(crate) fn new(options: CarbonClientOptions, ts: u64, metrics: Arc<Vec<(MetricName, MetricTypeName, Aggregate<Float>, Float)>>, log: Logger) -> Self
-        let backend = CarbonBackend::new(options, ts, Arc::new(vec![vec![(name, MetricTypeName::Gauge, Aggregate::Value, 42.)]]), log.clone());
+        let backend = CarbonBackend::new(
+            options,
+            ts,
+            Arc::new(vec![vec![(name, MetricTypeName::Gauge, Aggregate::Value, 42.)]]),
+            log.clone(),
+        );
 
         let server = async {
             let listener = TcpListener::bind(&"127.0.0.1:2003".parse::<::std::net::SocketAddr>().unwrap()).await.unwrap();
@@ -411,7 +412,7 @@ mod test {
             while let Some(line) = codec.next().await {
                 let line = line.unwrap();
                 // with "up" rounding the timestamp have to be rounded to 30th second which is at 1574745750
-                assert_eq!(&line, "complex.test.bioyino_tagged;tag1=value1;tag2=val2 42 1574745750");
+                assert_eq!(&line, "complex.test.bioyino_tagged;tag1=value1;tag2=val2 42.0 1574745750");
             }
         };
 
@@ -424,30 +425,30 @@ mod test {
 
     #[test]
     fn test_rechunk() {
-        let sizes = vec![1, 2, 6, 13, 22, 22, 10, 1, 1, 1, 1, 1, 1, 25, 25, 120, 121, 122, 1, 1, 1 ];
+        let sizes = vec![1, 2, 6, 13, 22, 22, 10, 1, 1, 1, 1, 1, 1, 25, 25, 120, 121, 122, 1, 1, 1];
         let mut vecs = Vec::new();
         let mut j = 0;
         for size in sizes {
             let mut v = Vec::new();
             for i in 0..size {
-                v.push(j*100 + i);
+                v.push(j * 100 + i);
             }
             vecs.push(v);
-            j+=1;
+            j += 1;
         }
 
         for chunks in 1..25 {
             let res = rechunk(vecs.clone(), chunks);
             let mut lens = Vec::new();
             for res in res.into_iter() {
-                let chunk_len = res.into_iter().fold(0, |acc, elem| { acc + elem.len() } );
+                let chunk_len = res.into_iter().fold(0, |acc, elem| acc + elem.len());
                 lens.push(chunk_len);
             }
             //dbg!(&lens);
             if lens.len() > 1 {
                 let last = lens.len() - 2;
                 for i in 0..last {
-                    assert_eq!(lens[i], lens[i+1]);
+                    assert_eq!(lens[i], lens[i + 1]);
                 }
             }
         }
