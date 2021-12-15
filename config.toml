@@ -16,10 +16,18 @@ verbosity-console = "warn"
 # Number of network worker threads in any mode, use 0(not recommended) to use all CPU cores
 n-threads = 4
 
-# Number of aggregating and counting threads, use 0(not recommended) to use all CPU cores
+# Number of parsing "fast" threads, use 0(not recommended) to use all CPU cores
+p-threads = 4
+
+# Number of "slow" worker threads, use 0(not recommended) to use all CPU cores
 w-threads = 4
 
-# Queue size for single counting thread before task is dropped
+# Number of asynchronous  threads
+# use 0(not recommended) to use all CPU cores
+# setting this value to lower than 4 may lead to random lockups and timer delays
+a-threads = 4
+
+# Queue size for fast and slow threads
 task-queue-size = 1024
 
 # If server should become leader from it's very start
@@ -32,7 +40,7 @@ stats-interval = 10000
 # Prefix for sending own stats
 stats-prefix = "resources.monitoring.bioyino"
 
-# What consensus to use: "consul", "internal" or "none"
+# What consensus to use: "internal" or "none"
 consensus = "none"
 
 [carbon]
@@ -60,12 +68,17 @@ connect-delay-max = 10000
 #note, that 0 means 1 try
 send-retries = 30
 
+# The resulting aggregated set can be split into chunks to be sent to i.e. a cluster
+# of receiving nodes in parallel in `chunks` parallel TCP connections.
+# This may speedup a delivery and make a postprocessing in parallel
+chunks = 1
+
 # Network settings
 [network]
-# Address:port to listen for metrics at
+# address and UDP port to listen for statsd metrics at
 listen = "127.0.0.1:8125"
 
-# Address and port for replication server to listen on
+# Address and port for peer protocol TCP server to listen on
 peer-listen = "127.0.0.1:8136"
 
 # Address for peer client to bind to
@@ -118,7 +131,7 @@ async-sockets = 4
 # List of nodes to replicate metrics to
 nodes = []
 
-# Interval to send snapshots to nodes, ms
+# Interval(milliseconds) to take snapshots for aggregation and remote replication
 snapshot-interval = 1000
 
 [metrics]
@@ -127,7 +140,7 @@ snapshot-interval = 1000
 # it to false if you have such use case
 # consistent-parsing = true
 
-# Log all buffers being dropped due to parsing errors. Can be very spammy.
+# Log all buffers being dropped due to parsing errors. Can be very spammyif you have many incorrect data coming in.
 # log-parse-errors = false
 
 # Size of buffer that parser considers invalid. Used to avoid DoS attacks on parser.
@@ -137,33 +150,30 @@ snapshot-interval = 1000
 # Size of tags part of a metric (after semicolon character, not including the leading semicolon itself)
 # max-tags-len = 9000
 
-# Since tagged metric becomes a totally different metric in many systems the timeseries for such metrics
+# In some systems tagged metric becomes a totally different metric.  This means the timeseries for such metrics
 # can be broken. To avoid this for the time the metrics is adopted, this option allows to create a copy of
 # such tagged metric, but without tags
-# Please note that this is effectively the double amount of memory and processing times
+# Please note that this is effectively doubles the amount of memory and processing times
 # create-untagged-copy = false
 
 [aggregation]
 # round timestamp to interval of aggregation
 # possible values:
-# "up" - round to uppor bound of interval
+# "up" - round to upper bound of interval
 # "down" - round to lower bound
 # "no" - use exact timestamp, i.e. no rounding
 # round-timestamp = "no"
 
-# the threading mode of aggregation:
-# single - in a single thread
-# common - in the general thread pool along with parsing ang aggregating metrics
-# separate - in a separate thread pool
-mode = "single"
-
-# updates aggregate is usually a debug value than some real one
-# also this is the only one used for every type of metric, not only ms
-# so it's reasonable to avoid receiving a doubled amount of all metrics
-# This option allows to receive only metrics updated too often
+# `updates` aggregate is usually a debug value than some real one.
+# Usually one want it to see which metrics come too fast taking too much resources.
+# Since this is the only one used for every type of metric, not only timers,
+# it is reasonable to avoid receiving a doubled amount of all metrics.
+#
+# This option allows to receive only metrics updated too often.
+# In this example is is more than 200 per interval.
 update-count-threshold = 200
 
-# a list of aggregates gathered per type of metric
+# A list of aggregates gathered per type of metric.
 # Setting this value will define the exact way, so, i.e. ["mean"] will gather ONLY ONE aggregate
 #
 # To add new percentiles an integer value with "percentile-" prefix should be used.
@@ -171,7 +181,7 @@ update-count-threshold = 200
 # For example, "percentile-9999" will become 0.9999th percentile
 #
 # this is the full list of default values for timer
-#aggregates.timer = [ "count", "last", "min", "max", "sum", "median", "mean", "updates", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
+#aggregates.timer = [ "count", "rate", "last", "min", "max", "sum", "median", "mean", "updates", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
 
 # an example for gauge with "updates" aggregate turned off
 #aggregates.gauge = [ "value" ]
@@ -181,6 +191,7 @@ update-count-threshold = 200
 # Keys of map in this section are metric types: gauge, counter, diff-counter, timer, set
 # All sections have same set of parameters.
 # More examples can be seen in docs/aggregation.md file.
+
 [naming.default]
 # These setting will be applied for all unspecified naming parts.
 # # for example if naming.set does not exist or naming.set.tag-values is not specified,
@@ -246,20 +257,3 @@ nodes = {}
 # allow binding raft outgoing connnections to specific IP
 # default: not specified, so no bind happens
 # client-bind = "127.0.0.1:8138"
-
-[consul]
-# Start in disabled leader finding mode. This only works while consul is bootstrapping.
-# Can be helpful when there is a danger of agent being inaccessible.
-start-as = "disabled"
-
-# Consul agent address
-agent = "127.0.0.1:8500"
-
-# TTL of consul session, ms (Consul cannot set it to less than 10s)
-session-ttl = 11000
-
-# How often to renew Consul session, ms
-renew-time = 1000
-
-# Key name to lock in Consul
-key-name = "service/bioyino/lock"

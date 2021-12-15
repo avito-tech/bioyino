@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-use futures3::future::{Future as Future3, TryFutureExt};
+use futures::future::{Future, TryFutureExt};
 use resolve::resolver;
 use slog::{o, warn, Drain, Logger};
 use socket2::{Domain, Socket, Type};
@@ -31,12 +31,17 @@ pub enum OtherError {
     NotFound(String),
 }
 
+#[cfg(test)]
 pub fn prepare_log(root: &'static str) -> Logger {
     // Set logging
     let decorator = slog_term::TermDecorator::new().build();
     let drain = slog_term::FullFormat::new(decorator).build().fuse();
     let filter = slog::LevelFilter::new(drain, slog::Level::Trace).fuse();
-    let drain = slog_async::Async::new(filter).build().fuse();
+    let drain = slog_async::Async::new(filter)
+        .overflow_strategy(slog_async::OverflowStrategy::Block)
+        .thread_name("bioyino_log".into())
+        .chan_size(2048)
+        .build().fuse();
     slog::Logger::root(drain, o!("program"=>"test", "test"=>root))
 }
 
@@ -45,11 +50,15 @@ pub(crate) fn setup_logging(daemon: bool, verbosity_console: Verbosity, verbosit
         ($drain:ident) => {
             {
                 let values = o!("program"=>"bioyino");
-                let drain = slog_async::Async::new($drain).build().fuse();
+                let drain = slog_async::Async::new($drain)
+                    .thread_name("bioyino_log".into())
+                    .chan_size(2048)
+                    .build()
+                    .fuse();
                 slog::Logger::root(drain, values)
             }
         }
-    };
+    }
 
     // the complex logic here could be decreased using boxed drains,
     // but we don't want it yet, for meaningless imaginary performance benefits
@@ -104,11 +113,11 @@ pub fn try_resolve(s: &str) -> SocketAddr {
 }
 
 pub fn bound_stream(addr: &SocketAddr) -> Result<StdTcpStream, io::Error> {
-    let socket = Socket::new(Domain::ipv4(), Type::stream(), None)?;
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
     socket.bind(&addr.clone().into())?;
-    Ok(socket.into_tcp_stream())
+    Ok(socket.into())
 }
 
 //pub fn reusing_listener(addr: &SocketAddr) -> Result<TcpListener, io::Error> {
@@ -138,7 +147,7 @@ pub async fn resolve_with_port(host: &str, default_port: u16) -> Result<SocketAd
 }
 
 pub async fn resolve_to_first(host: &str) -> Result<IpAddr, OtherError> {
-    let resolver = TokioAsyncResolver::tokio_from_system_conf().await?;
+    let resolver = TokioAsyncResolver::tokio_from_system_conf()?;
 
     let response = resolver.lookup_ip(host).await?;
 
@@ -212,7 +221,7 @@ impl Backoff {
             self.retries -= 1;
             let delay = self.next_sleep();
 
-            tokio2::time::delay_for(Duration::from_millis(delay)).await;
+            tokio::time::sleep(Duration::from_millis(delay)).await;
             Ok(self.retries)
         }
     }
@@ -230,16 +239,16 @@ impl Backoff {
 // TODO maybe let caller know it was out of tries, not just the last error
 pub async fn retry_with_backoff<F, I, R, E>(mut bo: Backoff, mut f: F) -> Result<R, E>
 where
-    I: Future3<Output = Result<R, E>>,
+    I: Future<Output = Result<R, E>>,
     F: FnMut() -> I,
-{
-    loop {
-        match f().await {
-            r @ Ok(_) => break r,
-            Err(e) => {
-                bo.sleep().map_err(|()| e).await?;
-                continue;
+    {
+        loop {
+            match f().await {
+                r @ Ok(_) => break r,
+                Err(e) => {
+                    bo.sleep().map_err(|()| e).await?;
+                    continue;
+                }
             }
         }
     }
-}

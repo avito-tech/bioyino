@@ -5,7 +5,9 @@ verbosity-syslog = "info"
 verbosity-console = "debug"
 daemon = true
 n-threads = 4
+p-threads = 4
 w-threads = 4
+a-threads = 4
 task-queue-size = 1024
 start-as-leader = true
 stats-interval = 10000
@@ -21,11 +23,9 @@ create-untagged-copy = true
 
 [aggregation]
 round-timestamp = "up"
-mode = "separate"
-threads = 8
 update-count-threshold = 10
-aggregates.timer = [ "count", "updates", "min", "max", "median", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999", "percentile-80" ]
-aggregates.set = [ "count", "count", "value"]
+aggregates.timer = [ "count", "updates", "min", "max", "median", "rate", "percentile-90", "percentile-999", "percentile-98", "percentile-50", "percentile-999", "percentile-80" ]
+aggregates.set = [ "count", "count", "value", "rate"]
 #ms-aggregates = [ "count",  "min", "max", "sum", "median", "mean", "percentile-75", "percentile-95", "percentile-98", "percentile-99", "percentile-999" ]
 
 [naming.default]
@@ -38,7 +38,7 @@ tag-values = { "min" = "lower", "max" = "upper", "percentile-50" = "percentile.5
 
 [naming.timer]
 prefix = "split.timers"
-prefix-overrides = { "updates" = "qewr" }
+prefix-overrides = { "updates" = "qewr", "rate" = "rate30" }
 
 [naming.set]
 tag-values = { "count" = "set.counts" }
@@ -57,6 +57,7 @@ chunks = 3
 listen = "127.0.0.1:8125"
 peer-listen = "127.0.0.1:8136"
 #peer-client-bind = "127.0.0.1:8183"
+peer-protocol = "2"
 mgmt-listen = "127.0.0.1:8137"
 bufsize = 1500
 multimessage = true
@@ -79,10 +80,3 @@ election-timeout-max = 751
 this-node = "some-node"
 nodes = {"127.0.0.1:8138" = 1}
 client-bind = "127.0.0.1:8138"
-
-[consul]
-start-as = "disabled"
-agent = "127.0.0.1:8500"
-session-ttl = 11000
-renew-time = 1000
-key-name = "service/bioyino/lock"

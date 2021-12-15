@@ -1,23 +1,21 @@
-use std::collections::HashMap;
-use std::iter::FromIterator;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::Ordering;
 use std::task::{Context, Poll};
 
-use bytes::{buf::BufMutExt, BytesMut};
-use futures3::future::{ok, Future};
+use futures::future::{ok, Future};
 use slog::{info, o, warn, Logger};
 
-use hyper13::service::Service;
-use hyper13::{self, body::to_bytes, http, Body, Client, Method, Request, Response, StatusCode};
+use hyper::service::Service;
+use hyper::{self, body::to_bytes, http, Body, client::Client, Method, Request, Response, StatusCode};
 
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::stats::STATS_SNAP;
-use crate::{ConsensusState, Float, CONSENSUS_STATE, IS_LEADER};
+use crate::GeneralError;
+use crate::{CONSENSUS_STATE, IS_LEADER};
 
 #[derive(Error, Debug)]
 pub enum MgmtError {
@@ -25,7 +23,7 @@ pub enum MgmtError {
     Io(#[from] ::std::io::Error),
 
     #[error("Http error: {}", _0)]
-    Http(#[from] hyper13::error::Error),
+    Http(#[from] hyper::Error),
 
     #[error("Http error: {}", _0)]
     HttpProto(#[from] http::Error),
@@ -41,6 +39,27 @@ pub enum MgmtError {
 
     #[error("response not sent")]
     Response,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum ConsensusState {
+    Enabled,
+    Paused,
+    Disabled,
+}
+
+impl FromStr for ConsensusState {
+    type Err = GeneralError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "enabled" | "enable" => Ok(ConsensusState::Enabled),
+            "disabled" | "disable" => Ok(ConsensusState::Disabled),
+            "pause" | "paused" => Ok(ConsensusState::Paused),
+            _ => Err(GeneralError::UnknownState),
+        }
+    }
 }
 
 // Top level list of available commands
@@ -131,6 +150,8 @@ impl MgmtService {
             log,
         }
     }
+
+
 }
 
 impl Service<Request<Body>> for MgmtService {
@@ -173,7 +194,6 @@ impl Service<Request<Body>> for MgmtService {
                 Box::pin(ok(response))
             }
             (&Method::GET, "/stats", qry) => {
-                let mut buf = BytesMut::new();
                 let mut json = false;
                 if let Some(qry) = qry {
                     for (k, v) in qry {
@@ -183,45 +203,16 @@ impl Service<Request<Body>> for MgmtService {
                         }
                     }
                 }
-                if !json {
-                    let snapshot = STATS_SNAP.lock().unwrap();
-                    let ts = snapshot.ts.to_string();
-                    for (name, value) in &snapshot.data {
-                        buf.extend_from_slice(&name[..]);
-                        buf.extend_from_slice(&b" "[..]);
-                        // write somehow doesn't extend buffer size giving "cannot fill buffer" error
-                        buf.reserve(64);
-                        let mut writer = buf.writer();
-                        ftoa::write(&mut writer, *value).unwrap_or(()); // TODO: think if we should not ignore float error
-                        buf = writer.into_inner();
-                        buf.extend_from_slice(&b" "[..]);
-                        buf.extend_from_slice(ts.as_bytes());
-                        buf.extend_from_slice(&b"\n"[..]);
-                    }
-                } else {
-                    let snapshot = STATS_SNAP.lock().unwrap();
 
-                    #[derive(Serialize)]
-                    struct JsonSnap {
-                        ts: u128,
-                        metrics: HashMap<String, Float>,
-                    }
-
-                    let snap = JsonSnap {
-                        ts: snapshot.ts,
-                        metrics: HashMap::from_iter(
-                            snapshot
-                                .data
-                                .iter()
-                                .map(|(name, value)| (String::from_utf8_lossy(&name[..]).to_string(), *value)),
-                        ),
+                Box::pin(async move {
+                    let snapshot = {
+                        let snapshot = STATS_SNAP.read().await;
+                        snapshot.clone()
                     };
-                    let mut writer = buf.writer();
-                    serde_json::to_writer_pretty(&mut writer, &snap).unwrap_or(());
-                    buf = writer.into_inner();
-                }
-                *response.body_mut() = Body::from(buf.freeze());
-                Box::pin(ok(response))
+                    let buf = snapshot.render(json);
+                    *response.body_mut() = Body::from(buf);
+                    Ok(response)
+                })
             }
             (&Method::GET, _, _) => {
                 *response.status_mut() = StatusCode::NOT_FOUND;
@@ -296,7 +287,7 @@ pub struct MgmtServer(pub Logger, pub SocketAddr);
 impl<T> Service<T> for MgmtServer {
     type Response = MgmtService;
     type Error = std::io::Error;
-    type Future = futures3::future::Ready<Result<Self::Response, Self::Error>>;
+    type Future = futures::future::Ready<Result<Self::Response, Self::Error>>;
 
     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Ok(()).into()
@@ -304,7 +295,7 @@ impl<T> Service<T> for MgmtServer {
 
     fn call(&mut self, _: T) -> Self::Future {
         ok(MgmtService::new(
-            self.0.new(o!("source"=>"management-server", "server"=>format!("{}", self.1.clone()))),
+                self.0.new(o!("source"=>"management-server", "server"=>format!("{}", self.1.clone()))),
         ))
     }
 }
@@ -391,8 +382,8 @@ mod test {
     use {slog, slog_async, slog_term};
 
     use slog::{Drain, Logger};
-    use tokio2::runtime::{Builder, Runtime};
-    use tokio2::time::delay_for;
+    use tokio::runtime::{Builder, Runtime};
+    use tokio::time::sleep;
 
     use super::*;
     fn prepare_log() -> Logger {
@@ -409,10 +400,10 @@ mod test {
         let rlog = prepare_log();
 
         let mgmt_listen: ::std::net::SocketAddr = "127.0.0.1:8137".parse().unwrap();
-        let runtime = Builder::new().basic_scheduler().enable_all().build().expect("creating runtime for main thread");
+        let runtime = Builder::new_current_thread().enable_all().build().expect("creating runtime for testing management server");
 
         let m_serv_log = rlog.clone();
-        let m_server = async move { hyper13::Server::bind(&mgmt_listen).serve(MgmtServer(m_serv_log, mgmt_listen)).await };
+        let m_server = async move { hyper::Server::bind(&mgmt_listen).serve(MgmtServer(m_serv_log, mgmt_listen)).await };
 
         runtime.spawn(m_server);
 
@@ -421,12 +412,12 @@ mod test {
 
     #[test]
     fn management_command() {
-        let (mut runtime, log, address) = prepare_runtime_with_server();
+        let (runtime, log, address) = prepare_runtime_with_server();
 
         let check = async move {
             // let server some time to settle
             // then test the commands
-            let d = delay_for(Duration::from_secs(1));
+            let d = sleep(Duration::from_secs(1));
             d.await;
 
             // status
@@ -451,7 +442,7 @@ mod test {
         };
 
         runtime.spawn(check);
-        let test_delay = async { delay_for(Duration::from_secs(3)).await };
+        let test_delay = async { sleep(Duration::from_secs(3)).await };
         runtime.block_on(test_delay);
     }
 }

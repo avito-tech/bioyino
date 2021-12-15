@@ -4,11 +4,10 @@ Each metric type has different list of aggregates which can be counted:
 
 | Metric type name | statsd name | Aggregates |
 | ---           | ---   | --- |
-| counter       | c     | value, updates |
-| diff-counter  | C     | value, updates |
-| timer         | ms    | last, min, max, sum, median, mean, updates, percentile-\* |
-| gauge         | g     | value, updates |
-| set           | s     | count, updates |
+| counter       | c     | value, updates, rate |
+| timer         | ms    | last, min, max, sum, median, mean, updates, rate, percentile-\* |
+| gauge         | g     | value, updates, rate |
+| set           | s     | count, updates, rate |
 
 `value` is the aggregate of the resulting value of that type.
 
@@ -18,6 +17,8 @@ By default the percentiles for timer are: 75th, 95th, 98th, 99th and 999th.
 
 `updates` is a special aggregate, showing the number of metrics with this name that came in during the aggregation period.
 It is counted always, even if disabled by configuration and can be additionally filtered by `aggregation.update-count-threshold` parameter.
+
+`rate` aggregate takes sampling rate in account, and tries to restore the original value rate on the metric source rather that "system" rate of receiving metric on the server
 
 By default, bioyino counts all the aggregates. This behaviour can be changed by `aggregation.aggregates` option.
 If a type is not specified, the default value(meaning all aggregates) will be used.
@@ -93,31 +94,3 @@ prefix-overrides = {"updates" = "global.namespace.debug-updates.gauges" }
 destination = "tag"
 tag = "agg"
 ```
-
-# Aggregation modes
-Depending of aggregation heaviness, there may be different ways to perform it internally.
-
-The most notable parameter here is the size of and array for a single metric. There may be a lot of i.e. `ms`-typed
-metrics, but when only few metrics come during the aggregation period, counting stats for all of them is fast and one
-thread will most probably be enough.
-
-## Single threaded
-In this mode the whole array of metrics is counted in a single thread. Usually this is enough for a low-sized batches
-i.e. when only a few metrics with the same name are received during aggregation period. Another use case is when
-aggregation time is not important and it is ok to wait some time leaving all other cores for processing.
-
-## Common pool multithreaded
-Can be enabled by setting `aggregation-mode` to "common" in `metrics` section.
-
-The aggregation is distributed between same worker threads, that do parsing and initial metric processing.
-Only one thread is started to join the results received from these workers.
-
-The biggest disadvantage of this approach is that aggregation of some big metric packs can block worker threads, so for
-some time they could not process incoming data and therefore UDP drops may increase.
-
-## Separate pool multithreaded
-Can be enabled by setting `aggregation-mode` to "separate" in `metrics` section.
-
-This mode runs a totally separate thread pool which will try to aggregate all the metrics as fast as possible.
-To set the size of the pool `aggregaton-threads` option can be used. It only works in "separate" mode. If set to 0,
-the number of threads will be taken automatically by number of cpu cores.
