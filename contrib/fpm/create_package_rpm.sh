@@ -14,7 +14,7 @@ die() {
 
 pwd
 
-GIT_VERSION="$(git describe --always --tags)" || die 1 "Can't get latest version from git"
+GIT_VERSION="$(git describe --long --always --tags)" || die 1 "Can't get latest version from git"
 
 set -f; IFS='-' ; arr=($GIT_VERSION)
 VERSION=${arr[0]}; [ -z "${arr[2]}" ] && RELEASE=${arr[1]} || RELEASE=${arr[1]}.${arr[2]}
