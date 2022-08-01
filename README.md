@@ -33,7 +33,7 @@ $ cargo build --release && strip target/release/bioyno
 
 1.  Install requirements (as root or with sudo)
 ```
-    yum install -y capnproto capnproto-devel
+    yum install -y cargo capnproto capnproto-devel
     yum install -y ruby-devel
     gem install fpm
 ```
