@@ -179,7 +179,7 @@ pub fn switch_leader(acquired: bool, log: &Logger) {
     if should_set {
         let is_leader = IS_LEADER.load(Ordering::SeqCst);
         if is_leader != acquired {
-            warn!(log, "leader state change: {} -> {}", is_leader, acquired);
+            error!(log, "leader state change: {} -> {}", is_leader, acquired);
         }
         IS_LEADER.store(acquired, Ordering::SeqCst);
     }
