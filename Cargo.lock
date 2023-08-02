@@ -100,7 +100,7 @@ dependencies = [
 
 [[package]]
 name = "bioyino"
-version = "0.8.0-alpha7"
+version = "0.8.0-alpha7.2"
 dependencies = [
  "array-init",
  "async-channel",
