@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use futures::future::{Future, TryFutureExt};
 use resolve::resolver;
-use slog::{o, error, warn, Drain, Logger};
+use slog::{error, o, warn, Drain, Logger};
 use socket2::{Domain, Socket, Type};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -41,7 +41,8 @@ pub fn prepare_log(root: &'static str) -> Logger {
         .overflow_strategy(slog_async::OverflowStrategy::Block)
         .thread_name("bioyino_log".into())
         .chan_size(2048)
-        .build().fuse();
+        .build()
+        .fuse();
     slog::Logger::root(drain, o!("program"=>"test", "test"=>root))
 }
 
@@ -241,14 +242,14 @@ pub async fn retry_with_backoff<F, I, R, E>(mut bo: Backoff, mut f: F) -> Result
 where
     I: Future<Output = Result<R, E>>,
     F: FnMut() -> I,
-    {
-        loop {
-            match f().await {
-                r @ Ok(_) => break r,
-                Err(e) => {
-                    bo.sleep().map_err(|()| e).await?;
-                    continue;
-                }
+{
+    loop {
+        match f().await {
+            r @ Ok(_) => break r,
+            Err(e) => {
+                bo.sleep().map_err(|()| e).await?;
+                continue;
             }
         }
     }
+}

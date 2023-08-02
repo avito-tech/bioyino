@@ -172,9 +172,9 @@ pub fn aggregate_task(data: AggregationData) {
                     _ => Some((name.clone(), typename, *aggregate, value)),
                 }
             })
-        .map(|data| result.push(data))
+            .map(|data| result.push(data))
             .last();
-        }
+    }
 
     futures::executor::block_on(response.send(result)).unwrap_or(());
 }
@@ -237,7 +237,8 @@ mod tests {
 
         // Create some cache data, send it to be joined into long cache
         let mut cache = HashMap::new();
-        for i in 0..10u16 { // u16 can be converted to f32
+        for i in 0..10u16 {
+            // u16 can be converted to f32
             let mut metric = Metric::new(MetricValue::Timer(vec![0.]), None, 1.);
             for j in 1..100u16 {
                 let new_metric = Metric::new(MetricValue::Timer(vec![j.into()]), None, 1.);
@@ -253,7 +254,6 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         slow_chan.send(SlowTask::Rotate(Some(tx))).unwrap();
 
-
         // the result of timer aggregations we want is each key mapped to name
         let required_aggregates: Vec<(MetricName, Aggregate<Float>)> = cache
             .keys()
@@ -268,7 +268,7 @@ mod tests {
                     .chain(Some(Aggregate::Percentile(0.8, 80)))
                     .map(move |agg| (key.clone(), agg))
             })
-        .flatten()
+            .flatten()
             .collect();
 
         let required_len = required_aggregates.len();
@@ -293,7 +293,7 @@ mod tests {
                     response: agg_tx.clone(),
                 };
                 slow_chan.send(SlowTask::Aggregate(agg_data)).unwrap();
-                    }
+            }
 
             use futures::StreamExt;
             // wait for answers nd collect data for further sending
@@ -312,16 +312,16 @@ mod tests {
             for (rname, ragg) in &required_aggregates {
                 if !aggregated
                     .iter()
-                        .flatten()
-                        .position(|(name, _, ag, _)| {
-                            if let (&Aggregate::Rate(_), &Aggregate::Rate(_)) = (ag, &ragg) {
-                                // compare rate aggregate without internal value
-                                &name == &rname
-                            } else {
-                                (name, ag) == (&rname, &ragg)
-                            }
-                        })
-                .is_some()
+                    .flatten()
+                    .position(|(name, _, ag, _)| {
+                        if let (&Aggregate::Rate(_), &Aggregate::Rate(_)) = (ag, &ragg) {
+                            // compare rate aggregate without internal value
+                            &name == &rname
+                        } else {
+                            (name, ag) == (&rname, &ragg)
+                        }
+                    })
+                    .is_some()
                 {
                     let mut fails = inner_fails.lock().unwrap();
                     *fails += 1;
@@ -329,11 +329,11 @@ mod tests {
                 }
 
                 // length should match the length of aggregates
-                let result_len = aggregated.iter().fold(0, |acc, elem| { acc + elem.len() } );
+                let result_len = aggregated.iter().fold(0, |acc, elem| acc + elem.len());
                 if result_len != required_len {
                     let mut fails = inner_fails.lock().unwrap();
                     *fails += 1;
-                    dbg!("found other than required aggregates: {} {}",result_len, required_len );
+                    dbg!("found other than required aggregates: {} {}", result_len, required_len);
                 }
             }
         };
@@ -343,5 +343,5 @@ mod tests {
         runtime.block_on(test_delay);
         drop(runtime);
         assert_eq!(Arc::try_unwrap(fails).unwrap().into_inner().unwrap(), 0);
-        }
     }
+}

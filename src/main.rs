@@ -1,18 +1,18 @@
 // General
 pub mod aggregate;
+pub mod async_udp;
+pub mod cache;
 pub mod carbon;
 pub mod config;
 pub mod errors;
+pub mod fast_task;
 pub mod management;
 pub mod peer;
 pub mod raft;
-pub mod async_udp;
-pub mod sync_udp;
-pub mod stats;
-pub mod fast_task;
 pub mod slow_task;
+pub mod stats;
+pub mod sync_udp;
 pub mod util;
-pub mod cache;
 
 use std::collections::HashMap;
 use std::io;
@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{panic, process, thread};
 
-use slog::{info, o, debug};
+use slog::{debug, info, o};
 
 use futures::future::{pending, TryFutureExt};
 
@@ -37,20 +37,20 @@ use bioyino_metric::metric::Metric;
 use bioyino_metric::name::MetricName;
 use once_cell::sync::Lazy;
 
+use crate::async_udp::start_async_udp;
 use crate::carbon::carbon_timer;
+use crate::config::ConsensusKind;
 use crate::config::{Command, Network, System};
 use crate::errors::GeneralError;
+use crate::fast_task::start_fast_threads;
+use crate::management::ConsensusState;
 use crate::management::MgmtClient;
 use crate::peer::{NativeProtocolServer, NativeProtocolSnapshot};
 use crate::raft::start_internal_raft;
-pub use crate::stats::OwnStats;
-use crate::fast_task::start_fast_threads;
 use crate::slow_task::start_slow_threads;
+pub use crate::stats::OwnStats;
 use crate::sync_udp::start_sync_udp;
-use crate::async_udp::start_async_udp;
 use crate::util::{retry_with_backoff, setup_logging, try_resolve, Backoff};
-use crate::management::ConsensusState;
-use crate::config::ConsensusKind;
 
 // floating type used all over the code, can be changed to f32, to use less memory at the price of
 // precision
@@ -88,18 +88,18 @@ fn main() {
                 buffer_flush_time,
                 ..
             },
-            raft,
-            metrics: _,
-            aggregation,
-            naming,
-            carbon,
-            n_threads,
-            a_threads,
-            stats_interval: s_interval,
-            start_as_leader,
-            stats_prefix,
-            consensus,
-            ..
+        raft,
+        metrics: _,
+        aggregation,
+        naming,
+        carbon,
+        n_threads,
+        a_threads,
+        stats_interval: s_interval,
+        start_as_leader,
+        stats_prefix,
+        consensus,
+        ..
     } = system;
 
     if daemon && verbosity_syslog.is_off() {
@@ -223,8 +223,8 @@ fn main() {
 
                             info!(flog, "consensus thread stopped");
                         })
-                    .expect("starting counting worker thread");
-                    }
+                        .expect("starting counting worker thread");
+                }
                 ConsensusKind::None => {
                     if !start_as_leader {
                         // starting as non-leader in this mode can be useful for agent mode
@@ -239,7 +239,7 @@ fn main() {
 
             runtime.block_on(empty::<(), ()>()).expect("compat thread failed");
         })
-    .expect("starting compat thread");
+        .expect("starting compat thread");
 
     // settings safe for asap restart
     info!(log, "starting snapshot receiver");
@@ -262,12 +262,7 @@ fn main() {
     runtime.spawn(peer_server);
 
     info!(log, "starting snapshot sender");
-    let snapshot = NativeProtocolSnapshot::new(
-        &log,
-        config.clone(),
-        &fast_prio_chans,
-        slow_chan.clone(),
-    );
+    let snapshot = NativeProtocolSnapshot::new(&log, config.clone(), &fast_prio_chans, slow_chan.clone());
 
     runtime.spawn(snapshot.run().map_err(move |e| {
         s!(peer_errors);
@@ -286,19 +281,8 @@ fn main() {
         .map_err(move |e| error!(carbon_log, "running carbon thread"; "error" => format!("{}", e)));
     runtime.spawn(carbon_t);
 
-
     if multimessage {
-        let flush_flags = start_sync_udp(
-            log,
-            listen,
-            &fast_chans,
-            config.clone(),
-            n_threads,
-            bufsize,
-            mm_packets,
-            mm_async,
-            mm_timeout,
-        );
+        let flush_flags = start_sync_udp(log, listen, &fast_chans, config.clone(), n_threads, bufsize, mm_packets, mm_async, mm_timeout);
         // spawn a flushing timer if required
         if buffer_flush_time > 0 {
             let flush_timer = async move {

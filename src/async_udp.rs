@@ -1,30 +1,26 @@
-use std::{collections::hash_map::DefaultHasher, sync::atomic::AtomicBool};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::io;
+use std::{collections::hash_map::DefaultHasher, sync::atomic::AtomicBool};
 
 use bytes::{BufMut, BytesMut};
 use crossbeam_channel::Sender;
 use futures::future::{pending, select};
-use tokio::{net::UdpSocket, sync::Notify};
-use tokio::runtime::Builder;
 use socket2::{Domain, Protocol, Socket, Type};
+use tokio::runtime::Builder;
+use tokio::{net::UdpSocket, sync::Notify};
 
-use slog::{ error, o, warn, Logger};
+use slog::{error, o, warn, Logger};
 
 use crate::config::System;
+use crate::errors::GeneralError;
+use crate::fast_task::FastTask;
 use crate::s;
 use crate::stats::STATS;
-use crate::fast_task::FastTask;
-use crate::errors::GeneralError;
 
-pub(crate) fn start_async_udp(
-    log: Logger, chans: &[Sender<FastTask>], config: Arc<System>
-) -> Arc<Notify> {
-
-
+pub(crate) fn start_async_udp(log: Logger, chans: &[Sender<FastTask>], config: Arc<System>) -> Arc<Notify> {
     let flush_notify_ret = Arc::new(Notify::new());
 
     let chans = chans.to_vec();
@@ -56,19 +52,12 @@ pub(crate) fn start_async_udp(
 
                     // for every single socket we want a number of green threads (specified by `greens`) listening for it
                     for _ in 0..config.network.greens {
-
                         let config = config.clone();
                         let log = log.clone();
                         let flush_notify = flush_notify.clone();
                         let chans = chans.clone();
                         let socket = socket.clone();
-                        let worker = AsyncUdpWorker::new(
-                            log,
-                            chans,
-                            config,
-                            socket,
-                            flush_notify,
-                        );
+                        let worker = AsyncUdpWorker::new(log, chans, config, socket, flush_notify);
 
                         tokio::spawn(worker.run());
                     }
@@ -77,7 +66,7 @@ pub(crate) fn start_async_udp(
 
             runtime.block_on(pending::<()>())
         })
-    .expect("starting thread for async UDP threadpool");
+        .expect("starting thread for async UDP threadpool");
 
     flush_notify_ret
 }
@@ -91,15 +80,7 @@ struct AsyncUdpWorker {
 }
 
 impl AsyncUdpWorker {
-
-    fn new(
-        log: Logger,
-        chans: Vec<Sender<FastTask>>,
-        config: Arc<System>,
-        socket: Arc<UdpSocket>,
-        flush: Arc<Notify>,
-    ) -> Self {
-
+    fn new(log: Logger, chans: Vec<Sender<FastTask>>, config: Arc<System>, socket: Arc<UdpSocket>, flush: Arc<Notify>) -> Self {
         Self {
             log,
             chans,
@@ -109,10 +90,7 @@ impl AsyncUdpWorker {
         }
     }
 
-    async fn run(
-        self,
-    ) -> Result<(), GeneralError> {
-
+    async fn run(self) -> Result<(), GeneralError> {
         let Self {
             log,
             mut chans,
@@ -120,7 +98,7 @@ impl AsyncUdpWorker {
             socket,
             flush,
         } = self;
-        let mut  bufmap = HashMap::new();
+        let mut bufmap = HashMap::new();
         let bufsize = config.network.bufsize;
         let mut readbuf = Vec::with_capacity(bufsize);
         readbuf.resize(bufsize, 0);
@@ -131,10 +109,7 @@ impl AsyncUdpWorker {
         let mut recv_counter = 0usize;
 
         loop {
-
-            let f1 = async {
-                socket.readable().await
-            };
+            let f1 = async { socket.readable().await };
 
             let f2 = async {
                 flush.notified().await;
@@ -152,17 +127,17 @@ impl AsyncUdpWorker {
                     Ok((0, _)) => {
                         // size = 0 means EOF
                         warn!(log, "exiting on EOF");
-                        return Ok(())
+                        return Ok(());
                     }
                     Ok((size, addr)) => (size, addr),
-                    Err(e)  if e.kind() == io::ErrorKind::WouldBlock => {
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                         //continue
-                        break
-                            //return Ok(())
+                        break;
+                        //return Ok(())
                     }
                     Err(e) => {
                         error!(log, "error reading UDP socket {:?}", e);
-                        return Err(GeneralError::Io(e))
+                        return Err(GeneralError::Io(e));
                     }
                 };
 

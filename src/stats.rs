@@ -1,17 +1,17 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::iter::FromIterator;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{self, Duration, SystemTime};
 
-use serde::Serialize;
-use bytes::{Bytes, BytesMut, BufMut};
-use once_cell::sync::Lazy;
-use slog::{info, o, Logger};
+use bytes::{BufMut, Bytes, BytesMut};
 use crossbeam_channel::Sender;
+use once_cell::sync::Lazy;
+use serde::Serialize;
+use slog::{info, o, Logger};
 
 use tokio::sync::RwLock;
 
-use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType, FromF64};
+use bioyino_metric::{name::MetricName, FromF64, StatsdMetric, StatsdType};
 
 use crate::errors::GeneralError;
 use crate::fast_task::FastTask;
@@ -67,11 +67,10 @@ impl Default for OwnSnapshot {
                 .map_err(GeneralError::Time)
                 .expect("getting system time")
                 .as_millis(),
-                data: Vec::new(),
+            data: Vec::new(),
         }
     }
 }
-
 
 impl OwnSnapshot {
     pub(crate) fn render(&self, json: bool) -> Bytes {
@@ -85,15 +84,13 @@ impl OwnSnapshot {
                 // write somehow doesn't extend buffer size giving "cannot fill buffer" error
                 buf.reserve(64);
                 let mut writer = buf.writer();
-                dtoa::write(&mut writer, *value).map(|_|()).unwrap_or(()); // TODO: think if we should not ignore float error
+                dtoa::write(&mut writer, *value).map(|_| ()).unwrap_or(()); // TODO: think if we should not ignore float error
                 buf = writer.into_inner();
                 buf.extend_from_slice(&b" "[..]);
                 buf.extend_from_slice(ts.as_bytes());
                 buf.extend_from_slice(&b"\n"[..]);
             }
-
         } else {
-
             #[derive(Serialize)]
             struct JsonSnap {
                 ts: u128,
@@ -102,12 +99,7 @@ impl OwnSnapshot {
 
             let snap = JsonSnap {
                 ts: self.ts,
-                metrics: HashMap::from_iter(
-                    self
-                    .data
-                    .iter()
-                    .map(|(name, value)| (String::from_utf8_lossy(&name[..]).to_string(), *value)),
-                ),
+                metrics: HashMap::from_iter(self.data.iter().map(|(name, value)| (String::from_utf8_lossy(&name[..]).to_string(), *value))),
             };
             let mut writer = buf.writer();
             serde_json::to_writer_pretty(&mut writer, &snap).unwrap_or(());
@@ -149,7 +141,11 @@ impl OwnStats {
     }
 
     fn next_chan(&mut self) -> &Sender<FastTask> {
-        self.next_chan = if self.next_chan >= (self.fast_chans.len() - 1) { 0 } else { self.next_chan + 1 };
+        self.next_chan = if self.next_chan >= (self.fast_chans.len() - 1) {
+            0
+        } else {
+            self.next_chan + 1
+        };
         &self.fast_chans[self.next_chan]
     }
 
@@ -167,10 +163,7 @@ impl OwnStats {
                     let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
                     let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes());
                     let chan = self.next_chan();
-                    chan
-                        .send(FastTask::Accumulate(name, metric))
-                        .map_err(|_| s!(queue_errors))
-                        .unwrap_or(())
+                    chan.send(FastTask::Accumulate(name, metric)).map_err(|_| s!(queue_errors)).unwrap_or(())
                 }
             };
         }
@@ -193,11 +186,7 @@ impl OwnStats {
         let name = self.format_metric_carbon(&mut buf, "slow-w-len".as_bytes());
 
         let chan = self.next_chan();
-        chan
-            .send(FastTask::Accumulate(name, qlen))
-            .map_err(|_| s!(queue_errors))
-            .unwrap_or(());
-
+        chan.send(FastTask::Accumulate(name, qlen)).map_err(|_| s!(queue_errors)).unwrap_or(());
 
         if self.interval > 0 {
             info!(self.log, "stats";
@@ -223,9 +212,7 @@ impl OwnStats {
         let mut interval = tokio::time::interval_at(now + dur, dur);
         loop {
             interval.tick().await;
-            let snapshot = tokio::task::block_in_place(||{
-                self.count()
-            });
+            let snapshot = tokio::task::block_in_place(|| self.count());
             // update global snapshot
             {
                 let mut prev = STATS_SNAP.write().await;

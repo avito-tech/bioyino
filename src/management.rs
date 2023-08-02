@@ -8,7 +8,7 @@ use futures::future::{ok, Future};
 use slog::{info, o, warn, Logger};
 
 use hyper::service::Service;
-use hyper::{self, body::to_bytes, http, Body, client::Client, Method, Request, Response, StatusCode};
+use hyper::{self, body::to_bytes, client::Client, http, Body, Method, Request, Response, StatusCode};
 
 use serde_derive::{Deserialize, Serialize};
 use thiserror::Error;
@@ -150,8 +150,6 @@ impl MgmtService {
             log,
         }
     }
-
-
 }
 
 impl Service<Request<Body>> for MgmtService {
@@ -295,7 +293,7 @@ impl<T> Service<T> for MgmtServer {
 
     fn call(&mut self, _: T) -> Self::Future {
         ok(MgmtService::new(
-                self.0.new(o!("source"=>"management-server", "server"=>format!("{}", self.1.clone()))),
+            self.0.new(o!("source"=>"management-server", "server"=>format!("{}", self.1.clone()))),
         ))
     }
 }
@@ -400,7 +398,10 @@ mod test {
         let rlog = prepare_log();
 
         let mgmt_listen: ::std::net::SocketAddr = "127.0.0.1:8137".parse().unwrap();
-        let runtime = Builder::new_current_thread().enable_all().build().expect("creating runtime for testing management server");
+        let runtime = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("creating runtime for testing management server");
 
         let m_serv_log = rlog.clone();
         let m_server = async move { hyper::Server::bind(&mgmt_listen).serve(MgmtServer(m_serv_log, mgmt_listen)).await };

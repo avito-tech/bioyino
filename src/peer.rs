@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::{atomic::Ordering, Arc};
 use std::time::Duration;
 
 use capnp::message::{Builder, ReaderOptions};
@@ -11,27 +11,28 @@ use thiserror::Error;
 use crossbeam_channel::Sender;
 use futures::channel::oneshot;
 
-use futures::future::{TryFutureExt, join_all};
+use futures::future::{join_all, TryFutureExt};
 use ring_channel::{ring_channel, RingReceiver, RingSender};
-use tokio::{net::{TcpListener, TcpStream},
-spawn,
-time::{interval_at, Instant},
-io::AsyncWriteExt,
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+    spawn,
+    time::{interval_at, Instant},
 };
 
-use tokio_util::compat::TokioAsyncReadCompatExt;
 use tokio_stream::StreamExt;
+use tokio_util::compat::TokioAsyncReadCompatExt;
 
 use bioyino_metric::protocol_capnp::{message as cmsg, message::Builder as CBuilder};
 use bioyino_metric::protocol_v2_capnp::{message as cmsgv2, message::Builder as CBuilderV2};
-use bioyino_metric::{Metric, metric::ProtocolVersion};
+use bioyino_metric::{metric::ProtocolVersion, Metric};
 
-use crate::slow_task::SlowTask;
-use crate::fast_task::FastTask;
-use crate::util::{bound_stream, resolve_with_port, Backoff};
 use crate::config::System;
+use crate::fast_task::FastTask;
+use crate::slow_task::SlowTask;
 use crate::stats::STATS;
-use crate::{s, Cache, Float, ConsensusKind, IS_LEADER,};
+use crate::util::{bound_stream, resolve_with_port, Backoff};
+use crate::{s, Cache, ConsensusKind, Float, IS_LEADER};
 
 const CAPNP_READER_OPTIONS: ReaderOptions = ReaderOptions {
     traversal_limit_in_words: Some(8 * 1024 * 1024 * 1024),
@@ -84,7 +85,7 @@ pub enum PeerError {
 pub struct NativeProtocolServer {
     log: Logger,
     listen: SocketAddr,
-    chan: Sender<SlowTask>
+    chan: Sender<SlowTask>,
 }
 
 impl NativeProtocolServer {
@@ -129,11 +130,10 @@ impl NativeProtocolServer {
                             })?
                         };
                         if let Some(task) = task {
-                            chan.send(task)
-                                .map_err(|_| {
-                                    s!(queue_errors);
-                                    PeerError::TaskSend
-                                })?;
+                            chan.send(task).map_err(|_| {
+                                s!(queue_errors);
+                                PeerError::TaskSend
+                            })?;
                         }
                         Ok(())
                     })?;
@@ -151,12 +151,11 @@ impl NativeProtocolServer {
 }
 
 fn parse_capnp(log: Logger, reader: capnp::message::Reader<capnp::serialize::OwnedSegments>) -> Result<Option<SlowTask>, PeerError> {
-    if let Ok(reader) = reader.get_root::<cmsgv2::Reader>() { // somehow this does not return an error for v1
+    if let Ok(reader) = reader.get_root::<cmsgv2::Reader>() {
+        // somehow this does not return an error for v1
         if reader.get_version() == ProtocolVersion::V2.id() {
             return match reader.which()? {
-                cmsgv2::Noop(()) => {
-                    Ok(None)
-                }
+                cmsgv2::Noop(()) => Ok(None),
                 cmsgv2::Snapshot(reader) => {
                     let reader = reader?;
                     let mut metrics = Vec::new();
@@ -169,7 +168,7 @@ fn parse_capnp(log: Logger, reader: capnp::message::Reader<capnp::serialize::Own
                     STATS.ingress_metrics_peer.fetch_add(metrics.len(), Ordering::Relaxed);
                     Ok(Some(SlowTask::AddSnapshot(metrics)))
                 }
-            }
+            };
         }
     }
 
@@ -216,10 +215,7 @@ pub struct NativeProtocolSnapshot {
 }
 
 impl NativeProtocolSnapshot {
-    pub fn new(log: &Logger,
-        config: Arc<System>,
-        fast_chans: &[Sender<FastTask>],
-        slow_chan: Sender<SlowTask>) -> Self {
+    pub fn new(log: &Logger, config: Arc<System>, fast_chans: &[Sender<FastTask>], slow_chan: Sender<SlowTask>) -> Self {
         let snapshots = if config.network.max_snapshots == 0 {
             warn!(log, "max_snapshots set to 0 in config, this is incorrect, real value is set to 1");
             1
@@ -255,7 +251,9 @@ impl NativeProtocolSnapshot {
         // Since all metrics is lost after some time on remote node, it is only reasonable to store
         // few latest intervals. This is the reason of using a ring buffer instead of a channel.
 
-        let mut node_chans = config.network.nodes
+        let mut node_chans = config
+            .network
+            .nodes
             .iter()
             .map(|address| {
                 let (tx, rx): (RingSender<Vec<Arc<Cache>>>, RingReceiver<Vec<Arc<Cache>>>) = ring_channel(snapshots);
@@ -270,7 +268,7 @@ impl NativeProtocolSnapshot {
                 spawn(client.run());
                 tx
             })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
 
         let mut timer = interval_at(Instant::now() + interval, interval);
         loop {
@@ -278,7 +276,7 @@ impl NativeProtocolSnapshot {
             // send snapshot requests to workers
             let mut outs = Vec::new();
             debug!(log, "taking snapshot from UDP");
-            tokio::task::block_in_place(||{
+            tokio::task::block_in_place(|| {
                 for chan in &fast_chans {
                     let (tx, rx) = oneshot::channel();
                     chan.send(FastTask::TakeSnapshot(tx)).unwrap_or(());
@@ -306,8 +304,8 @@ impl NativeProtocolSnapshot {
             // long cache at all because it will never be sent anywhere
             if !is_leader && config.consensus == ConsensusKind::None {
                 debug!(log, "skipped aggregating UDP snapshot (not leader)");
-            } else  {
-                tokio::task::block_in_place(||{
+            } else {
+                tokio::task::block_in_place(|| {
                     for cache in &caches {
                         slow_chan.send(SlowTask::Join(cache.clone())).unwrap_or_else(|_| {
                             s!(queue_errors);
@@ -325,7 +323,7 @@ impl NativeProtocolSnapshot {
                         s!(queue_errors);
                         PeerError::SnapshotDropped
                     })
-                .unwrap_or(());
+                    .unwrap_or(());
             }
             debug!(log, "UDP snapshot done");
         }
@@ -386,7 +384,7 @@ impl SnapshotSender {
                             c_metric.set_name(&name);
                             metric.fill_capnp_v1(&mut c_metric);
                         })
-                    .last();
+                        .last();
 
                     // this is just an approximate capacity to avoid first small allocations
                     let mut buf = Vec::with_capacity(mlen * 8);
@@ -414,7 +412,7 @@ impl SnapshotSender {
                             c_metric.set_name(&name);
                             metric.fill_capnp(&mut c_metric);
                         })
-                    .last();
+                        .last();
 
                     // this is just an approximate capacity to avoid first small allocations
                     let mut buf = Vec::with_capacity(mlen * 8);
@@ -423,8 +421,7 @@ impl SnapshotSender {
                         return;
                     };
                     buf
-                }
-                // capnp::serialize::write_message_to_words(&snapshot_message)
+                } // capnp::serialize::write_message_to_words(&snapshot_message)
             };
 
             let mut backoff = Backoff {
@@ -475,206 +472,204 @@ impl SnapshotSender {
                     }
                     Ok(()) => break,
                 }
-                }
             }
         }
     }
+}
 
 #[cfg(test)]
-    mod test {
+mod test {
 
-        use std::net::SocketAddr;
-        use std::time::{SystemTime, UNIX_EPOCH};
+    use std::net::SocketAddr;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-        use capnp::message::Builder;
-        use capnp_futures::serialize::write_message;
+    use capnp::message::Builder;
+    use capnp_futures::serialize::write_message;
 
-        use futures::{FutureExt, TryFutureExt};
-        use crossbeam_channel::Receiver;
-        use slog::{debug, Logger};
+    use crossbeam_channel::Receiver;
+    use futures::{FutureExt, TryFutureExt};
+    use slog::{debug, Logger};
 
-        use tokio::runtime::{Builder as RBuilder, Runtime};
-        use tokio::time::sleep;
-        use tokio_util::compat::TokioAsyncWriteCompatExt;
+    use tokio::runtime::{Builder as RBuilder, Runtime};
+    use tokio::time::sleep;
+    use tokio_util::compat::TokioAsyncWriteCompatExt;
 
-        use bioyino_metric::name::{MetricName, TagFormat};
-        use bioyino_metric::{Metric, MetricValue};
+    use bioyino_metric::name::{MetricName, TagFormat};
+    use bioyino_metric::{Metric, MetricValue};
 
-        use crate::config::System;
-        use crate::slow_task::SlowTaskRunner;
-        use crate::util::prepare_log;
-        use crate::cache::SharedCache;
+    use crate::cache::SharedCache;
+    use crate::config::System;
+    use crate::slow_task::SlowTaskRunner;
+    use crate::util::prepare_log;
 
-        use super::*;
+    use super::*;
 
-        fn prepare_runtime_with_server(log: Logger, address: SocketAddr) -> (Runtime, Sender<SlowTask>, Receiver<SlowTask>, tokio::task::JoinHandle<()>) {
-            let (tx, rx) = crossbeam_channel::bounded(5);
+    fn prepare_runtime_with_server(log: Logger, address: SocketAddr) -> (Runtime, Sender<SlowTask>, Receiver<SlowTask>, tokio::task::JoinHandle<()>) {
+        let (tx, rx) = crossbeam_channel::bounded(5);
 
-            let runtime = RBuilder::new_multi_thread()
-                .thread_name("bio_peer_test")
-                .enable_all()
-                .build()
-                .expect("creating runtime for test");
+        let runtime = RBuilder::new_multi_thread()
+            .thread_name("bio_peer_test")
+            .enable_all()
+            .build()
+            .expect("creating runtime for test");
 
-            let peer_listen = address.clone();
-            let server_log = log.clone();
-            let peer_server = NativeProtocolServer::new(server_log.clone(), peer_listen, tx.clone());
-            let peer_server = peer_server.run().inspect_err(move |e| {
-                debug!(server_log, "error running snapshot server"; "error"=>format!("{}", e));
-                panic!("shot server");
-            });
-            let handle = runtime.spawn(peer_server.map_err(|_|()).map(|r|r.unwrap()));
+        let peer_listen = address.clone();
+        let server_log = log.clone();
+        let peer_server = NativeProtocolServer::new(server_log.clone(), peer_listen, tx.clone());
+        let peer_server = peer_server.run().inspect_err(move |e| {
+            debug!(server_log, "error running snapshot server"; "error"=>format!("{}", e));
+            panic!("shot server");
+        });
+        let handle = runtime.spawn(peer_server.map_err(|_| ()).map(|r| r.unwrap()));
 
-            (runtime, tx, rx, handle)
-        }
-
-        // unline fast_task pool, this one returns a cache for further analysis
-        fn create_test_slow_threads(log: Logger, threads: usize, rx: Receiver<SlowTask>) -> (SharedCache, Vec<std::thread::JoinHandle<()>>) {
-            let cache = SharedCache::new();
-
-            let mut handles = Vec::new();
-            for _ in 0.. threads {
-                let rx = rx.clone();
-                let mut runner = SlowTaskRunner::new(log.clone(), cache.clone());
-                let handle = std::thread::spawn(move || {
-                    while let Ok(task) = rx.recv() {
-                        runner.run(task)
-                    }
-                });
-
-                handles.push(handle);
-            }
-            (cache, handles)
-        }
-
-        #[test]
-        fn test_peer_protocol_capnp() {
-            let log = prepare_log("test_peer_capnp");
-
-            let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
-            let mut config = System::default();
-            config.metrics.log_parse_errors = true;
-
-            let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-            let ts = ts.as_secs() as u64;
-
-            let (runtime, tx, rx, server_handle) = prepare_runtime_with_server(log.clone(), address.clone());
-            let (cache, slow_handles) = create_test_slow_threads(log.clone(), 3, rx);
-
-            let outmetric = Metric::new(MetricValue::Gauge(42.), ts.into(), 1.);
-
-            let metric = outmetric.clone();
-
-            // Create a peer client and send some metrics to the server
-            let sender = async move {
-                let conn = TcpStream::connect(&address).await.expect("connecting tcp client");
-
-                // Version 1 messages
-                let mut single_message = Builder::new_default();
-                {
-                    let builder = single_message.init_root::<CBuilder>();
-                    let mut c_metric = builder.init_single();
-                    c_metric.set_name("complex.test.bioyino_single");
-                    metric.fill_capnp_v1(&mut c_metric);
-                }
-
-                let mut tagged_message = Builder::new_default();
-                {
-                    let builder = tagged_message.init_root::<CBuilder>();
-                    let mut c_metric = builder.init_single();
-                    // since we do this by hands, tags must be sorted
-                    // in real world bio does not insert this from string, only from MetricName
-                    c_metric.set_name("complex.test.bioyino_tagged;tag1=value1;tag2=val2");
-                    metric.fill_capnp_v1(&mut c_metric);
-                }
-
-                let mut multi_message = Builder::new_default();
-                {
-                    let builder = multi_message.init_root::<CBuilder>();
-                    let multi_metric = builder.init_multi(1);
-                    let mut new_metric = multi_metric.get(0);
-                    new_metric.set_name("complex.test.bioyino_multi");
-                    metric.fill_capnp_v1(&mut new_metric);
-                }
-
-
-                let mut snapshot_message = Builder::new_default();
-                {
-                    let builder = snapshot_message.init_root::<CBuilder>();
-                    let multi_metric = builder.init_snapshot(1);
-                    let mut new_metric = multi_metric.get(0);
-                    new_metric.set_name("complex.test.bioyino_snapshot_v1");
-                    metric.fill_capnp_v1(&mut new_metric);
-                }
-
-                // Version 2 should work along with version 1
-                let mut snapshot_message_v2 = Builder::new_default();
-                {
-                    let mut builder = snapshot_message_v2.init_root::<CBuilderV2>();
-                    builder.set_version(ProtocolVersion::V2.id());
-                    let multi_metric = builder.init_snapshot(1);
-                    let mut new_metric = multi_metric.get(0);
-                    new_metric.set_name("complex.test.bioyino_snapshot_v2");
-                    metric.fill_capnp(&mut new_metric);
-                }
-
-                let mut conn = conn.compat_write();
-                write_message(&mut conn, single_message).await.unwrap();
-                write_message(&mut conn, tagged_message).await.unwrap();
-                write_message(&mut conn, multi_message).await.unwrap();
-                write_message(&mut conn, snapshot_message).await.unwrap();
-                write_message(&mut conn, snapshot_message_v2).await.unwrap();
-                conn.into_inner().flush().await.unwrap();
-            };
-
-
-            let delayed = async move {
-                // let things settle
-                sleep(Duration::from_secs(1)).await;
-                // send the data
-                sender.await;
-                // give server time to process
-                sleep(Duration::from_secs(1)).await;
-                // stop the server
-                server_handle.abort();
-                // let the slow threads stop
-                drop(tx);
-                // wait for them to stop
-                for handle in slow_handles {
-                    handle.join().unwrap();
-                }
-            };
-            runtime.spawn(delayed);
-
-            // analyze cache for correct contents
-            let mut interm = Vec::with_capacity(128);
-            interm.resize(128, 0u8);
-            let m = TagFormat::Graphite;
-
-            let single_name = MetricName::new("complex.test.bioyino_single".into(), m, &mut interm).unwrap();
-            let multi_name = MetricName::new("complex.test.bioyino_multi".into(), m, &mut interm).unwrap();
-            let shot_name = MetricName::new("complex.test.bioyino_snapshot_v1".into(), m, &mut interm).unwrap();
-            let shot_name_v2 = MetricName::new("complex.test.bioyino_snapshot_v2".into(), m, &mut interm).unwrap();
-            let tagged_name = MetricName::new("complex.test.bioyino_tagged;tag2=val2;tag1=value1".into(), m, &mut interm).unwrap();
-
-            let test_delay = async { sleep(Duration::from_secs(2)).await };
-            runtime.block_on(test_delay);
-
-            let rotated = cache.rotate(true);
-            let cache = rotated
-                .into_iter()
-                //.map(|c| c.into_iter().map(|(k, _)|k).collect::<Vec<_>>())
-                //.filter(|v|v.len() > 0)
-                .flatten()
-                .map(|(k, v)| (k, v.into_inner().unwrap()))
-                .collect::<HashMap<MetricName, Metric<Float>>>();
-            // show keys
-            //dbg!(&cache);
-
-            assert_eq!(cache.get(&single_name), Some(&outmetric));
-            assert_eq!(cache.get(&multi_name), Some(&outmetric));
-            assert_eq!(cache.get(&shot_name), Some(&outmetric));
-            assert_eq!(cache.get(&shot_name_v2), Some(&outmetric));
-            assert_eq!(cache.get(&tagged_name), Some(&outmetric));
-        }
+        (runtime, tx, rx, handle)
     }
+
+    // unline fast_task pool, this one returns a cache for further analysis
+    fn create_test_slow_threads(log: Logger, threads: usize, rx: Receiver<SlowTask>) -> (SharedCache, Vec<std::thread::JoinHandle<()>>) {
+        let cache = SharedCache::new();
+
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let rx = rx.clone();
+            let mut runner = SlowTaskRunner::new(log.clone(), cache.clone());
+            let handle = std::thread::spawn(move || {
+                while let Ok(task) = rx.recv() {
+                    runner.run(task)
+                }
+            });
+
+            handles.push(handle);
+        }
+        (cache, handles)
+    }
+
+    #[test]
+    fn test_peer_protocol_capnp() {
+        let log = prepare_log("test_peer_capnp");
+
+        let address: ::std::net::SocketAddr = "127.0.0.1:8136".parse().unwrap();
+        let mut config = System::default();
+        config.metrics.log_parse_errors = true;
+
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let ts = ts.as_secs() as u64;
+
+        let (runtime, tx, rx, server_handle) = prepare_runtime_with_server(log.clone(), address.clone());
+        let (cache, slow_handles) = create_test_slow_threads(log.clone(), 3, rx);
+
+        let outmetric = Metric::new(MetricValue::Gauge(42.), ts.into(), 1.);
+
+        let metric = outmetric.clone();
+
+        // Create a peer client and send some metrics to the server
+        let sender = async move {
+            let conn = TcpStream::connect(&address).await.expect("connecting tcp client");
+
+            // Version 1 messages
+            let mut single_message = Builder::new_default();
+            {
+                let builder = single_message.init_root::<CBuilder>();
+                let mut c_metric = builder.init_single();
+                c_metric.set_name("complex.test.bioyino_single");
+                metric.fill_capnp_v1(&mut c_metric);
+            }
+
+            let mut tagged_message = Builder::new_default();
+            {
+                let builder = tagged_message.init_root::<CBuilder>();
+                let mut c_metric = builder.init_single();
+                // since we do this by hands, tags must be sorted
+                // in real world bio does not insert this from string, only from MetricName
+                c_metric.set_name("complex.test.bioyino_tagged;tag1=value1;tag2=val2");
+                metric.fill_capnp_v1(&mut c_metric);
+            }
+
+            let mut multi_message = Builder::new_default();
+            {
+                let builder = multi_message.init_root::<CBuilder>();
+                let multi_metric = builder.init_multi(1);
+                let mut new_metric = multi_metric.get(0);
+                new_metric.set_name("complex.test.bioyino_multi");
+                metric.fill_capnp_v1(&mut new_metric);
+            }
+
+            let mut snapshot_message = Builder::new_default();
+            {
+                let builder = snapshot_message.init_root::<CBuilder>();
+                let multi_metric = builder.init_snapshot(1);
+                let mut new_metric = multi_metric.get(0);
+                new_metric.set_name("complex.test.bioyino_snapshot_v1");
+                metric.fill_capnp_v1(&mut new_metric);
+            }
+
+            // Version 2 should work along with version 1
+            let mut snapshot_message_v2 = Builder::new_default();
+            {
+                let mut builder = snapshot_message_v2.init_root::<CBuilderV2>();
+                builder.set_version(ProtocolVersion::V2.id());
+                let multi_metric = builder.init_snapshot(1);
+                let mut new_metric = multi_metric.get(0);
+                new_metric.set_name("complex.test.bioyino_snapshot_v2");
+                metric.fill_capnp(&mut new_metric);
+            }
+
+            let mut conn = conn.compat_write();
+            write_message(&mut conn, single_message).await.unwrap();
+            write_message(&mut conn, tagged_message).await.unwrap();
+            write_message(&mut conn, multi_message).await.unwrap();
+            write_message(&mut conn, snapshot_message).await.unwrap();
+            write_message(&mut conn, snapshot_message_v2).await.unwrap();
+            conn.into_inner().flush().await.unwrap();
+        };
+
+        let delayed = async move {
+            // let things settle
+            sleep(Duration::from_secs(1)).await;
+            // send the data
+            sender.await;
+            // give server time to process
+            sleep(Duration::from_secs(1)).await;
+            // stop the server
+            server_handle.abort();
+            // let the slow threads stop
+            drop(tx);
+            // wait for them to stop
+            for handle in slow_handles {
+                handle.join().unwrap();
+            }
+        };
+        runtime.spawn(delayed);
+
+        // analyze cache for correct contents
+        let mut interm = Vec::with_capacity(128);
+        interm.resize(128, 0u8);
+        let m = TagFormat::Graphite;
+
+        let single_name = MetricName::new("complex.test.bioyino_single".into(), m, &mut interm).unwrap();
+        let multi_name = MetricName::new("complex.test.bioyino_multi".into(), m, &mut interm).unwrap();
+        let shot_name = MetricName::new("complex.test.bioyino_snapshot_v1".into(), m, &mut interm).unwrap();
+        let shot_name_v2 = MetricName::new("complex.test.bioyino_snapshot_v2".into(), m, &mut interm).unwrap();
+        let tagged_name = MetricName::new("complex.test.bioyino_tagged;tag2=val2;tag1=value1".into(), m, &mut interm).unwrap();
+
+        let test_delay = async { sleep(Duration::from_secs(2)).await };
+        runtime.block_on(test_delay);
+
+        let rotated = cache.rotate(true);
+        let cache = rotated
+            .into_iter()
+            //.map(|c| c.into_iter().map(|(k, _)|k).collect::<Vec<_>>())
+            //.filter(|v|v.len() > 0)
+            .flatten()
+            .map(|(k, v)| (k, v.into_inner().unwrap()))
+            .collect::<HashMap<MetricName, Metric<Float>>>();
+        // show keys
+        //dbg!(&cache);
+
+        assert_eq!(cache.get(&single_name), Some(&outmetric));
+        assert_eq!(cache.get(&multi_name), Some(&outmetric));
+        assert_eq!(cache.get(&shot_name), Some(&outmetric));
+        assert_eq!(cache.get(&shot_name_v2), Some(&outmetric));
+        assert_eq!(cache.get(&tagged_name), Some(&outmetric));
+    }
+}
