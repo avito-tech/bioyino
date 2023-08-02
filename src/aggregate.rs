@@ -143,8 +143,16 @@ pub fn aggregate_task(data: AggregationData) {
             return;
         };
 
+        // check for NaNs in timer metrics
+        metric = metric.filter_timer();
+        if let bioyino_metric::MetricValue::Timer(ref agg) = metric.value() {
+            if agg.is_empty() {
+                continue;
+            }
+        }
+
         // take all required aggregates
-        let calculator = AggregateCalculator::new(&mut metric, aggregates);
+        let calculator = AggregateCalculator::new(&mut metric, aggregates, &name);
 
         calculator
             // count all of them that are countable, i.e. filtering None
