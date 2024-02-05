@@ -66,7 +66,7 @@ pub type Cache = HashMap<MetricName, Metric<Float>>;
 pub static CONSENSUS_STATE: Lazy<Mutex<ConsensusState>> = Lazy::new(|| Mutex::new(ConsensusState::Disabled));
 pub static IS_LEADER: AtomicBool = AtomicBool::new(false);
 
-fn main() {
+fn main() { 
     let (system, command) = System::load().expect("loading config");
 
     let config = system.clone();
@@ -170,7 +170,9 @@ fn main() {
     let stats_prefix = stats_prefix.trim_end_matches('.').to_string();
     // Spawn future gatering bioyino own stats
     info!(own_stat_log, "starting own stats counter");
-    let own_stats = OwnStats::new(s_interval, stats_prefix, slow_chan.clone(), fast_prio_chans.clone(), own_stat_log);
+    let own_stats = OwnStats::new(
+        s_interval, stats_prefix, slow_chan.clone(), fast_prio_chans.clone(), own_stat_log, carbon.clone(),
+    );
     runtime.spawn(own_stats.run());
 
     let compat_log = rlog.new(o!("thread" => "compat"));

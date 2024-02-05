@@ -3,16 +3,19 @@ use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::time::{self, Duration, SystemTime};
 
+use dipstick::{Graphite, Input, InputScope, Labels};
 use serde::Serialize;
 use bytes::{Bytes, BytesMut, BufMut};
 use once_cell::sync::Lazy;
 use slog::{info, o, Logger};
 use crossbeam_channel::Sender;
 
+use slog::error;
 use tokio::sync::RwLock;
 
 use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType, FromF64};
 
+use crate::config;
 use crate::errors::GeneralError;
 use crate::fast_task::FastTask;
 use crate::slow_task::SlowTask;
@@ -20,11 +23,15 @@ use crate::Float;
 
 pub struct Stats {
     pub egress_carbon: AtomicUsize,
+    pub egress_carbon_metrics: AtomicUsize,
     pub egress_peer: AtomicUsize,
     pub ingress: AtomicUsize,
     pub ingress_metrics: AtomicUsize,
     pub ingress_metrics_peer: AtomicUsize,
     pub drops: AtomicUsize,
+    pub slow_cache_rotated_metrics: AtomicUsize,
+    pub slow_cache_joined_metrics: AtomicUsize,
+    pub aggregated_metrics: AtomicUsize,
     pub parse_errors: AtomicUsize,
     pub agg_errors: AtomicUsize,
     pub peer_errors: AtomicUsize,
@@ -33,11 +40,15 @@ pub struct Stats {
 
 pub static STATS: Stats = Stats {
     egress_carbon: AtomicUsize::new(0),
+    egress_carbon_metrics: AtomicUsize::new(0),
     egress_peer: AtomicUsize::new(0),
     ingress: AtomicUsize::new(0),
     ingress_metrics: AtomicUsize::new(0),
     ingress_metrics_peer: AtomicUsize::new(0),
     drops: AtomicUsize::new(0),
+    slow_cache_rotated_metrics: AtomicUsize::new(0),
+    slow_cache_joined_metrics: AtomicUsize::new(0),
+    aggregated_metrics: AtomicUsize::new(0),
     parse_errors: AtomicUsize::new(0),
     agg_errors: AtomicUsize::new(0),
     peer_errors: AtomicUsize::new(0),
@@ -125,10 +136,18 @@ pub struct OwnStats {
     slow_chan: Sender<SlowTask>,
     fast_chans: Vec<Sender<FastTask>>,
     log: Logger,
+    carbon_config: config::Carbon,
 }
 
 impl OwnStats {
-    pub fn new(interval: u64, prefix: String, slow_chan: Sender<SlowTask>, fast_chans: Vec<Sender<FastTask>>, log: Logger) -> Self {
+    pub fn new(
+        interval: u64, 
+        prefix: String, 
+        slow_chan: Sender<SlowTask>, 
+        fast_chans: Vec<Sender<FastTask>>, 
+        log: Logger,
+        carbon_config: config::Carbon,
+    ) -> Self {
         let log = log.new(o!("source"=>"stats"));
         Self {
             interval,
@@ -137,6 +156,7 @@ impl OwnStats {
             slow_chan,
             fast_chans,
             log,
+            carbon_config,
         }
     }
 
@@ -153,11 +173,18 @@ impl OwnStats {
         &self.fast_chans[self.next_chan]
     }
 
-    fn count(&mut self) -> OwnSnapshot {
+    fn count(&mut self) -> Result<OwnSnapshot, String> {
         let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
         let mut snapshot = OwnSnapshot::default();
         let s_interval = if self.interval > 0 { self.interval as f64 / 1000f64 } else { 1f64 };
         let s_interval = Float::from_f64(s_interval);
+
+        let metrics = Graphite::send_to(self.carbon_config.address.clone())
+            .map_err(
+                |e| format!("failed to connect to graphite at {}: {}", 
+                self.carbon_config.address.clone(), e
+            ))?
+            .metrics();
 
         macro_rules! add_metric {
             ($value:ident, $suffix:expr) => {
@@ -166,21 +193,22 @@ impl OwnStats {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
                     let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
                     let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes());
-                    let chan = self.next_chan();
-                    chan
-                        .send(FastTask::Accumulate(name, metric))
-                        .map_err(|_| s!(queue_errors))
-                        .unwrap_or(())
+                    let c = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
+                    c.write($value as isize, Labels::default());
                 }
             };
         }
 
         add_metric!(egress_carbon, "egress-carbon");
+        add_metric!(egress_carbon_metrics, "egress-carbon-metrics");
         add_metric!(egress_peer, "egress-peer");
         add_metric!(ingress, "ingress");
         add_metric!(ingress_metrics, "ingress-metric");
         add_metric!(ingress_metrics_peer, "ingress-metric-peer");
         add_metric!(drops, "drop");
+        add_metric!(slow_cache_rotated_metrics, "slow_cache_rotated_metrics");
+        add_metric!(slow_cache_joined_metrics, "slow_cache_joined_metrics");
+        add_metric!(aggregated_metrics, "aggregated_metrics");
         add_metric!(agg_errors, "agg-error");
         add_metric!(parse_errors, "parse-error");
         add_metric!(queue_errors, "queue-error");
@@ -190,14 +218,13 @@ impl OwnStats {
         let chlen = Float::from_f64(self.slow_chan.len() as f64);
         let qlen = StatsdMetric::new(chlen, StatsdType::Gauge(None), None).unwrap();
         snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
-        let name = self.format_metric_carbon(&mut buf, "slow-w-len".as_bytes());
+        let name = self.format_metric_carbon(&mut buf, "slow-q-len".as_bytes());
 
         let chan = self.next_chan();
         chan
             .send(FastTask::Accumulate(name, qlen))
             .map_err(|_| s!(queue_errors))
             .unwrap_or(());
-
 
         if self.interval > 0 {
             info!(self.log, "stats";
@@ -214,7 +241,8 @@ impl OwnStats {
                 "qu-len" => format!("{:2}", chlen),
             );
         };
-        snapshot
+        
+        Ok(snapshot)
     }
 
     pub async fn run(mut self) {
@@ -223,14 +251,15 @@ impl OwnStats {
         let mut interval = tokio::time::interval_at(now + dur, dur);
         loop {
             interval.tick().await;
-            let snapshot = tokio::task::block_in_place(||{
+            match tokio::task::block_in_place(||{
                 self.count()
-            });
-            // update global snapshot
-            {
-                let mut prev = STATS_SNAP.write().await;
-                *prev = snapshot
-            }
+            }) {
+                Ok(snapshot) => {
+                    let mut prev = STATS_SNAP.write().await;
+                    *prev = snapshot;
+                },
+                Err(e) => error!(self.log, "failed to send metrics: {}", e)
+            };
         }
     }
 }

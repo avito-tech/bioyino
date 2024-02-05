@@ -59,6 +59,7 @@ dtoa = "^0.4"
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
 rand = "^0.8"
 bioyino-metric = "^0.5"
+dipstick = "0.9.1"
 
 [build-dependencies]
 capnpc = "^0.14"

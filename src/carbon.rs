@@ -291,6 +291,7 @@ impl CarbonBackend {
         let mut writer = CarbonCodec::new(ts.clone(), options.agg.clone()).framed(conn);
 
         for m in metrics.iter().flatten() {
+            s!(egress_carbon_metrics);
             writer.send(m).await?
         }
 
