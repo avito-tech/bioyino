@@ -5,12 +5,11 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use log::info;
 use thiserror::Error;
 
 use futures::future::{Future, TryFutureExt};
 use resolve::resolver;
-use slog::{o, warn, Drain, Logger};
+use slog::{error, o, Drain, Logger, info};
 use socket2::{Domain, Socket, Type};
 use trust_dns_resolver::TokioAsyncResolver;
 

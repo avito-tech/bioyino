@@ -98,7 +98,8 @@ impl SlowTaskRunner {
             }
             SlowTask::Rotate(channel) => {
                 let rotated = self.cache.rotate(channel.is_some());
-                STATS.slow_cache_rotated_metrics.fetch_add(rotated.len(), Ordering::Relaxed);
+                let sum: usize = rotated.iter().map(|m| m.len()).sum();
+                STATS.slow_cache_rotated_metrics.fetch_add(sum, Ordering::Relaxed);
                 if let Some(c) = channel {
                     let log = self.log.clone();
                     c.send(rotated).unwrap_or_else(|_| {

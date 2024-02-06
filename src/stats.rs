@@ -23,15 +23,25 @@ use crate::Float;
 
 pub struct Stats {
     pub egress_carbon: AtomicUsize,
+
+    // metric count sent to carbon 
     pub egress_carbon_metrics: AtomicUsize,
+
     pub egress_peer: AtomicUsize,
     pub ingress: AtomicUsize,
     pub ingress_metrics: AtomicUsize,
     pub ingress_metrics_peer: AtomicUsize,
     pub drops: AtomicUsize,
+
+    // metric count offloaded from slow cache
     pub slow_cache_rotated_metrics: AtomicUsize,
+
+    // metric count loaded to slow cache from fast cache
     pub slow_cache_joined_metrics: AtomicUsize,
+
+    // metric count aggregated before send
     pub aggregated_metrics: AtomicUsize,
+    
     pub parse_errors: AtomicUsize,
     pub agg_errors: AtomicUsize,
     pub peer_errors: AtomicUsize,
@@ -191,7 +201,6 @@ impl OwnStats {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
                 if self.interval > 0 {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
-                    let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
                     let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes());
                     let c = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
                     c.write($value as isize, Labels::default());
