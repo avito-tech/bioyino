@@ -3,8 +3,7 @@ use std::sync::atomic::Ordering;
 
 use crossbeam_channel::Sender;
 use futures::channel::oneshot;
-use log::warn as logw;
-use slog::{error, info, Logger};
+use slog::{error, info, Logger, trace};
 
 use bioyino_metric::{name::MetricName, Metric, MetricTypeName};
 
@@ -70,7 +69,8 @@ impl SlowTaskRunner {
         let ename = name.clone();
         let em = MetricTypeName::from_metric(&metric);
         self.cache.accumulate(name, metric).unwrap_or_else(|_| {
-            logw!(
+            trace!(
+                self.log,
                 "could not accumulate in long cache at {:?} new type '{}'",
                 String::from_utf8_lossy(&ename.name[..]),
                 em.to_string(),
