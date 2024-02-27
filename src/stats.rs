@@ -170,10 +170,16 @@ impl OwnStats {
         }
     }
 
-    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8]) -> MetricName {
+    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8], is_old: bool) -> MetricName {
         buf.extend_from_slice(self.prefix.as_bytes());
         buf.extend_from_slice(&b"."[..]);
         buf.extend_from_slice(suffix);
+        buf.extend_from_slice(&b"."[..]);
+        
+        if is_old {
+            buf.extend_from_slice(&b"old"[..]);
+        }
+
         let name = MetricName::new_untagged(buf.split());
         name
     }
@@ -201,9 +207,17 @@ impl OwnStats {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
                 if self.interval > 0 {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
-                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes());
-                    let c = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
-                    c.write($value as isize, Labels::default());
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
+                    let counter = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
+                    counter.write($value as isize, Labels::default());
+
+                    let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), true);
+                    let chan = self.next_chan();
+                    chan
+                        .send(FastTask::Accumulate(name, metric))
+                        .map_err(|_| s!(queue_errors))
+                        .unwrap_or(());
                 }
             };
         }
@@ -227,7 +241,7 @@ impl OwnStats {
         let chlen = Float::from_f64(self.slow_chan.len() as f64);
         let qlen = StatsdMetric::new(chlen, StatsdType::Gauge(None), None).unwrap();
         snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
-        let name = self.format_metric_carbon(&mut buf, "slow-q-len".as_bytes());
+        let name = self.format_metric_carbon(&mut buf, "slow-q-len".as_bytes(), false);
 
         let chan = self.next_chan();
         chan
