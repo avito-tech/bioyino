@@ -1,9 +1,13 @@
+use std::collections::hash_map::Entry;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::time::{self, Duration, SystemTime};
 
+use bioyino_metric::aggregate::{Aggregate, AggregateCalculator};
+use bioyino_metric::{Metric, MetricTypeName};
 use dipstick::{Graphite, Input, InputScope, Labels};
+use log::warn as logw;
 use serde::Serialize;
 use bytes::{Bytes, BytesMut, BufMut};
 use once_cell::sync::Lazy;
@@ -147,6 +151,7 @@ pub struct OwnStats {
     fast_chans: Vec<Sender<FastTask>>,
     log: Logger,
     carbon_config: config::Carbon,
+    cache: HashMap<MetricName, Metric<Float>>,
 }
 
 impl OwnStats {
@@ -167,6 +172,7 @@ impl OwnStats {
             fast_chans,
             log,
             carbon_config,
+            cache: HashMap::new(),
         }
     }
 
@@ -174,9 +180,9 @@ impl OwnStats {
         buf.extend_from_slice(self.prefix.as_bytes());
         buf.extend_from_slice(&b"."[..]);
         buf.extend_from_slice(suffix);
-        buf.extend_from_slice(&b"."[..]);
         
         if is_old {
+            buf.extend_from_slice(&b"."[..]);
             buf.extend_from_slice(&b"old"[..]);
         }
 
@@ -207,11 +213,22 @@ impl OwnStats {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
                 if self.interval > 0 {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
-                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
-                    let counter = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
-                    counter.write($value as isize, Labels::default());
 
                     let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
+
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
+                    update_metric(&mut self.cache, name.clone(), metric.clone());
+                    let aggs = vec![Aggregate::<f64>::Count];
+                    for (name, metric) in self.cache.iter() {
+                        let name = name.clone();
+                        let mut metric = metric.clone();
+
+                        let mut calculator = AggregateCalculator::new(&mut metric, &aggs);
+                        let v = calculator.nth(0).unwrap().unwrap().1;
+                        let counter = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
+                        counter.write(v as isize, Labels::default());
+                    }
+
                     let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), true);
                     let chan = self.next_chan();
                     chan
@@ -284,5 +301,44 @@ impl OwnStats {
                 Err(e) => error!(self.log, "failed to send metrics: {}", e)
             };
         }
+    }
+}
+
+fn update_metric(cache: &mut HashMap<MetricName, Metric<Float>>, name: MetricName, metric: StatsdMetric<Float>) {
+    let ename = name.clone();
+    let em = MetricTypeName::from_statsd_metric(&metric);
+    if em == MetricTypeName::CustomHistogram {
+        s!(agg_errors);
+        logw!("skipped histogram, histograms are not supported");
+        return;
+    }
+
+    match cache.entry(name) {
+        Entry::Occupied(ref mut entry) => {
+            entry.get_mut().accumulate_statsd(metric).unwrap_or_else(|_| {
+                let mtype = MetricTypeName::from_metric(&entry.get());
+                logw!(
+                    "could not accumulate {:?}: type '{}' into type '{}'",
+                    String::from_utf8_lossy(&ename.name[..]),
+                    em.to_string(),
+                    mtype.to_string(),
+                );
+                s!(agg_errors);
+            });
+        }
+
+        Entry::Vacant(entry) => match Metric::from_statsd(&metric, 1, None) {
+            Ok(metric) => {
+                entry.insert(metric);
+            }
+            Err(e) => {
+                s!(agg_errors);
+                logw!(
+                    "could not create new metric from statsd metric at {:?}: {}",
+                    String::from_utf8_lossy(&ename.name[..]),
+                    e
+                )
+            }
+        },
     }
 }
