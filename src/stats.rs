@@ -218,7 +218,7 @@ impl OwnStats {
 
                     let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
                     update_metric(&mut self.cache, name.clone(), metric.clone());
-                    let aggs = vec![Aggregate::<f64>::Count];
+                    let aggs = vec![Aggregate::<f64>::Value];
                     for (name, metric) in self.cache.iter() {
                         let name = name.clone();
                         let mut metric = metric.clone();
