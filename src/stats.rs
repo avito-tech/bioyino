@@ -224,7 +224,23 @@ impl OwnStats {
                         let mut metric = metric.clone();
 
                         let mut calculator = AggregateCalculator::new(&mut metric, &aggs);
-                        let v = calculator.nth(0).unwrap().unwrap().1;
+                        
+                        let v = if let Some(value) = calculator.nth(0) {
+                            value
+                        } else {
+                            info!(self.log, "========================= failed to get value for {}", 
+                                String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
+                            Some((0, 0f64))
+                        };
+
+                        let v = if let Some(value) = v {
+                            value.1
+                        } else {
+                            info!(self.log, "========================= 2 failed to get value for {}", 
+                                String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
+                            0f64
+                        };
+
                         info!(self.log, "===============================aggregated: {}", v);
                         let counter = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
                         counter.write(v as isize, Labels::default());

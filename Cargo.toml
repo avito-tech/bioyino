@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.8.2-testing"
+version = "0.8.3-testing"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
