@@ -225,6 +225,7 @@ impl OwnStats {
 
                         let mut calculator = AggregateCalculator::new(&mut metric, &aggs);
                         let v = calculator.nth(0).unwrap().unwrap().1;
+                        info!(self.log, "===============================aggregated: {}", v);
                         let counter = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
                         counter.write(v as isize, Labels::default());
                     }
