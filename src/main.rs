@@ -171,7 +171,9 @@ fn main() {
     // Spawn future gatering bioyino own stats
     info!(own_stat_log, "starting own stats counter");
     let own_stats = OwnStats::new(
-        s_interval, stats_prefix, slow_chan.clone(), fast_prio_chans.clone(), own_stat_log, carbon.clone(),
+        s_interval, stats_prefix, slow_chan.clone(), 
+        fast_prio_chans.clone(), own_stat_log, carbon.clone(),
+        aggregation.clone(), naming.clone(),
     );
     runtime.spawn(own_stats.run());
 

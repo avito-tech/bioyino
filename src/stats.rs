@@ -1,12 +1,12 @@
 use std::collections::hash_map::Entry;
+use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::time::{self, Duration, SystemTime};
 
-use bioyino_metric::aggregate::{Aggregate, AggregateCalculator};
-use bioyino_metric::{Metric, MetricTypeName};
-use dipstick::{Graphite, Input, InputScope, Labels};
+use bioyino_metric::aggregate::Aggregate;
+use bioyino_metric::{Metric, MetricTypeName, MetricValue};
 use log::warn as logw;
 use serde::Serialize;
 use bytes::{Bytes, BytesMut, BufMut};
@@ -15,11 +15,14 @@ use slog::{info, o, Logger};
 use crossbeam_channel::Sender;
 
 use slog::error;
+use tokio::select;
 use tokio::sync::RwLock;
 
 use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType, FromF64};
 
-use crate::config;
+use crate::aggregate::{Aggregated, AggregationOptions};
+use crate::carbon::CarbonSender;
+use crate::config::{self, Naming};
 use crate::errors::GeneralError;
 use crate::fast_task::FastTask;
 use crate::slow_task::SlowTask;
@@ -151,6 +154,8 @@ pub struct OwnStats {
     fast_chans: Vec<Sender<FastTask>>,
     log: Logger,
     carbon_config: config::Carbon,
+    aggregation: config::Aggregation,
+    naming: HashMap<MetricTypeName, Naming>,
     cache: HashMap<MetricName, Metric<Float>>,
 }
 
@@ -162,6 +167,8 @@ impl OwnStats {
         fast_chans: Vec<Sender<FastTask>>, 
         log: Logger,
         carbon_config: config::Carbon,
+        aggregation: config::Aggregation, 
+        naming: HashMap<MetricTypeName, Naming>,
     ) -> Self {
         let log = log.new(o!("source"=>"stats"));
         Self {
@@ -173,6 +180,8 @@ impl OwnStats {
             log,
             carbon_config,
             cache: HashMap::new(),
+            aggregation,
+            naming,
         }
     }
 
@@ -201,13 +210,6 @@ impl OwnStats {
         let s_interval = if self.interval > 0 { self.interval as f64 / 1000f64 } else { 1f64 };
         let s_interval = Float::from_f64(s_interval);
 
-        let metrics = Graphite::send_to(self.carbon_config.address.clone())
-            .map_err(
-                |e| format!("failed to connect to graphite at {}: {}", 
-                self.carbon_config.address.clone(), e
-            ))?
-            .metrics();
-
         macro_rules! add_metric {
             ($value:ident, $suffix:expr) => {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
@@ -215,38 +217,10 @@ impl OwnStats {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
 
                     let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
-
                     let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
+
                     update_metric(&mut self.cache, name.clone(), metric.clone());
-                    let aggs = vec![Aggregate::<f64>::Value];
-                    for (name, metric) in self.cache.iter() {
-                        let name = name.clone();
-                        let mut metric = metric.clone();
 
-                        let mut calculator = AggregateCalculator::new(&mut metric, &aggs);
-                        
-                        let v = if let Some(value) = calculator.nth(0) {
-                            value
-                        } else {
-                            info!(self.log, "========================= failed to get value for {}", 
-                                String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
-                            Some((0, 0f64))
-                        };
-
-                        let v = if let Some(value) = v {
-                            value.1
-                        } else {
-                            info!(self.log, "========================= 2 failed to get value for {}", 
-                                String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
-                            0f64
-                        };
-
-                        info!(self.log, "===============================aggregated: {}", v);
-                        let counter = metrics.counter(String::from_utf8(name.name.to_ascii_lowercase()).unwrap().as_str());
-                        counter.write(v as isize, Labels::default());
-                    }
-
-                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), true);
                     let chan = self.next_chan();
                     chan
                         .send(FastTask::Accumulate(name, metric))
@@ -263,9 +237,9 @@ impl OwnStats {
         add_metric!(ingress_metrics, "ingress-metric");
         add_metric!(ingress_metrics_peer, "ingress-metric-peer");
         add_metric!(drops, "drop");
-        add_metric!(slow_cache_rotated_metrics, "slow_cache_rotated_metrics");
-        add_metric!(slow_cache_joined_metrics, "slow_cache_joined_metrics");
-        add_metric!(aggregated_metrics, "aggregated_metrics");
+        add_metric!(slow_cache_rotated_metrics, "slow-cache-rotated-metrics");
+        add_metric!(slow_cache_joined_metrics, "slow-cache-joined-metrics");
+        add_metric!(aggregated_metrics, "aggregated-metrics");
         add_metric!(agg_errors, "agg-error");
         add_metric!(parse_errors, "parse-error");
         add_metric!(queue_errors, "queue-error");
@@ -302,21 +276,71 @@ impl OwnStats {
         Ok(snapshot)
     }
 
+    async fn send_metrics(&mut self) -> Result<(), String>  {
+        let mut cache = HashMap::new();
+        mem::swap(&mut self.cache, &mut cache);
+
+        let mut metrics = Vec::<Aggregated>::new();
+
+        for (name, metric) in cache {
+            let v = match metric.value() {
+                MetricValue::Counter(v) => *v,
+
+                // all metrics are counters
+                _ => unreachable!()
+            };
+
+            metrics.push((name, MetricTypeName::Counter, Aggregate::Value, v));
+        }
+
+        let interval = Float::from_f64(self.carbon_config.interval as f64 / 1000f64);
+        let agg_opts = AggregationOptions::from_config(
+            self.aggregation.clone(), 
+            interval, 
+            self.naming.clone(), 
+            self.log.clone(),
+        ).map_err(|e| format!("failed to create aggregation options: {}", e))?;
+
+        CarbonSender::new(
+            self.log.clone(), 
+            vec![metrics], 
+            agg_opts, 
+            self.carbon_config.clone()).
+            map_err(|e| format!("failed to create carbon sender: {}", e))?.run().await;
+
+        Ok(())
+    }
+
     pub async fn run(mut self) {
         let now = tokio::time::Instant::now();
-        let dur = Duration::from_millis(if self.interval < 100 { 1000 } else { self.interval }); // avoid too short intervals
-        let mut interval = tokio::time::interval_at(now + dur, dur);
+
+        let count_dur = Duration::from_millis(if self.interval < 100 { 1000 } else { self.interval }); // avoid too short intervals
+        let mut count_interval = tokio::time::interval_at(now + count_dur, count_dur);
+
+        let send_dur = Duration::from_millis(if self.interval < 100 { 1000 } else { 
+            self.carbon_config.interval 
+        }); // avoid too short intervals
+
+        let mut send_interval = tokio::time::interval_at(now + send_dur, send_dur);
         loop {
-            interval.tick().await;
-            match tokio::task::block_in_place(||{
-                self.count()
-            }) {
-                Ok(snapshot) => {
-                    let mut prev = STATS_SNAP.write().await;
-                    *prev = snapshot;
-                },
-                Err(e) => error!(self.log, "failed to send metrics: {}", e)
-            };
+            select! {
+                _ = count_interval.tick() => {
+                    match tokio::task::block_in_place(||{
+                        self.count()
+                    }) {
+                        Ok(snapshot) => {
+                            let mut prev = STATS_SNAP.write().await;
+                            *prev = snapshot;
+                        },
+                        Err(e) => error!(self.log, "failed to send metrics: {}", e)
+                    };
+                }
+                _ = send_interval.tick() => {
+                    if let Err(e) = self.send_metrics().await {
+                        error!(self.log, "failed to send metrics: {}", e)
+                    }
+                }
+            }
         }
     }
 }

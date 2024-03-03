@@ -1,6 +1,6 @@
 [package]
 name = "bioyino"
-version = "0.8.4-testing"
+version = "0.8.5-testing"
 authors = ["Sergey Noskov aka Albibek <albibek@gmail.com>"]
 description = "StatsD-compatible, high-performance, fault-tolerant metric aggregator"
 edition = "2018"
@@ -59,7 +59,6 @@ dtoa = "^0.4"
 raft-tokio = { git = "https://github.com/Albibek/raft-tokio" }
 rand = "^0.8"
 bioyino-metric = "^0.5"
-dipstick = "0.9.1"
 
 [build-dependencies]
 capnpc = "^0.14"
