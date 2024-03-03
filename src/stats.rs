@@ -187,14 +187,14 @@ impl OwnStats {
 
     fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8], is_old: bool) -> MetricName {
         buf.extend_from_slice(self.prefix.as_bytes());
-        buf.extend_from_slice(&b"."[..]);
-        buf.extend_from_slice(suffix);
-        
+
         if is_old {
             buf.extend_from_slice(&b"."[..]);
             buf.extend_from_slice(&b"old"[..]);
         }
 
+        buf.extend_from_slice(&b"."[..]);
+        buf.extend_from_slice(suffix);
         let name = MetricName::new_untagged(buf.split());
         name
     }
@@ -217,10 +217,11 @@ impl OwnStats {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
 
                     let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
-                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
 
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
                     update_metric(&mut self.cache, name.clone(), metric.clone());
 
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), true);
                     let chan = self.next_chan();
                     chan
                         .send(FastTask::Accumulate(name, metric))
