@@ -1,18 +1,28 @@
+use std::collections::hash_map::Entry;
+use std::mem;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::iter::FromIterator;
 use std::time::{self, Duration, SystemTime};
 
+use bioyino_metric::aggregate::Aggregate;
+use bioyino_metric::{Metric, MetricTypeName, MetricValue};
+use log::warn as logw;
 use serde::Serialize;
 use bytes::{Bytes, BytesMut, BufMut};
 use once_cell::sync::Lazy;
 use slog::{info, o, Logger};
 use crossbeam_channel::Sender;
 
+use slog::error;
+use tokio::select;
 use tokio::sync::RwLock;
 
 use bioyino_metric::{name::MetricName,  StatsdMetric, StatsdType, FromF64};
 
+use crate::aggregate::{Aggregated, AggregationOptions};
+use crate::carbon::CarbonSender;
+use crate::config::{self, Naming};
 use crate::errors::GeneralError;
 use crate::fast_task::FastTask;
 use crate::slow_task::SlowTask;
@@ -20,11 +30,25 @@ use crate::Float;
 
 pub struct Stats {
     pub egress_carbon: AtomicUsize,
+
+    // metric count sent to carbon 
+    pub egress_carbon_metrics: AtomicUsize,
+
     pub egress_peer: AtomicUsize,
     pub ingress: AtomicUsize,
     pub ingress_metrics: AtomicUsize,
     pub ingress_metrics_peer: AtomicUsize,
     pub drops: AtomicUsize,
+
+    // metric count offloaded from slow cache
+    pub slow_cache_rotated_metrics: AtomicUsize,
+
+    // metric count loaded to slow cache from fast cache
+    pub slow_cache_joined_metrics: AtomicUsize,
+
+    // metric count aggregated before send
+    pub aggregated_metrics: AtomicUsize,
+    
     pub parse_errors: AtomicUsize,
     pub agg_errors: AtomicUsize,
     pub peer_errors: AtomicUsize,
@@ -33,11 +57,15 @@ pub struct Stats {
 
 pub static STATS: Stats = Stats {
     egress_carbon: AtomicUsize::new(0),
+    egress_carbon_metrics: AtomicUsize::new(0),
     egress_peer: AtomicUsize::new(0),
     ingress: AtomicUsize::new(0),
     ingress_metrics: AtomicUsize::new(0),
     ingress_metrics_peer: AtomicUsize::new(0),
     drops: AtomicUsize::new(0),
+    slow_cache_rotated_metrics: AtomicUsize::new(0),
+    slow_cache_joined_metrics: AtomicUsize::new(0),
+    aggregated_metrics: AtomicUsize::new(0),
     parse_errors: AtomicUsize::new(0),
     agg_errors: AtomicUsize::new(0),
     peer_errors: AtomicUsize::new(0),
@@ -125,10 +153,23 @@ pub struct OwnStats {
     slow_chan: Sender<SlowTask>,
     fast_chans: Vec<Sender<FastTask>>,
     log: Logger,
+    carbon_config: config::Carbon,
+    aggregation: config::Aggregation,
+    naming: HashMap<MetricTypeName, Naming>,
+    cache: HashMap<MetricName, Metric<Float>>,
 }
 
 impl OwnStats {
-    pub fn new(interval: u64, prefix: String, slow_chan: Sender<SlowTask>, fast_chans: Vec<Sender<FastTask>>, log: Logger) -> Self {
+    pub fn new(
+        interval: u64, 
+        prefix: String, 
+        slow_chan: Sender<SlowTask>, 
+        fast_chans: Vec<Sender<FastTask>>, 
+        log: Logger,
+        carbon_config: config::Carbon,
+        aggregation: config::Aggregation, 
+        naming: HashMap<MetricTypeName, Naming>,
+    ) -> Self {
         let log = log.new(o!("source"=>"stats"));
         Self {
             interval,
@@ -137,11 +178,21 @@ impl OwnStats {
             slow_chan,
             fast_chans,
             log,
+            carbon_config,
+            cache: HashMap::new(),
+            aggregation,
+            naming,
         }
     }
 
-    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8]) -> MetricName {
+    fn format_metric_carbon(&self, buf: &mut BytesMut, suffix: &[u8], is_old: bool) -> MetricName {
         buf.extend_from_slice(self.prefix.as_bytes());
+
+        if is_old {
+            buf.extend_from_slice(&b"."[..]);
+            buf.extend_from_slice(&b"old"[..]);
+        }
+
         buf.extend_from_slice(&b"."[..]);
         buf.extend_from_slice(suffix);
         let name = MetricName::new_untagged(buf.split());
@@ -153,7 +204,7 @@ impl OwnStats {
         &self.fast_chans[self.next_chan]
     }
 
-    fn count(&mut self) -> OwnSnapshot {
+    fn count(&mut self) -> Result<OwnSnapshot, String> {
         let mut buf = BytesMut::with_capacity((self.prefix.len() + 10) * 7); // 10 is suffix len, 7 is number of metrics
         let mut snapshot = OwnSnapshot::default();
         let s_interval = if self.interval > 0 { self.interval as f64 / 1000f64 } else { 1f64 };
@@ -164,23 +215,32 @@ impl OwnStats {
                 let $value = STATS.$value.swap(0, Ordering::Relaxed) as Float;
                 if self.interval > 0 {
                     snapshot.data.push((Bytes::copy_from_slice(($suffix).as_bytes()), $value / s_interval));
+
                     let metric = StatsdMetric::new($value, StatsdType::Counter, None).unwrap();
-                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes());
+
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), false);
+                    update_metric(&mut self.cache, name.clone(), metric.clone());
+
+                    let name = self.format_metric_carbon(&mut buf, $suffix.as_bytes(), true);
                     let chan = self.next_chan();
                     chan
                         .send(FastTask::Accumulate(name, metric))
                         .map_err(|_| s!(queue_errors))
-                        .unwrap_or(())
+                        .unwrap_or(());
                 }
             };
         }
 
         add_metric!(egress_carbon, "egress-carbon");
+        add_metric!(egress_carbon_metrics, "egress-carbon-metrics");
         add_metric!(egress_peer, "egress-peer");
         add_metric!(ingress, "ingress");
         add_metric!(ingress_metrics, "ingress-metric");
         add_metric!(ingress_metrics_peer, "ingress-metric-peer");
         add_metric!(drops, "drop");
+        add_metric!(slow_cache_rotated_metrics, "slow-cache-rotated-metrics");
+        add_metric!(slow_cache_joined_metrics, "slow-cache-joined-metrics");
+        add_metric!(aggregated_metrics, "aggregated-metrics");
         add_metric!(agg_errors, "agg-error");
         add_metric!(parse_errors, "parse-error");
         add_metric!(queue_errors, "queue-error");
@@ -190,14 +250,13 @@ impl OwnStats {
         let chlen = Float::from_f64(self.slow_chan.len() as f64);
         let qlen = StatsdMetric::new(chlen, StatsdType::Gauge(None), None).unwrap();
         snapshot.data.push((Bytes::copy_from_slice(("slow-q-len").as_bytes()), chlen));
-        let name = self.format_metric_carbon(&mut buf, "slow-w-len".as_bytes());
+        let name = self.format_metric_carbon(&mut buf, "slow-q-len".as_bytes(), false);
 
         let chan = self.next_chan();
         chan
             .send(FastTask::Accumulate(name, qlen))
             .map_err(|_| s!(queue_errors))
             .unwrap_or(());
-
 
         if self.interval > 0 {
             info!(self.log, "stats";
@@ -214,23 +273,114 @@ impl OwnStats {
                 "qu-len" => format!("{:2}", chlen),
             );
         };
-        snapshot
+        
+        Ok(snapshot)
+    }
+
+    async fn send_metrics(&mut self) -> Result<(), String>  {
+        let mut cache = HashMap::new();
+        mem::swap(&mut self.cache, &mut cache);
+
+        let mut metrics = Vec::<Aggregated>::new();
+
+        for (name, metric) in cache {
+            let v = match metric.value() {
+                MetricValue::Counter(v) => *v,
+
+                // all metrics are counters
+                _ => unreachable!()
+            };
+
+            metrics.push((name, MetricTypeName::Counter, Aggregate::Value, v));
+        }
+
+        let interval = Float::from_f64(self.carbon_config.interval as f64 / 1000f64);
+        let agg_opts = AggregationOptions::from_config(
+            self.aggregation.clone(), 
+            interval, 
+            self.naming.clone(), 
+            self.log.clone(),
+        ).map_err(|e| format!("failed to create aggregation options: {}", e))?;
+
+        CarbonSender::new(
+            self.log.clone(), 
+            vec![metrics], 
+            agg_opts, 
+            self.carbon_config.clone()).
+            map_err(|e| format!("failed to create carbon sender: {}", e))?.run().await;
+
+        Ok(())
     }
 
     pub async fn run(mut self) {
         let now = tokio::time::Instant::now();
-        let dur = Duration::from_millis(if self.interval < 100 { 1000 } else { self.interval }); // avoid too short intervals
-        let mut interval = tokio::time::interval_at(now + dur, dur);
+
+        let count_dur = Duration::from_millis(if self.interval < 100 { 1000 } else { self.interval }); // avoid too short intervals
+        let mut count_interval = tokio::time::interval_at(now + count_dur, count_dur);
+
+        let send_dur = Duration::from_millis(if self.interval < 100 { 1000 } else { 
+            self.carbon_config.interval 
+        }); // avoid too short intervals
+
+        let mut send_interval = tokio::time::interval_at(now + send_dur, send_dur);
         loop {
-            interval.tick().await;
-            let snapshot = tokio::task::block_in_place(||{
-                self.count()
-            });
-            // update global snapshot
-            {
-                let mut prev = STATS_SNAP.write().await;
-                *prev = snapshot
+            select! {
+                _ = count_interval.tick() => {
+                    match tokio::task::block_in_place(||{
+                        self.count()
+                    }) {
+                        Ok(snapshot) => {
+                            let mut prev = STATS_SNAP.write().await;
+                            *prev = snapshot;
+                        },
+                        Err(e) => error!(self.log, "failed to send metrics: {}", e)
+                    };
+                }
+                _ = send_interval.tick() => {
+                    if let Err(e) = self.send_metrics().await {
+                        error!(self.log, "failed to send metrics: {}", e)
+                    }
+                }
             }
         }
+    }
+}
+
+fn update_metric(cache: &mut HashMap<MetricName, Metric<Float>>, name: MetricName, metric: StatsdMetric<Float>) {
+    let ename = name.clone();
+    let em = MetricTypeName::from_statsd_metric(&metric);
+    if em == MetricTypeName::CustomHistogram {
+        s!(agg_errors);
+        logw!("skipped histogram, histograms are not supported");
+        return;
+    }
+
+    match cache.entry(name) {
+        Entry::Occupied(ref mut entry) => {
+            entry.get_mut().accumulate_statsd(metric).unwrap_or_else(|_| {
+                let mtype = MetricTypeName::from_metric(&entry.get());
+                logw!(
+                    "could not accumulate {:?}: type '{}' into type '{}'",
+                    String::from_utf8_lossy(&ename.name[..]),
+                    em.to_string(),
+                    mtype.to_string(),
+                );
+                s!(agg_errors);
+            });
+        }
+
+        Entry::Vacant(entry) => match Metric::from_statsd(&metric, 1, None) {
+            Ok(metric) => {
+                entry.insert(metric);
+            }
+            Err(e) => {
+                s!(agg_errors);
+                logw!(
+                    "could not create new metric from statsd metric at {:?}: {}",
+                    String::from_utf8_lossy(&ename.name[..]),
+                    e
+                )
+            }
+        },
     }
 }

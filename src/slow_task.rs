@@ -1,9 +1,9 @@
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crossbeam_channel::Sender;
 use futures::channel::oneshot;
-use log::warn as logw;
-use slog::{error, info, Logger};
+use slog::{error, info, Logger, trace};
 
 use bioyino_metric::{name::MetricName, Metric, MetricTypeName};
 
@@ -11,6 +11,7 @@ use crate::aggregate::{aggregate_task, AggregationData};
 use crate::cache::{RotatedCache, SharedCache};
 use crate::config::System;
 
+use crate::stats::STATS;
 use crate::{s, Cache, Float};
 
 #[derive(Debug)]
@@ -68,7 +69,8 @@ impl SlowTaskRunner {
         let ename = name.clone();
         let em = MetricTypeName::from_metric(&metric);
         self.cache.accumulate(name, metric).unwrap_or_else(|_| {
-            logw!(
+            trace!(
+                self.log,
                 "could not accumulate in long cache at {:?} new type '{}'",
                 String::from_utf8_lossy(&ename.name[..]),
                 em.to_string(),
@@ -84,13 +86,20 @@ impl SlowTaskRunner {
                 list.drain(..).map(|(name, metric)| self.update_metric(name, metric)).last();
             }
             SlowTask::Join(cache) => {
-                cache.iter().map(|(name, metric)| self.update_metric(name.clone(), metric.clone())).last();
+                cache.iter().map(
+                    |(name, metric)| {
+                        s!(slow_cache_joined_metrics);
+                        self.update_metric(name.clone(), metric.clone());
+                    }
+                ).last();
             }
             SlowTask::AddSnapshot(mut list) => {
                 list.drain(..).map(|(name, metric)| self.update_metric(name, metric)).last();
             }
             SlowTask::Rotate(channel) => {
                 let rotated = self.cache.rotate(channel.is_some());
+                let sum: usize = rotated.iter().map(|m| m.len()).sum();
+                STATS.slow_cache_rotated_metrics.fetch_add(sum, Ordering::Relaxed);
                 if let Some(c) = channel {
                     let log = self.log.clone();
                     c.send(rotated).unwrap_or_else(|_| {

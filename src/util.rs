@@ -9,7 +9,7 @@ use thiserror::Error;
 
 use futures::future::{Future, TryFutureExt};
 use resolve::resolver;
-use slog::{o, warn, Drain, Logger};
+use slog::{error, o, Drain, Logger, info};
 use socket2::{Domain, Socket, Type};
 use trust_dns_resolver::TokioAsyncResolver;
 
@@ -171,17 +171,22 @@ pub fn get_hostname() -> Option<String> {
 }
 
 pub fn switch_leader(acquired: bool, log: &Logger) {
+    info!(log, "Trying to switch leader...");
+
     let should_set = {
         let state = &*CONSENSUS_STATE.lock().unwrap();
         // only set leader when consensus is enabled
         state == &ConsensusState::Enabled
     };
+
     if should_set {
         let is_leader = IS_LEADER.load(Ordering::SeqCst);
         if is_leader != acquired {
             error!(log, "leader state change: {} -> {}", is_leader, acquired);
         }
         IS_LEADER.store(acquired, Ordering::SeqCst);
+    } else {
+        info!(log, "Leader is not switched, because consensus is disabled.")
     }
 }
 

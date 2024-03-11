@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::atomic::Ordering};
 use std::sync::Arc;
 
 use async_channel::Sender as AsyncSender;
@@ -12,7 +12,7 @@ use bioyino_metric::{
     FromF64,
 };
 
-use crate::cache::RotatedCacheShard;
+use crate::{cache::RotatedCacheShard, stats::STATS};
 use crate::config::{all_aggregates, Aggregation, ConfigError, Naming, RoundTimestamp};
 use crate::{s, Float};
 
@@ -164,9 +164,10 @@ pub fn aggregate_task(data: AggregationData) {
                     _ => Some((name.clone(), typename, *aggregate, value)),
                 }
             })
-        .map(|data| result.push(data))
-            .last();
-        }
+            .map(|data| result.push(data))
+                .last();
+    }
+    STATS.aggregated_metrics.fetch_add(result.len(), Ordering::Relaxed);
 
     futures::executor::block_on(response.send(result)).unwrap_or(());
 }
